@@ -21,7 +21,8 @@ namespace udp_bridge
         origin,
 	helm_mode,
         vehicle_status,
-        loiter_updates
+        loiter_updates,
+        flir_engine
     };
 
     class UDPROSNode

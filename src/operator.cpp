@@ -36,6 +36,7 @@ int main(int argc, char **argv)
     n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");
     n.addReceiver<geographic_msgs::GeoPoint,udp_bridge::origin>("/udp/origin");
     n.addReceiver<asv_msgs::VehicleStatus,udp_bridge::vehicle_status>("/udp/vehicle_status");
+    n.addReceiver<std_msgs::String, udp_bridge::flir_engine>("/udp/flir_engine");
     
     n.spin();
 

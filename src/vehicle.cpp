@@ -32,6 +32,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::appcast>("/moos/appcast");
     n.addSender<geographic_msgs::GeoPoint,udp_bridge::origin>("/origin");
     n.addSender<asv_msgs::VehicleStatus,udp_bridge::vehicle_status>("/vehicle_status");
+    n.addSender<std_msgs::String, udp_bridge::flir_engine>("/flir_engine");
     
     n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
