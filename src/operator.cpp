@@ -41,6 +41,9 @@ int main(int argc, char **argv)
     n.addReceiver<std_msgs::String, udp_bridge::flir_engine>("/udp/flir_engine");
     n.addReceiver<mission_plan::NavEulerStamped, udp_bridge::heading>("/udp/heading");
     n.addReceiver<asv_msgs::AISContact, udp_bridge::ais>("/udp/ais");
+    n.addReceiver<std_msgs::String,udp_bridge::view_point>("/udp/view_point");
+    n.addReceiver<std_msgs::String,udp_bridge::view_polygon>("/udp/view_polygon");
+    n.addReceiver<std_msgs::String,udp_bridge::view_seglist>("/udp/view_seglist");
     
     n.spin();
 

@@ -24,7 +24,10 @@ namespace udp_bridge
         loiter_updates,
         flir_engine,
         heading,
-        ais
+        ais,
+        view_point,
+        view_polygon,
+        view_seglist
     };
 
     class UDPROSNode
