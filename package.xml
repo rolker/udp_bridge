@@ -51,21 +51,21 @@
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>geographic_msgs</build_depend>
   <build_depend>geometry_msgs</build_depend>
-  <build_depend>mission_plan</build_depend>
+  <build_depend>marine_msgs</build_depend>
   <build_depend>roscpp</build_depend>
   <build_depend>std_msgs</build_depend>
   <build_depend>project11</build_depend>
   <build_depend>asv_msgs</build_depend>
   <build_export_depend>geographic_msgs</build_export_depend>
   <build_export_depend>geometry_msgs</build_export_depend>
-  <build_export_depend>mission_plan</build_export_depend>
+  <build_export_depend>marine_msgs</build_export_depend>
   <build_export_depend>roscpp</build_export_depend>
   <build_export_depend>std_msgs</build_export_depend>
   <build_export_depend>project11</build_export_depend>
   <build_export_depend>asv_msgs</build_export_depend>
   <exec_depend>geographic_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>mission_plan</exec_depend>
+  <exec_depend>marine_msgs</exec_depend>
   <exec_depend>roscpp</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>project11</exec_depend>
