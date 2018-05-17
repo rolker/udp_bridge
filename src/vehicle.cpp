@@ -13,7 +13,7 @@ std::map<udp_bridge::Channel,std::string> udp_bridge::UDPROSNode::topic_map;
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "zmg_bridge_agent");
+    ros::init(argc, argv, "udp_bridge_vehicle");
     
     std::string host = "localhost";
     if (argc > 1)
