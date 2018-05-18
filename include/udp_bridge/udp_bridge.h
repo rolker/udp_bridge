@@ -100,9 +100,9 @@ namespace udp_bridge
             topic_map[C] = topic;
         }
 
-        template<typename ROS_TYPE, Channel C> void addReceiver(std::string const &topic)
+        template<typename ROS_TYPE, Channel C> void addReceiver(std::string const &topic, bool latch = false)
         {
-            m_ros_publishers[C].rpub = m_nodeHandle.advertise<ROS_TYPE>(topic,10);
+            m_ros_publishers[C].rpub = m_nodeHandle.advertise<ROS_TYPE>(topic,10, latch);
             m_ros_publishers[C].decoder = &UDPROSNode::Decode<ROS_TYPE>;
             topic_map[C] = topic;
         }
