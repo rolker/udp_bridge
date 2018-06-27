@@ -4,6 +4,7 @@
 #include "geographic_msgs/GeoPointStamped.h"
 #include "asv_msgs/VehicleStatus.h"
 #include "asv_msgs/AISContact.h"
+#include "diagnostic_msgs/DiagnosticArray.h"
 #include "marine_msgs/NavEulerStamped.h"
 #include <regex>
 #include "boost/date_time/posix_time/posix_time.hpp"
@@ -40,6 +41,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::view_point>("/moos/view_point");
     n.addSender<std_msgs::String, udp_bridge::view_polygon>("/moos/view_polygon");
     n.addSender<std_msgs::String, udp_bridge::view_seglist>("/moos/view_seglist");
+    n.addSender<diagnostic_msgs::DiagnosticArray, udp_bridge::diagnostics>("/diagnostics");
     
     n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");

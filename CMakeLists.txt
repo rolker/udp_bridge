@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   project11
   asv_msgs
+  diagnostic_msgs
 )
 
 ## System dependencies are found with CMake's conventions

@@ -5,6 +5,7 @@
 #include "asv_msgs/VehicleStatus.h"
 #include "asv_msgs/AISContact.h"
 #include "marine_msgs/NavEulerStamped.h"
+#include "diagnostic_msgs/DiagnosticArray.h"
 #include <regex>
 #include "boost/date_time/posix_time/posix_time.hpp"
 
@@ -44,6 +45,7 @@ int main(int argc, char **argv)
     n.addReceiver<std_msgs::String,udp_bridge::view_point>("/udp/view_point", true);
     n.addReceiver<std_msgs::String,udp_bridge::view_polygon>("/udp/view_polygon", true);
     n.addReceiver<std_msgs::String,udp_bridge::view_seglist>("/udp/view_seglist", true);
+    n.addReceiver<diagnostic_msgs::DiagnosticArray,udp_bridge::diagnostics>("/udp/diagnostics");
     
     n.spin();
 

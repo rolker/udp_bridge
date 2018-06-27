@@ -27,7 +27,8 @@ namespace udp_bridge
         ais,
         view_point,
         view_polygon,
-        view_seglist
+        view_seglist,
+        diagnostics
     };
 
     class UDPROSNode
