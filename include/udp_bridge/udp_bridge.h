@@ -20,7 +20,7 @@ namespace udp_bridge
         wpt_updates,
         origin,
 	helm_mode,
-        vehicle_status,
+        heartbeat,
         loiter_updates,
         flir_engine,
         heading,

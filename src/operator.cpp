@@ -2,7 +2,7 @@
 #include "std_msgs/String.h"
 #include "std_msgs/Bool.h"
 #include "geographic_msgs/GeoPointStamped.h"
-#include "asv_msgs/VehicleStatus.h"
+#include "marine_msgs/Heartbeat.h"
 #include "asv_msgs/AISContact.h"
 #include "marine_msgs/NavEulerStamped.h"
 #include "diagnostic_msgs/DiagnosticArray.h"
@@ -38,7 +38,7 @@ int main(int argc, char **argv)
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
     n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");
     n.addReceiver<geographic_msgs::GeoPoint,udp_bridge::origin>("/udp/origin");
-    n.addReceiver<asv_msgs::VehicleStatus,udp_bridge::vehicle_status>("/udp/vehicle_status");
+    n.addReceiver<marine_msgs::Heartbeat,udp_bridge::heartbeat>("/udp/heartbeat");
     n.addReceiver<std_msgs::String, udp_bridge::flir_engine>("/udp/flir_engine");
     n.addReceiver<marine_msgs::NavEulerStamped, udp_bridge::heading>("/udp/heading");
     n.addReceiver<asv_msgs::AISContact, udp_bridge::ais>("/udp/ais");
