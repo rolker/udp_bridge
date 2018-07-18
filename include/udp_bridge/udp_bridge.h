@@ -173,7 +173,7 @@ namespace udp_bridge
                     ROS_ERROR("sento fail");
                 }
             }
-            if(m_bag)
+            if(m_bag && ros::Time::now() > ros::TIME_MIN)
                 m_bag->write(topic_map[C],ros::Time::now(),*inmsg);
         }
 
@@ -191,7 +191,7 @@ namespace udp_bridge
             
             pub.publish(ros_msg);
             
-            if(bag)
+            if(bag && ros::Time::now() > ros::TIME_MIN)
                 bag->write(topic_map[channel],ros::Time::now(),ros_msg);
         }
         
