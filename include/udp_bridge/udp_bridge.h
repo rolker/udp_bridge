@@ -28,7 +28,9 @@ namespace udp_bridge
         view_point,
         view_polygon,
         view_seglist,
-        diagnostics
+        diagnostics,
+        posmv_orientation,
+        posmv_position
     };
 
     class UDPROSNode
