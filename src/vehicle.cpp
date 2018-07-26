@@ -51,6 +51,7 @@ int main(int argc, char **argv)
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
     n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
     n.addReceiver<std_msgs::String,udp_bridge::loiter_updates>("/moos/loiter_updates");
+    n.addReceiver<std_msgs::String,udp_bridge::mission_plan>("/mission_plan");
 
     n.spin();
     

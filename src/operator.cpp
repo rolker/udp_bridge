@@ -35,6 +35,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::helm_mode>("/udp/helm_mode");
     n.addSender<std_msgs::String, udp_bridge::wpt_updates>("/udp/wpt_updates");
     n.addSender<std_msgs::String, udp_bridge::loiter_updates>("/udp/loiter_updates");
+    n.addSender<std_msgs::String, udp_bridge::mission_plan>("/udp/mission_plan");
 
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
     n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");

@@ -30,7 +30,8 @@ namespace udp_bridge
         view_seglist,
         diagnostics,
         posmv_orientation,
-        posmv_position
+        posmv_position,
+        mission_plan
     };
 
     class UDPROSNode
