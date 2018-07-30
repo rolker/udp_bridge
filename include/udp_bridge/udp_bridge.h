@@ -9,6 +9,7 @@
 #include <mutex>
 #include "ros/ros.h"
 #include "project11/mutex_protected_bag_writer.h"
+#include "ros/timer.h"
 
 namespace udp_bridge
 {
@@ -90,6 +91,8 @@ namespace udp_bridge
                 ROS_ERROR("Error enabling socket broadcast");
                 exit(1);
             }
+            
+            m_latch_timer = m_nodeHandle.createTimer(ros::Rate(0.1), &UDPROSNode::LatchTimerCallback, this);
 
         }
         
@@ -98,9 +101,9 @@ namespace udp_bridge
             m_bag->close();
         }
 
-        template<typename ROS_TYPE, Channel C> void addSender(std::string const &topic)
+        template<typename ROS_TYPE, Channel C, bool Latch=false> void addSender(std::string const &topic)
         {
-            m_ros_subscribers[C] = m_nodeHandle.subscribe(topic,10, &UDPROSNode::ROSCallback<ROS_TYPE, C>, this);
+            m_ros_subscribers[C] = m_nodeHandle.subscribe(topic,10, &UDPROSNode::ROSCallback<ROS_TYPE, C, Latch>, this);
             topic_map[C] = topic;
         }
 
@@ -149,14 +152,31 @@ namespace udp_bridge
         std::mutex m_socket_mutex;
         sockaddr_in m_send_address;
         ros::NodeHandle m_nodeHandle;
+        ros::Timer m_latch_timer;
         
         std::shared_ptr<MutexProtectedBagWriter> m_bag;
         
         static std::map<Channel,std::string> topic_map;
         
-        template<typename ROS_TYPE, Channel C> void ROSCallback(const typename ROS_TYPE::ConstPtr& inmsg)
+        std::map<Channel,std::vector<uint8_t> > latched_map;
+        
+        void LatchTimerCallback(const ros::TimerEvent &event)
+        {
+            for(auto kv: latched_map)
+            {
+                std::cerr << kv.first << ", size:" << kv.second.size() << std::endl;
+                std::lock_guard<std::mutex> lock(m_socket_mutex);
+                if(sendto(m_socket, kv.second.data(), kv.second.size(), 0, (sockaddr*)&m_send_address, sizeof(m_send_address)) < 0)
+                {
+                    ROS_ERROR("sento fail");
+                }
+            }
+        }
+        
+        template<typename ROS_TYPE, Channel C, bool Latch> void ROSCallback(const typename ROS_TYPE::ConstPtr& inmsg)
         {
             uint32_t channel = C;
+            bool latch = Latch;
 
             uint32_t serial_size = ros::serialization::serializationLength(*inmsg);
             boost::shared_array<uint8_t> buffer(new uint8_t[serial_size]);
@@ -176,6 +196,8 @@ namespace udp_bridge
                     ROS_ERROR("sento fail");
                 }
             }
+            if(latch)
+                latched_map[C] = send_buffer;
             if(m_bag && ros::Time::now() > ros::TIME_MIN)
                 m_bag->write(topic_map[C],ros::Time::now(),*inmsg);
         }

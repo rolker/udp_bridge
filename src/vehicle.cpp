@@ -39,9 +39,9 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::flir_engine>("/flir_engine");
     n.addSender<marine_msgs::NavEulerStamped, udp_bridge::heading>("/heading");
     n.addSender<asv_msgs::AISContact, udp_bridge::ais>("/sensor/ais/contact");
-    n.addSender<std_msgs::String, udp_bridge::view_point>("/moos/view_point");
-    n.addSender<std_msgs::String, udp_bridge::view_polygon>("/moos/view_polygon");
-    n.addSender<std_msgs::String, udp_bridge::view_seglist>("/moos/view_seglist");
+    n.addSender<std_msgs::String, udp_bridge::view_point, true>("/moos/view_point");
+    n.addSender<std_msgs::String, udp_bridge::view_polygon, true>("/moos/view_polygon");
+    n.addSender<std_msgs::String, udp_bridge::view_seglist, true>("/moos/view_seglist");
     n.addSender<diagnostic_msgs::DiagnosticArray, udp_bridge::diagnostics>("/diagnostics");
     n.addSender<marine_msgs::NavEulerStamped, udp_bridge::posmv_orientation>("/posmv/orientation");
     n.addSender<sensor_msgs::NavSatFix, udp_bridge::posmv_position>("/posmv/position");
