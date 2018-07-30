@@ -164,7 +164,7 @@ namespace udp_bridge
         {
             for(auto kv: latched_map)
             {
-                std::cerr << kv.first << ", size:" << kv.second.size() << std::endl;
+                //std::cerr << kv.first << ", size:" << kv.second.size() << std::endl;
                 std::lock_guard<std::mutex> lock(m_socket_mutex);
                 if(sendto(m_socket, kv.second.data(), kv.second.size(), 0, (sockaddr*)&m_send_address, sizeof(m_send_address)) < 0)
                 {
