@@ -14,7 +14,6 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   project11
-  asv_msgs
   diagnostic_msgs
 )
 

@@ -25,7 +25,7 @@ namespace udp_bridge
         loiter_updates,
         flir_engine,
         heading,
-        ais,
+        contact,
         view_point,
         view_polygon,
         view_seglist,

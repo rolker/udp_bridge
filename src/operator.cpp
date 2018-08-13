@@ -3,7 +3,7 @@
 #include "std_msgs/Bool.h"
 #include "geographic_msgs/GeoPointStamped.h"
 #include "marine_msgs/Heartbeat.h"
-#include "asv_msgs/AISContact.h"
+#include "marine_msgs/Contact.h"
 #include "marine_msgs/NavEulerStamped.h"
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/NavSatFix.h"
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
     n.addReceiver<marine_msgs::Heartbeat,udp_bridge::heartbeat>("/udp/heartbeat");
     n.addReceiver<std_msgs::String, udp_bridge::flir_engine>("/udp/flir_engine");
     n.addReceiver<marine_msgs::NavEulerStamped, udp_bridge::heading>("/udp/heading");
-    n.addReceiver<asv_msgs::AISContact, udp_bridge::ais>("/udp/ais");
+    n.addReceiver<marine_msgs::Contact, udp_bridge::contact>("/udp/contact");
     n.addReceiver<std_msgs::String,udp_bridge::view_point>("/udp/view_point", true);
     n.addReceiver<std_msgs::String,udp_bridge::view_polygon>("/udp/view_polygon", true);
     n.addReceiver<std_msgs::String,udp_bridge::view_seglist>("/udp/view_seglist", true);
