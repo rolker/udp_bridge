@@ -33,7 +33,9 @@ namespace udp_bridge
         posmv_orientation,
         posmv_position,
         mission_plan,
-        sog
+        sog,
+        coverage,
+        mbes_ping
     };
 
     class UDPROSNode

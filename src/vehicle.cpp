@@ -8,9 +8,9 @@
 #include "marine_msgs/NavEulerStamped.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "geometry_msgs/TwistStamped.h"
+#include "geographic_msgs/GeoPath.h"
 #include <regex>
 #include "boost/date_time/posix_time/posix_time.hpp"
-
 
 std::map<udp_bridge::Channel,std::string> udp_bridge::UDPROSNode::topic_map;
 
@@ -47,6 +47,8 @@ int main(int argc, char **argv)
     n.addSender<marine_msgs::NavEulerStamped, udp_bridge::posmv_orientation>("/posmv/orientation");
     n.addSender<sensor_msgs::NavSatFix, udp_bridge::posmv_position>("/posmv/position");
     n.addSender<geometry_msgs::TwistStamped, udp_bridge::sog>("/sog");
+    n.addSender<geographic_msgs::GeoPath, udp_bridge::coverage>("/coverage");
+    n.addSender<geographic_msgs::GeoPath, udp_bridge::mbes_ping>("/mbes_ping");
     
     n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");

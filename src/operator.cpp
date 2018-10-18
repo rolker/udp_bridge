@@ -8,6 +8,7 @@
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "geometry_msgs/TwistStamped.h"
+#include "geographic_msgs/GeoPath.h"
 #include <regex>
 #include "boost/date_time/posix_time/posix_time.hpp"
 
@@ -52,6 +53,8 @@ int main(int argc, char **argv)
     n.addReceiver<marine_msgs::NavEulerStamped,udp_bridge::posmv_orientation>("/udp/posmv/orientation");
     n.addReceiver<sensor_msgs::NavSatFix,udp_bridge::posmv_position>("/udp/posmv/position");
     n.addReceiver<geometry_msgs::TwistStamped,udp_bridge::sog>("/udp/sog");
+    n.addReceiver<geographic_msgs::GeoPath,udp_bridge::coverage>("/udp/coverage");
+    n.addReceiver<geographic_msgs::GeoPath,udp_bridge::mbes_ping>("/udp/mbes_ping");
 
     n.spin();
 
