@@ -35,7 +35,9 @@ namespace udp_bridge
         mission_plan,
         sog,
         coverage,
-        mbes_ping
+        mbes_ping,
+        command,
+        response
     };
 
     class UDPROSNode

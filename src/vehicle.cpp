@@ -7,6 +7,7 @@
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "marine_msgs/NavEulerStamped.h"
 #include "sensor_msgs/NavSatFix.h"
+#include "sensor_msgs/PointCloud.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
 #include <regex>
@@ -48,13 +49,15 @@ int main(int argc, char **argv)
     n.addSender<sensor_msgs::NavSatFix, udp_bridge::posmv_position>("/posmv/position");
     n.addSender<geometry_msgs::TwistStamped, udp_bridge::sog>("/sog");
     n.addSender<geographic_msgs::GeoPath, udp_bridge::coverage>("/coverage");
-    n.addSender<geographic_msgs::GeoPath, udp_bridge::mbes_ping>("/mbes_ping");
+    n.addSender<sensor_msgs::PointCloud, udp_bridge::mbes_ping>("/mbes_ping");
+    n.addSender<std_msgs::String, udp_bridge::response>("/project11/response");
     
     n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
     n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
     n.addReceiver<std_msgs::String,udp_bridge::loiter_updates>("/moos/loiter_updates");
     n.addReceiver<std_msgs::String,udp_bridge::mission_plan>("/mission_plan");
+    n.addReceiver<std_msgs::String,udp_bridge::command>("/project11/command");
 
     n.spin();
     

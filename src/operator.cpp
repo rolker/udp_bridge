@@ -7,6 +7,7 @@
 #include "marine_msgs/NavEulerStamped.h"
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/NavSatFix.h"
+#include "sensor_msgs/PointCloud.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
 #include <regex>
@@ -38,6 +39,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::wpt_updates>("/udp/wpt_updates");
     n.addSender<std_msgs::String, udp_bridge::loiter_updates>("/udp/loiter_updates");
     n.addSender<std_msgs::String, udp_bridge::mission_plan>("/udp/mission_plan");
+    n.addSender<std_msgs::String, udp_bridge::command>("/udp/command");
 
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
     n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");
@@ -54,7 +56,8 @@ int main(int argc, char **argv)
     n.addReceiver<sensor_msgs::NavSatFix,udp_bridge::posmv_position>("/udp/posmv/position");
     n.addReceiver<geometry_msgs::TwistStamped,udp_bridge::sog>("/udp/sog");
     n.addReceiver<geographic_msgs::GeoPath,udp_bridge::coverage>("/udp/coverage");
-    n.addReceiver<geographic_msgs::GeoPath,udp_bridge::mbes_ping>("/udp/mbes_ping");
+    n.addReceiver<sensor_msgs::PointCloud,udp_bridge::mbes_ping>("/udp/mbes_ping");
+    n.addReceiver<std_msgs::String,udp_bridge::response>("/udp/response");
 
     n.spin();
 
