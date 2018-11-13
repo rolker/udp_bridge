@@ -6,6 +6,7 @@
 #include "marine_msgs/Contact.h"
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "marine_msgs/NavEulerStamped.h"
+#include "marine_msgs/RadarSectorStamped.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "sensor_msgs/PointCloud.h"
 #include "geometry_msgs/TwistStamped.h"
@@ -51,6 +52,7 @@ int main(int argc, char **argv)
     n.addSender<geographic_msgs::GeoPath, udp_bridge::coverage>("/coverage");
     n.addSender<sensor_msgs::PointCloud, udp_bridge::mbes_ping>("/mbes_ping");
     n.addSender<std_msgs::String, udp_bridge::response>("/project11/response");
+    n.addSender<marine_msgs::RadarSectorStamped, udp_bridge::radar>("/radar");
     
     n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");

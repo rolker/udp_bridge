@@ -37,7 +37,8 @@ namespace udp_bridge
         coverage,
         mbes_ping,
         command,
-        response
+        response,
+        radar
     };
 
     class UDPROSNode

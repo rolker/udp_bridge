@@ -5,6 +5,7 @@
 #include "marine_msgs/Heartbeat.h"
 #include "marine_msgs/Contact.h"
 #include "marine_msgs/NavEulerStamped.h"
+#include "marine_msgs/RadarSectorStamped.h"
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "sensor_msgs/PointCloud.h"
@@ -58,6 +59,7 @@ int main(int argc, char **argv)
     n.addReceiver<geographic_msgs::GeoPath,udp_bridge::coverage>("/udp/coverage");
     n.addReceiver<sensor_msgs::PointCloud,udp_bridge::mbes_ping>("/udp/mbes_ping");
     n.addReceiver<std_msgs::String,udp_bridge::response>("/udp/response");
+    n.addReceiver<marine_msgs::RadarSectorStamped,udp_bridge::radar>("/udp/radar");
 
     n.spin();
 
