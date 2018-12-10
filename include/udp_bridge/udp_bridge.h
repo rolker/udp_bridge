@@ -38,7 +38,8 @@ namespace udp_bridge
         mbes_ping,
         command,
         response,
-        radar
+        radar,
+        current_path,
     };
 
     class UDPROSNode

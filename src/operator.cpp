@@ -60,6 +60,7 @@ int main(int argc, char **argv)
     n.addReceiver<sensor_msgs::PointCloud,udp_bridge::mbes_ping>("/udp/mbes_ping");
     n.addReceiver<std_msgs::String,udp_bridge::response>("/udp/response");
     n.addReceiver<marine_msgs::RadarSectorStamped,udp_bridge::radar>("/udp/radar");
+    n.addReceiver<geographic_msgs::GeoPath,udp_bridge::current_path>("/udp/project11/mission_manager/current_path",true);
 
     n.spin();
 

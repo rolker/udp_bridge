@@ -53,6 +53,7 @@ int main(int argc, char **argv)
     n.addSender<sensor_msgs::PointCloud, udp_bridge::mbes_ping>("/mbes_ping");
     n.addSender<std_msgs::String, udp_bridge::response>("/project11/response");
     n.addSender<marine_msgs::RadarSectorStamped, udp_bridge::radar>("/radar");
+    n.addSender<geographic_msgs::GeoPath, udp_bridge::current_path, true>("/project11/mission_manager/current_path");
     
     n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
