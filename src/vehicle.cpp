@@ -9,6 +9,7 @@
 #include "marine_msgs/RadarSectorStamped.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "sensor_msgs/PointCloud.h"
+#include "sensor_msgs/Joy.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
 #include <regex>
@@ -61,6 +62,7 @@ int main(int argc, char **argv)
     n.addReceiver<std_msgs::String,udp_bridge::loiter_updates>("/moos/loiter_updates");
     n.addReceiver<std_msgs::String,udp_bridge::mission_plan>("/mission_plan");
     n.addReceiver<std_msgs::String,udp_bridge::command>("/project11/command");
+    n.addReceiver<sensor_msgs::Joy,udp_bridge::joystick>("/joy");
 
     n.spin();
     

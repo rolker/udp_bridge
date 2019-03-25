@@ -9,6 +9,7 @@
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "sensor_msgs/PointCloud.h"
+#include "sensor_msgs/Joy.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
 #include <regex>
@@ -41,6 +42,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::loiter_updates>("/udp/loiter_updates");
     n.addSender<std_msgs::String, udp_bridge::mission_plan>("/udp/mission_plan");
     n.addSender<std_msgs::String, udp_bridge::command>("/udp/command");
+    n.addSender<sensor_msgs::Joy, udp_bridge::joystick>("/udp/joy");
 
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
     n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");

@@ -40,6 +40,7 @@ namespace udp_bridge
         response,
         radar,
         current_path,
+        joystick
     };
 
     class UDPROSNode
