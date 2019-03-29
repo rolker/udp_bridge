@@ -9,7 +9,7 @@
 #include "marine_msgs/RadarSectorStamped.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "sensor_msgs/PointCloud.h"
-#include "sensor_msgs/Joy.h"
+#include "marine_msgs/Helm.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
 #include <regex>
@@ -56,13 +56,12 @@ int main(int argc, char **argv)
     n.addSender<marine_msgs::RadarSectorStamped, udp_bridge::radar>("/radar");
     n.addSender<geographic_msgs::GeoPath, udp_bridge::current_path, true>("/project11/mission_manager/current_path");
     
-    n.addReceiver<std_msgs::Bool,udp_bridge::active>("/active");
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
     n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
     n.addReceiver<std_msgs::String,udp_bridge::loiter_updates>("/moos/loiter_updates");
     n.addReceiver<std_msgs::String,udp_bridge::mission_plan>("/mission_plan");
     n.addReceiver<std_msgs::String,udp_bridge::command>("/project11/command");
-    n.addReceiver<sensor_msgs::Joy,udp_bridge::joystick>("/joy");
+    n.addReceiver<marine_msgs::Helm,udp_bridge::helm>("/helm");
 
     n.spin();
     

@@ -9,7 +9,7 @@
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/NavSatFix.h"
 #include "sensor_msgs/PointCloud.h"
-#include "sensor_msgs/Joy.h"
+#include "marine_msgs/Helm.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
 #include <regex>
@@ -36,13 +36,12 @@ int main(int argc, char **argv)
     
     udp_bridge::UDPROSNode n(host,send_port,receive_port,log_filename);
     
-    n.addSender<std_msgs::Bool, udp_bridge::active>("/udp/active");
     n.addSender<std_msgs::String, udp_bridge::helm_mode>("/udp/helm_mode");
     n.addSender<std_msgs::String, udp_bridge::wpt_updates>("/udp/wpt_updates");
     n.addSender<std_msgs::String, udp_bridge::loiter_updates>("/udp/loiter_updates");
     n.addSender<std_msgs::String, udp_bridge::mission_plan>("/udp/mission_plan");
     n.addSender<std_msgs::String, udp_bridge::command>("/udp/command");
-    n.addSender<sensor_msgs::Joy, udp_bridge::joystick>("/udp/joy");
+    n.addSender<marine_msgs::Helm, udp_bridge::helm>("/udp/helm");
 
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
     n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");

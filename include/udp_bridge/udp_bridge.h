@@ -17,7 +17,6 @@ namespace udp_bridge
     {
         position,
         appcast,
-        active,
         wpt_updates,
         origin,
 	helm_mode,
@@ -40,7 +39,7 @@ namespace udp_bridge
         response,
         radar,
         current_path,
-        joystick
+        helm
     };
 
     class UDPROSNode
