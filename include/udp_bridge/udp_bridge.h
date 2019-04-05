@@ -25,9 +25,6 @@ namespace udp_bridge
         flir_engine,
         heading,
         contact,
-        view_point,
-        view_polygon,
-        view_seglist,
         diagnostics,
         posmv_orientation,
         posmv_position,
@@ -38,8 +35,8 @@ namespace udp_bridge
         command,
         response,
         radar,
-        current_path,
-        helm
+        helm,
+        display
     };
 
     class UDPROSNode

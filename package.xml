@@ -50,6 +50,7 @@
   <!--   <doc_depend>doxygen</doc_depend> -->
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>geographic_msgs</build_depend>
+  <build_depend>geographic_visualization_msgs</build_depend>
   <build_depend>geometry_msgs</build_depend>
   <build_depend>marine_msgs</build_depend>
   <build_depend>roscpp</build_depend>

@@ -12,6 +12,7 @@
 #include "marine_msgs/Helm.h"
 #include "geometry_msgs/TwistStamped.h"
 #include "geographic_msgs/GeoPath.h"
+#include "geographic_visualization_msgs/GeoVizItem.h"
 #include <regex>
 #include "boost/date_time/posix_time/posix_time.hpp"
 
@@ -43,9 +44,6 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::flir_engine>("/flir_engine");
     n.addSender<marine_msgs::NavEulerStamped, udp_bridge::heading>("/heading");
     n.addSender<marine_msgs::Contact, udp_bridge::contact>("/contact");
-    n.addSender<std_msgs::String, udp_bridge::view_point, true>("/moos/view_point");
-    n.addSender<std_msgs::String, udp_bridge::view_polygon, true>("/moos/view_polygon");
-    n.addSender<std_msgs::String, udp_bridge::view_seglist, true>("/moos/view_seglist");
     n.addSender<diagnostic_msgs::DiagnosticArray, udp_bridge::diagnostics>("/diagnostics");
     n.addSender<marine_msgs::NavEulerStamped, udp_bridge::posmv_orientation>("/posmv/orientation");
     n.addSender<sensor_msgs::NavSatFix, udp_bridge::posmv_position>("/posmv/position");
@@ -54,7 +52,7 @@ int main(int argc, char **argv)
     n.addSender<sensor_msgs::PointCloud, udp_bridge::mbes_ping>("/mbes_ping");
     n.addSender<std_msgs::String, udp_bridge::response>("/project11/response");
     n.addSender<marine_msgs::RadarSectorStamped, udp_bridge::radar>("/radar");
-    n.addSender<geographic_msgs::GeoPath, udp_bridge::current_path, true>("/project11/mission_manager/current_path");
+    n.addSender<geographic_visualization_msgs::GeoVizItem, udp_bridge::display>("/project11/display");
     
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
     n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
