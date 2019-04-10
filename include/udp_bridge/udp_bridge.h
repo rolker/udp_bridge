@@ -19,7 +19,7 @@ namespace udp_bridge
         appcast,
         wpt_updates,
         origin,
-	helm_mode,
+        helm_mode,
         heartbeat,
         loiter_updates,
         flir_engine,
@@ -36,7 +36,9 @@ namespace udp_bridge
         response,
         radar,
         helm,
-        display
+        display,
+        darknet_bounding_boxes
+        
     };
 
     class UDPROSNode

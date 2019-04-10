@@ -15,6 +15,7 @@
 #include "geographic_visualization_msgs/GeoVizItem.h"
 #include <regex>
 #include "boost/date_time/posix_time/posix_time.hpp"
+#include "darknet_ros_msgs/BoundingBoxes.h"
 
 std::map<udp_bridge::Channel,std::string> udp_bridge::UDPROSNode::topic_map;
 
@@ -53,6 +54,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::String, udp_bridge::response>("/project11/response");
     n.addSender<marine_msgs::RadarSectorStamped, udp_bridge::radar>("/radar");
     n.addSender<geographic_visualization_msgs::GeoVizItem, udp_bridge::display>("/project11/display");
+    n.addSender<darknet_ros_msgs::BoundingBoxes, udp_bridge::darknet_bounding_boxes>("/darknet_ros/bounding_boxes");
     
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
     n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
