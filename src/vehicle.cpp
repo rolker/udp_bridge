@@ -1,6 +1,7 @@
 #include "udp_bridge/udp_bridge.h"
 #include "std_msgs/String.h"
 #include "std_msgs/Bool.h"
+#include "std_msgs/Float32.h"
 #include "geographic_msgs/GeoPointStamped.h"
 #include "marine_msgs/Heartbeat.h"
 #include "marine_msgs/Contact.h"
@@ -55,6 +56,8 @@ int main(int argc, char **argv)
     n.addSender<marine_msgs::RadarSectorStamped, udp_bridge::radar>("/radar");
     n.addSender<geographic_visualization_msgs::GeoVizItem, udp_bridge::display>("/project11/display");
     n.addSender<darknet_ros_msgs::BoundingBoxes, udp_bridge::darknet_bounding_boxes>("/darknet_ros/bounding_boxes");
+    n.addSender<std_msgs::Float32, udp_bridge::mbr_margin_avg>("/mbr/9372/2510/margin_avg");
+    n.addSender<std_msgs::Float32, udp_bridge::mbr_margin_min>("/mbr/9372/2510/margin_min");
     
     n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
     n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
