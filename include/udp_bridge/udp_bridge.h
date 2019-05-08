@@ -8,7 +8,6 @@
 #include <netdb.h>
 #include <mutex>
 #include "ros/ros.h"
-#include "project11/mutex_protected_bag_writer.h"
 #include "ros/timer.h"
 
 namespace udp_bridge
@@ -46,10 +45,7 @@ namespace udp_bridge
     {
     public:
         UDPROSNode(std::string const &host, int send_port, int receive_port, std::string const & log_filename)
-        {
-            m_bag = std::shared_ptr<MutexProtectedBagWriter>(new MutexProtectedBagWriter);
-            m_bag->open(log_filename, rosbag::bagmode::Write);
-            
+        {            
             m_socket = socket(AF_INET, SOCK_DGRAM, 0);
             if(m_socket < 0)
             {
@@ -105,7 +101,7 @@ namespace udp_bridge
         
         ~UDPROSNode()
         {
-            m_bag->close();
+            //m_bag->close();
         }
 
         template<typename ROS_TYPE, Channel C, bool Latch=false> void addSender(std::string const &topic)
@@ -144,7 +140,7 @@ namespace udp_bridge
                     buffer.resize(receive_length);
                     Channel c = *static_cast<Channel*>(reinterpret_cast<void*>(buffer.data()));
                     if(m_ros_publishers.find(c) != m_ros_publishers.end())
-                        m_ros_publishers[c].decoder(buffer,m_ros_publishers[c].rpub,m_bag,c);
+                        m_ros_publishers[c].decoder(buffer,m_ros_publishers[c].rpub,c);
                 }
 
                 ros::spinOnce();
@@ -160,8 +156,6 @@ namespace udp_bridge
         sockaddr_in m_send_address;
         ros::NodeHandle m_nodeHandle;
         ros::Timer m_latch_timer;
-        
-        std::shared_ptr<MutexProtectedBagWriter> m_bag;
         
         static std::map<Channel,std::string> topic_map;
         
@@ -205,14 +199,12 @@ namespace udp_bridge
             }
             if(latch)
                 latched_map[C] = send_buffer;
-            if(m_bag && ros::Time::now() > ros::TIME_MIN)
-                m_bag->write(topic_map[C],ros::Time::now(),*inmsg);
         }
 
         typedef std::map<Channel,ros::Subscriber> SubscriberMap;
         SubscriberMap m_ros_subscribers;
 
-        template<typename ROS_TYPE> static void Decode(std::vector<uint8_t> &message, ros::Publisher &pub, std::shared_ptr<MutexProtectedBagWriter> bag, Channel channel)
+        template<typename ROS_TYPE> static void Decode(std::vector<uint8_t> &message, ros::Publisher &pub, Channel channel)
         {
             ROS_TYPE ros_msg;
             boost::shared_array<uint8_t> buffer(new uint8_t[message.size()-sizeof(uint32_t)]);
@@ -222,15 +214,12 @@ namespace udp_bridge
             ros::serialization::Serializer<ROS_TYPE>::read(stream, ros_msg);
             
             pub.publish(ros_msg);
-            
-            if(bag && ros::Time::now() > ros::TIME_MIN)
-                bag->write(topic_map[channel],ros::Time::now(),ros_msg);
         }
         
         struct ROSPublisher
         {
             ros::Publisher rpub;
-            void (*decoder)(std::vector<uint8_t> &, ros::Publisher &, std::shared_ptr<MutexProtectedBagWriter>, Channel);
+            void (*decoder)(std::vector<uint8_t> &, ros::Publisher &, Channel);
         };
         
         typedef std::map<Channel,ROSPublisher> PublisherMap;
