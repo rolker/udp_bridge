@@ -188,6 +188,9 @@ namespace udp_bridge
             uLong comp_buffer_size = compressBound(serial_size);
             boost::shared_array<uint8_t> comp_buffer(new uint8_t[comp_buffer_size]);
             int com_ret = compress(comp_buffer.get(),&comp_buffer_size,buffer.get(),serial_size);
+            
+            std::cerr << "channel: " << channel << " src size: " << serial_size << " comp size: " << comp_buffer_size << " comp ret: " << com_ret << std::endl;
+            
  
             std::vector<uint8_t> send_buffer(sizeof(channel)+sizeof(uLong)+comp_buffer_size);
             //std::cerr << "send buffer size: " << send_buffer.size() << std::endl;
@@ -218,14 +221,22 @@ namespace udp_bridge
             memcpy(comp_buffer.get(),&(message.data()[sizeof(uint32_t)+sizeof(uLong)]),comp_size);
             
             uLong decomp_size = *static_cast<uLong*>(reinterpret_cast<void*>(&(message.data()[sizeof(uint32_t)])));
+            
+            std::cerr << "channel: " << *static_cast<Channel*>(reinterpret_cast<void*>(message.data())) <<  " comp_size: " << comp_size << " decomp_size: " << decomp_size << std::endl;
 ;
             boost::shared_array<uint8_t> decomp_buffer(new uint8_t[decomp_size]);
             int decomp_ret = uncompress(decomp_buffer.get(),&decomp_size,comp_buffer.get(),comp_size);
-            
-            ros::serialization::IStream stream(decomp_buffer.get(),decomp_size);
-            ros::serialization::Serializer<ROS_TYPE>::read(stream, ros_msg);
-            
-            pub.publish(ros_msg);
+            if (decomp_ret == 0)
+            {
+                ros::serialization::IStream stream(decomp_buffer.get(),decomp_size);
+                ros::serialization::Serializer<ROS_TYPE>::read(stream, ros_msg);
+                
+                pub.publish(ros_msg);
+            }
+            else
+            {
+                std::cerr << "decompression error\n";
+            }
         }
         
         struct ROSPublisher
