@@ -9,6 +9,7 @@
 #include <mutex>
 #include "ros/ros.h"
 #include "ros/timer.h"
+#include <zlib.h>
 
 namespace udp_bridge
 {
@@ -179,17 +180,21 @@ namespace udp_bridge
             uint32_t channel = C;
             bool latch = Latch;
 
-            uint32_t serial_size = ros::serialization::serializationLength(*inmsg);
+            uLong serial_size = ros::serialization::serializationLength(*inmsg);
             boost::shared_array<uint8_t> buffer(new uint8_t[serial_size]);
             ros::serialization::OStream stream(buffer.get(), serial_size);
             ros::serialization::serialize(stream,*inmsg);
+            
+            uLong comp_buffer_size = compressBound(serial_size);
+            boost::shared_array<uint8_t> comp_buffer(new uint8_t[comp_buffer_size]);
+            int com_ret = compress(comp_buffer.get(),&comp_buffer_size,buffer.get(),serial_size);
  
-            std::vector<uint8_t> send_buffer(sizeof(channel)+serial_size);
+            std::vector<uint8_t> send_buffer(sizeof(channel)+sizeof(uLong)+comp_buffer_size);
             //std::cerr << "send buffer size: " << send_buffer.size() << std::endl;
             
             memcpy(send_buffer.data(),&channel,sizeof(channel));
-            memcpy(&(send_buffer.data()[sizeof(channel)]),buffer.get(),serial_size);
-            
+            memcpy(&(send_buffer.data()[sizeof(channel)]),&comp_buffer_size,sizeof(comp_buffer_size));
+            memcpy(&(send_buffer.data()[sizeof(channel)+sizeof(comp_buffer_size)]),comp_buffer.get(),comp_buffer_size);
             {
                 std::lock_guard<std::mutex> lock(m_socket_mutex);
                 if(sendto(m_socket, send_buffer.data(), send_buffer.size(), 0, (sockaddr*)&m_send_address, sizeof(m_send_address)) < 0)
@@ -207,10 +212,17 @@ namespace udp_bridge
         template<typename ROS_TYPE> static void Decode(std::vector<uint8_t> &message, ros::Publisher &pub, Channel channel)
         {
             ROS_TYPE ros_msg;
-            boost::shared_array<uint8_t> buffer(new uint8_t[message.size()-sizeof(uint32_t)]);
-            memcpy(buffer.get(),&(message.data()[sizeof(uint32_t)]),message.size()-sizeof(uint32_t));
+
+            uLong comp_size = message.size()-sizeof(uint32_t)-sizeof(uLong);
+            boost::shared_array<uint8_t> comp_buffer(new uint8_t[comp_size]);
+            memcpy(comp_buffer.get(),&(message.data()[sizeof(uint32_t)+sizeof(uLong)]),comp_size);
             
-            ros::serialization::IStream stream(buffer.get(),message.size());
+            uLong decomp_size = *static_cast<uLong*>(reinterpret_cast<void*>(&(message.data()[sizeof(uint32_t)])));
+;
+            boost::shared_array<uint8_t> decomp_buffer(new uint8_t[decomp_size]);
+            int decomp_ret = uncompress(decomp_buffer.get(),&decomp_size,comp_buffer.get(),comp_size);
+            
+            ros::serialization::IStream stream(decomp_buffer.get(),decomp_size);
             ros::serialization::Serializer<ROS_TYPE>::read(stream, ros_msg);
             
             pub.publish(ros_msg);
