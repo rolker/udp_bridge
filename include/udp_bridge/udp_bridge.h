@@ -196,7 +196,7 @@ namespace udp_bridge
             //std::cerr << "send buffer size: " << send_buffer.size() << std::endl;
             
             memcpy(send_buffer.data(),&channel,sizeof(channel));
-            memcpy(&(send_buffer.data()[sizeof(channel)]),&comp_buffer_size,sizeof(comp_buffer_size));
+            memcpy(&(send_buffer.data()[sizeof(channel)]),&serial_size,sizeof(serial_size));
             memcpy(&(send_buffer.data()[sizeof(channel)+sizeof(comp_buffer_size)]),comp_buffer.get(),comp_buffer_size);
             {
                 std::lock_guard<std::mutex> lock(m_socket_mutex);
