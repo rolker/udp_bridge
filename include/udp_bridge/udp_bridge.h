@@ -189,7 +189,7 @@ namespace udp_bridge
             boost::shared_array<uint8_t> comp_buffer(new uint8_t[comp_buffer_size]);
             int com_ret = compress(comp_buffer.get(),&comp_buffer_size,buffer.get(),serial_size);
             
-            std::cerr << "channel: " << channel << " src size: " << serial_size << " comp size: " << comp_buffer_size << " comp ret: " << com_ret << std::endl;
+            //std::cerr << "channel: " << channel << " src size: " << serial_size << " comp size: " << comp_buffer_size << " comp ret: " << com_ret << std::endl;
             
  
             std::vector<uint8_t> send_buffer(sizeof(channel)+sizeof(uLong)+comp_buffer_size);
@@ -222,8 +222,6 @@ namespace udp_bridge
             
             uLong decomp_size = *static_cast<uLong*>(reinterpret_cast<void*>(&(message.data()[sizeof(uint32_t)])));
             
-            std::cerr << "channel: " << *static_cast<Channel*>(reinterpret_cast<void*>(message.data())) <<  " comp_size: " << comp_size << " decomp_size: " << decomp_size << std::endl;
-;
             boost::shared_array<uint8_t> decomp_buffer(new uint8_t[decomp_size]);
             int decomp_ret = uncompress(decomp_buffer.get(),&decomp_size,comp_buffer.get(),comp_size);
             if (decomp_ret == 0)
@@ -235,7 +233,7 @@ namespace udp_bridge
             }
             else
             {
-                std::cerr << "decompression error\n";
+                std::cerr << "channel: " << *static_cast<Channel*>(reinterpret_cast<void*>(message.data())) << "decompression error\n";
             }
         }
         
