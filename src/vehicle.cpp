@@ -28,16 +28,10 @@ int main(int argc, char **argv)
     if (argc > 1)
         host = argv[1];
   
-    
-    boost::posix_time::ptime now = ros::WallTime::now().toBoost();
-    std::string iso_now = std::regex_replace(boost::posix_time::to_iso_extended_string(now),std::regex(":"),"-");
-    
-    std::string log_filename = "nodes/udp_bridge_vehicle-"+iso_now+".bag";
-    
     int send_port = 4200;
     int receive_port = 4201;
     
-    udp_bridge::UDPROSNode n(host,send_port,receive_port,log_filename);
+    udp_bridge::UDPROSNode n(host,send_port,receive_port);
 
     n.addSender<geographic_msgs::GeoPointStamped, udp_bridge::position>("/position");
     n.addSender<std_msgs::String, udp_bridge::appcast>("/moos/appcast");

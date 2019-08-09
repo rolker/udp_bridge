@@ -39,13 +39,15 @@ namespace udp_bridge
         display,
         darknet_bounding_boxes,
         mbr_margin_avg,
-        mbr_margin_min
+        mbr_margin_min,
+        base_position,
+        base_orientation
     };
 
     class UDPROSNode
     {
     public:
-        UDPROSNode(std::string const &host, int send_port, int receive_port, std::string const & log_filename)
+        UDPROSNode(std::string const &host, int send_port, int receive_port)
         {            
             m_socket = socket(AF_INET, SOCK_DGRAM, 0);
             if(m_socket < 0)
