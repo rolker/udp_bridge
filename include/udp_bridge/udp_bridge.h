@@ -16,12 +16,9 @@ namespace udp_bridge
     enum Channel : uint32_t
     {
         position,
-        appcast,
-        wpt_updates,
         origin,
-        helm_mode,
+        piloting_mode,
         heartbeat,
-        loiter_updates,
         flir_engine,
         heading,
         contact,

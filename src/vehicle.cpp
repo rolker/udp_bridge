@@ -34,7 +34,6 @@ int main(int argc, char **argv)
     udp_bridge::UDPROSNode n(host,send_port,receive_port);
 
     n.addSender<geographic_msgs::GeoPointStamped, udp_bridge::position>("/position");
-    n.addSender<std_msgs::String, udp_bridge::appcast>("/moos/appcast");
     n.addSender<geographic_msgs::GeoPoint,udp_bridge::origin>("/origin");
     n.addSender<marine_msgs::Heartbeat,udp_bridge::heartbeat>("/heartbeat");
     n.addSender<std_msgs::String, udp_bridge::flir_engine>("/flir_engine");
@@ -53,9 +52,7 @@ int main(int argc, char **argv)
     n.addSender<std_msgs::Float32, udp_bridge::mbr_margin_avg>("/mbr/9372/2510/margin_avg");
     n.addSender<std_msgs::Float32, udp_bridge::mbr_margin_min>("/mbr/9372/2510/margin_min");
     
-    n.addReceiver<std_msgs::String,udp_bridge::helm_mode>("/helm_mode");
-    n.addReceiver<std_msgs::String,udp_bridge::wpt_updates>("/moos/wpt_updates");
-    n.addReceiver<std_msgs::String,udp_bridge::loiter_updates>("/moos/loiter_updates");
+    n.addReceiver<std_msgs::String,udp_bridge::piloting_mode>("/project11/piloting_mode");
     n.addReceiver<std_msgs::String,udp_bridge::mission_plan>("/mission_plan");
     n.addReceiver<std_msgs::String,udp_bridge::command>("/project11/command");
     n.addReceiver<marine_msgs::Helm,udp_bridge::helm>("/helm");

@@ -33,15 +33,12 @@ int main(int argc, char **argv)
     
     udp_bridge::UDPROSNode n(host,send_port,receive_port);
     
-    n.addSender<std_msgs::String, udp_bridge::helm_mode>("/udp/helm_mode");
-    n.addSender<std_msgs::String, udp_bridge::wpt_updates>("/udp/wpt_updates");
-    n.addSender<std_msgs::String, udp_bridge::loiter_updates>("/udp/loiter_updates");
+    n.addSender<std_msgs::String, udp_bridge::piloting_mode>("/udp/project11/piloting_mode");
     n.addSender<std_msgs::String, udp_bridge::mission_plan>("/udp/mission_plan");
     n.addSender<std_msgs::String, udp_bridge::command>("/udp/command");
     n.addSender<marine_msgs::Helm, udp_bridge::helm>("/udp/helm");
 
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
-    n.addReceiver<std_msgs::String,udp_bridge::appcast>("/udp/appcast");
     n.addReceiver<geographic_msgs::GeoPoint,udp_bridge::origin>("/udp/origin");
     n.addReceiver<marine_msgs::Heartbeat,udp_bridge::heartbeat>("/udp/heartbeat");
     n.addReceiver<std_msgs::String, udp_bridge::flir_engine>("/udp/flir_engine");
