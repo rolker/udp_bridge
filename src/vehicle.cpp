@@ -36,6 +36,7 @@ int main(int argc, char **argv)
     n.addSender<geographic_msgs::GeoPointStamped, udp_bridge::position>("/position");
     n.addSender<geographic_msgs::GeoPoint,udp_bridge::origin>("/origin");
     n.addSender<marine_msgs::Heartbeat,udp_bridge::heartbeat>("/heartbeat");
+    n.addSender<marine_msgs::Heartbeat,udp_bridge::mission_status>("/project11/mission_manager/status");
     n.addSender<std_msgs::String, udp_bridge::flir_engine>("/flir_engine");
     n.addSender<marine_msgs::NavEulerStamped, udp_bridge::heading>("/heading");
     n.addSender<marine_msgs::Contact, udp_bridge::contact>("/contact");

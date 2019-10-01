@@ -38,7 +38,8 @@ namespace udp_bridge
         mbr_margin_avg,
         mbr_margin_min,
         base_position,
-        base_orientation
+        base_orientation,
+        mission_status
     };
 
     class UDPROSNode

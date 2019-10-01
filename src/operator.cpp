@@ -41,6 +41,7 @@ int main(int argc, char **argv)
     n.addReceiver<geographic_msgs::GeoPointStamped,udp_bridge::position>("/udp/position");
     n.addReceiver<geographic_msgs::GeoPoint,udp_bridge::origin>("/udp/origin");
     n.addReceiver<marine_msgs::Heartbeat,udp_bridge::heartbeat>("/udp/heartbeat");
+    n.addReceiver<marine_msgs::Heartbeat,udp_bridge::mission_status>("/udp/project11/mission_manager/status");
     n.addReceiver<std_msgs::String, udp_bridge::flir_engine>("/udp/flir_engine");
     n.addReceiver<marine_msgs::NavEulerStamped, udp_bridge::heading>("/udp/heading");
     n.addReceiver<marine_msgs::Contact, udp_bridge::contact>("/udp/contact");
