@@ -1,5 +1,5 @@
 #include "udp_bridge/udp_bridge.h"
-#include <sensor_msgs/Image.h>
+#include <sensor_msgs/CompressedImage.h>
 
 std::map<udp_bridge::Channel,std::string> udp_bridge::UDPROSNode::topic_map;
 
@@ -16,7 +16,7 @@ int main(int argc, char **argv)
     
     udp_bridge::UDPROSNode n(host,send_port,receive_port);
     
-    n.addReceiver<sensor_msgs::Image,udp_bridge::johnny5_images>("/udp/camera_johnny5/image_raw");
+    n.addReceiver<sensor_msgs::CompressedImage,udp_bridge::johnny5_images>("/udp/camera_johnny5/image_raw/compressed");
     
     n.spin();
 

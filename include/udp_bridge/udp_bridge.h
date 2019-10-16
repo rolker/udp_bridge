@@ -204,7 +204,7 @@ namespace udp_bridge
                 if(sendto(m_socket, send_buffer.data(), send_buffer.size(), 0, (sockaddr*)&m_send_address, sizeof(m_send_address)) < 0)
                 {
                     ROS_ERROR("sento fail");
-                    std::cerr << "buffer size: " << send_buffer.size();
+                    std::cerr << "buffer size: " << send_buffer.size() << std::endl;
                 }
             }
             if(latch)
