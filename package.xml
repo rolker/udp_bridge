@@ -49,29 +49,16 @@
   <!-- Use doc_depend for packages you need only for building documentation: -->
   <!--   <doc_depend>doxygen</doc_depend> -->
   <buildtool_depend>catkin</buildtool_depend>
-  <build_depend>geographic_msgs</build_depend>
-  <build_depend>geographic_visualization_msgs</build_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <build_depend>marine_msgs</build_depend>
-  <build_depend>roscpp</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>project11</build_depend>
-  <build_depend>diagnostic_msgs</build_depend>
-  <build_export_depend>geographic_msgs</build_export_depend>
-  <build_export_depend>geometry_msgs</build_export_depend>
-  <build_export_depend>marine_msgs</build_export_depend>
-  <build_export_depend>roscpp</build_export_depend>
-  <build_export_depend>std_msgs</build_export_depend>
-  <build_export_depend>project11</build_export_depend>
-  <build_export_depend>diagnostic_msgs</build_export_depend>
-  <exec_depend>geographic_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>marine_msgs</exec_depend>
-  <exec_depend>roscpp</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>project11</exec_depend>
-  <exec_depend>diagnostic_msgs</exec_depend>
-
+  
+  <depend>geographic_visualization_msgs</depend>
+  <depend>geographic_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>marine_msgs</depend>
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>project11</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>darknet_ros_msgs</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>
