@@ -12,9 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   project11
   diagnostic_msgs
-  darknet_ros_msgs
   geographic_visualization_msgs
-  darknet_ros_msgs
 )
 
 find_package(ZLIB REQUIRED)

@@ -34,7 +34,6 @@ namespace udp_bridge
         radar,
         helm,
         display,
-        darknet_bounding_boxes,
         mbr_margin_avg,
         mbr_margin_min,
         base_position,

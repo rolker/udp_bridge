@@ -20,7 +20,6 @@
   <depend>std_msgs</depend>
   <depend>project11</depend>
   <depend>diagnostic_msgs</depend>
-  <depend>darknet_ros_msgs</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>
