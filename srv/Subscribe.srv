@@ -1,0 +1,6 @@
+string remote_host
+uint16 remote_port
+string remote_topic
+string local_topic
+uint32 queue_size
+---

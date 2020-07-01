@@ -1,0 +1,8 @@
+<launch>
+    <rosparam command="load" file="$(find project11)/parameters/vehicle.yaml" />
+    <node pkg="udp_bridge" type="udp_bridge_node" name="udp_bridge_vehicle" ns="vehicle" output="screen"/>
+    <node pkg="udp_bridge" type="udp_bridge_node" name="udp_bridge_operator" ns="operator" args="_port:=4201" output="screen"/>
+    <node name="rqt_gui" pkg="rqt_gui" type="rqt_gui"/>
+    <node pkg="asv_sim" type="asv_sim_node.py" name="asv_sim"/>
+</launch>
+
