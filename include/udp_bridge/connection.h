@@ -17,7 +17,7 @@ public:
     ~Connection();
     
     void send(std::vector<uint8_t> const &data);
-    
+    std::string str() const;
 private:
     friend class ConnectionManager;
     

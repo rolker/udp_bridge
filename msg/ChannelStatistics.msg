@@ -1,0 +1,10 @@
+string source_topic
+string destination_topic
+string destination_host
+float32 message_average_size_bytes
+float32 packet_average_size_bytes
+float32 compressed_average_size_bytes
+float32 messages_per_second
+float32 message_bytes_per_second
+float32 packet_bytes_per_second
+float32 compressed_bytes_per_second

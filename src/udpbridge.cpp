@@ -6,7 +6,7 @@
 #include "udp_bridge/RemoteSubscribeInternal.h"
 #include "udp_bridge/RemoteAdvertiseInternal.h"
 #include "udp_bridge/MessageInternal.h"
-
+#include "udp_bridge/ChannelStatisticsArray.h"
 
 namespace udp_bridge
 {
@@ -51,6 +51,8 @@ void UDPBridge::spin()
     ros::ServiceServer susbcribe_service = private_nodeHandle.advertiseService("remote_subscribe", &UDPBridge::remoteSubscribe, this);
     ros::ServiceServer advertise_service = private_nodeHandle.advertiseService("remote_advertise", &UDPBridge::remoteAdvertise, this);
     
+    m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
+    
     XmlRpc::XmlRpcValue remotes_dict;
     if(private_nodeHandle.getParam("remotes",remotes_dict))
     {
@@ -70,6 +72,8 @@ void UDPBridge::spin()
             }
         }
     }
+    
+    m_statsReportTimer = m_nodeHandle.createTimer(ros::Duration(1.0), &UDPBridge::statsReportCallback, this);
     
     while(ros::ok())
     {   
@@ -114,7 +118,7 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
     ros::serialization::OStream stream(message.data.data(), msg->size());
     msg->write(stream);
     
-    for (auto remote:  m_subscribers[topic_name].remotes)
+    for (auto &remote:  m_subscribers[topic_name].remotes)
     {
         auto c = remote.connection.lock();
         if(c)
@@ -130,6 +134,13 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
         
             std::vector<uint8_t> send_buffer = compress(buffer);
             c->send(send_buffer);
+            
+            SizeData sd;
+            sd.message_size = msg->size();
+            sd.packet_size = buffer.size();
+            sd.compressed_packet_size = send_buffer.size();
+            sd.timestamp = ros::Time::now();
+            remote.size_statistics.push_back(sd);
         }
     }
 }
@@ -271,6 +282,55 @@ bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bri
     send(remote_request, connection, PacketType::AdvertiseRequest);
 
     return true;
+}
+
+void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
+{
+    ros::Time now = ros::Time::now();
+    ChannelStatisticsArray csa;
+    for(auto &subscriber: m_subscribers)
+    {
+        for(auto &remote: subscriber.second.remotes)
+        {
+            while (!remote.size_statistics.empty() && now - remote.size_statistics.front().timestamp > ros::Duration(10))
+                remote.size_statistics.pop_front();
+            
+            if(remote.size_statistics.size() > 1 && remote.size_statistics.back().timestamp - remote.size_statistics.front().timestamp >= ros::Duration(1.0))
+            {
+                auto connection = remote.connection.lock();
+                if(connection)
+                {
+                    ChannelStatistics cs;
+                    cs.source_topic = subscriber.first;
+                    cs.destination_topic = remote.destination_topic;
+                    cs.destination_host = connection->str();
+                    
+                    int total_message_size = 0;
+                    int total_packet_size = 0;
+                    int total_compressed_packet_size = 0;
+                    
+                    for(auto data: remote.size_statistics)
+                    {
+                        total_message_size += data.message_size;
+                        total_packet_size += data.packet_size;
+                        total_compressed_packet_size += data.compressed_packet_size;
+                    }
+                    
+                    cs.message_average_size_bytes = total_message_size/float(remote.size_statistics.size());
+                    cs.packet_average_size_bytes = total_packet_size/float(remote.size_statistics.size());
+                    cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.size_statistics.size());
+                    double deltat = (remote.size_statistics.back().timestamp - remote.size_statistics.front().timestamp).toSec();
+                    cs.messages_per_second = (remote.size_statistics.size()-1)/deltat;
+                    cs.message_bytes_per_second = (total_message_size-remote.size_statistics.front().message_size)/deltat;
+                    cs.packet_bytes_per_second = (total_packet_size-remote.size_statistics.front().packet_size)/deltat;
+                    cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.size_statistics.front().compressed_packet_size)/deltat;
+                    csa.channels.push_back(cs);
+                }
+                
+            }
+        }
+    }
+    m_channelInfoPublisher.publish(csa);
 }
 
 } // namespace udp_bridge

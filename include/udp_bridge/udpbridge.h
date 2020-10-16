@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include "connection.h"
 #include "packet.h"
+#include <deque>
 
 namespace udp_bridge
 {
@@ -43,10 +44,24 @@ private:
 
     template <typename MessageType> void send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType);
     
+    /// Timer callback where data rate stats are reported
+    void statsReportCallback(const ros::TimerEvent&);
+    
 
     int m_listen_socket;
     int m_port {4200};
     ros::NodeHandle m_nodeHandle;
+    
+    ros::Timer m_statsReportTimer;
+    ros::Publisher m_channelInfoPublisher;
+    
+    struct SizeData
+    {
+        int message_size;
+        int packet_size;
+        int compressed_packet_size;
+        ros::Time timestamp;
+    };
 
     struct RemoteDetails
     {
@@ -55,6 +70,8 @@ private:
         
         std::string destination_topic;
         std::weak_ptr<Connection> connection;
+        
+        std::deque<SizeData> size_statistics;
     };
     
     struct SubscriberDetails

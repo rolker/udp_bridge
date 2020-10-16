@@ -5,6 +5,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <cstring>
+#include <sstream>
 
 namespace udp_bridge
 {
@@ -55,6 +56,14 @@ void Connection::send(std::vector<uint8_t> const &data)
 {
     ::send(m_socket, data.data(), data.size(), 0);
 }
+
+std::string Connection::str() const
+{
+    std::stringstream ret;
+    ret << m_host << ":" << m_port;
+    return ret.str();
+}
+
 
 
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port)
