@@ -7,6 +7,7 @@
 #include "udp_bridge/RemoteAdvertiseInternal.h"
 #include "udp_bridge/MessageInternal.h"
 #include "udp_bridge/ChannelStatisticsArray.h"
+#include "udp_bridge/ChannelInfo.h"
 
 namespace udp_bridge
 {
@@ -109,30 +110,47 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
     MessageInternal message;
     
     message.source_topic = topic_name;
-    message.datatype = msg->getDataType();
-    message.md5sum = msg->getMD5Sum();
-    message.message_definition = msg->getMessageDefinition();
+
+    bool sendInfo = false;    
+    
+    ChannelInfo ci;
+    
+    ros::Time now = ros::Time::now();
+    if(now - m_channelInfoSentTimes[topic_name] > ros::Duration(5.0))
+    {
+        sendInfo = true;
+        ci.source_topic = topic_name;
+        ci.datatype = msg->getDataType();
+        ci.md5sum = msg->getMD5Sum();
+        ci.message_definition = msg->getMessageDefinition();
+        m_channelInfoSentTimes[topic_name] = now;
+    }
     
     message.data.resize(msg->size());
     
     ros::serialization::OStream stream(message.data.data(), msg->size());
     msg->write(stream);
+
+    auto msg_size = ros::serialization::serializationLength(message);
+
+    std::vector<uint8_t> buffer(sizeof(PacketHeader)+msg_size);
+    Packet * packet = reinterpret_cast<Packet*>(buffer.data());
+    ros::serialization::OStream message_stream(packet->data, msg_size);
+    ros::serialization::serialize(message_stream,message);
+
+    std::vector<uint8_t> send_buffer = compress(buffer);
     
     for (auto &remote:  m_subscribers[topic_name].remotes)
     {
         auto c = remote.connection.lock();
         if(c)
         {
-            message.destination_topic = remote.destination_topic;
+            if(sendInfo)
+            {
+                ci.destination_topic = remote.destination_topic;
+                send(ci, c, PacketType::ChannelInfo);
+            }
         
-            auto msg_size = ros::serialization::serializationLength(message);
-        
-            std::vector<uint8_t> buffer(sizeof(PacketHeader)+msg_size);
-            Packet * packet = reinterpret_cast<Packet*>(buffer.data());
-            ros::serialization::OStream message_stream(packet->data, msg_size);
-            ros::serialization::serialize(message_stream,message);
-        
-            std::vector<uint8_t> send_buffer = compress(buffer);
             c->send(send_buffer);
             
             SizeData sd;
@@ -151,7 +169,7 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const sockaddr_in &r
     switch(packet->type)
     {
         case PacketType::Data:
-            decodeData(message);
+            decodeData(message, remote_address);
             break;
         case PacketType::Compressed:
             decode(uncompress(message), remote_address);
@@ -162,10 +180,13 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const sockaddr_in &r
         case PacketType::AdvertiseRequest:
             decodeAdvertiseRequest(message);
             break;
+        case PacketType::ChannelInfo:
+            decodeChannelInfo(message, remote_address);
+            break;
     }
 }
 
-void UDPBridge::decodeData(std::vector<uint8_t> const &message)
+void UDPBridge::decodeData(std::vector<uint8_t> const &message, const sockaddr_in &remote_address)
 {
     const Packet *packet = reinterpret_cast<const Packet*>(message.data());
     auto payload_size = message.size() - sizeof(PacketHeader);
@@ -175,22 +196,38 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message)
     ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),payload_size);
     ros::serialization::Serializer<MessageInternal>::read(stream, outer_message);
     
-    topic_tools::ShapeShifter ss;
-    ss.morph(outer_message.md5sum, outer_message.datatype, outer_message.message_definition, "");
-    ros::serialization::IStream message_stream(outer_message.data.data(), outer_message.data.size());
-    ss.read(message_stream);
-    ROS_DEBUG_STREAM("type: " << ss.getDataType());
-    ROS_DEBUG_STREAM("MD5Sum: " << ss.getMD5Sum());
-    ROS_DEBUG_STREAM("definition: " << ss.getMessageDefinition());
-    ROS_DEBUG_STREAM("size: " << ss.size());
+    std::string info_label = addressToDotted(remote_address)+outer_message.source_topic;
+    if(m_channelInfos.find(info_label) != m_channelInfos.end())
+    {    
+        topic_tools::ShapeShifter ss;
+        ss.morph(m_channelInfos[info_label].md5sum, m_channelInfos[info_label].datatype, m_channelInfos[info_label].message_definition, "");
+        ros::serialization::IStream message_stream(outer_message.data.data(), outer_message.data.size());
+        ss.read(message_stream);
+        ROS_DEBUG_STREAM("type: " << ss.getDataType());
+        ROS_DEBUG_STREAM("MD5Sum: " << ss.getMD5Sum());
+        ROS_DEBUG_STREAM("definition: " << ss.getMessageDefinition());
+        ROS_DEBUG_STREAM("size: " << ss.size());
+        
+        
+        // publish, but first advertise if publisher not present
+        if (m_publishers.find(m_channelInfos[info_label].destination_topic) == m_publishers.end())
+            m_publishers[m_channelInfos[info_label].destination_topic] = ss.advertise(m_nodeHandle, m_channelInfos[info_label].destination_topic, 1);
+        
+        m_publishers[m_channelInfos[info_label].destination_topic].publish(ss);
+    }
     
+}
+
+void UDPBridge::decodeChannelInfo(std::vector<uint8_t> const &message, const sockaddr_in &remote_address)
+{
+    const Packet* packet = reinterpret_cast<const Packet*>(message.data());
     
-    // publish, but first advertise if publisher not present
-    if (m_publishers.find(outer_message.destination_topic) == m_publishers.end())
-        m_publishers[outer_message.destination_topic] = ss.advertise(m_nodeHandle, outer_message.destination_topic, 1);
+    ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
     
-    m_publishers[outer_message.destination_topic].publish(ss);
+    ChannelInfo channel_info;
+    ros::serialization::Serializer<ChannelInfo>::read(stream, channel_info);
     
+    m_channelInfos[addressToDotted(remote_address)+channel_info.source_topic] = channel_info;
 }
 
 const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, std::shared_ptr<Connection> connection)

@@ -3,6 +3,7 @@
 
 #include <topic_tools/shape_shifter.h>
 #include "udp_bridge/Subscribe.h"
+#include "udp_bridge/ChannelInfo.h"
 #include <netinet/in.h>
 #include "connection.h"
 #include "packet.h"
@@ -28,7 +29,10 @@ private:
     void decode(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
     
     /// Decodes data from a remote subscription recieved over the UDP link.
-    void decodeData(std::vector<uint8_t> const &message);
+    void decodeData(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
+    
+    /// Decodes metadata used to decode remote messages.
+    void decodeChannelInfo(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
     
     /// Decodes a request from a remote node to subscribe to a local topic.
     void decodeSubscribeRequest(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
@@ -82,6 +86,8 @@ private:
     
     std::map<std::string,SubscriberDetails> m_subscribers;
     std::map<std::string,ros::Publisher> m_publishers;
+    std::map<std::string,ros::Time> m_channelInfoSentTimes;
+    std::map<std::string,ChannelInfo> m_channelInfos;
     
     SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, std::shared_ptr<Connection> connection);
     
