@@ -69,10 +69,14 @@ private:
 
     struct RemoteDetails
     {
-        RemoteDetails(std::string const &destination_topic, std::weak_ptr<Connection> connection):destination_topic(destination_topic),connection(connection)
+        RemoteDetails(){}
+        RemoteDetails(std::string const &destination_topic, float period, std::weak_ptr<Connection> connection):destination_topic(destination_topic),period(period),connection(connection)
         {}
         
         std::string destination_topic;
+        float period;
+        ros::Time last_sent_time;
+        
         std::weak_ptr<Connection> connection;
         
         std::deque<SizeData> size_statistics;
@@ -81,7 +85,7 @@ private:
     struct SubscriberDetails
     {
         ros::Subscriber subscriber;
-        std::vector<RemoteDetails> remotes;
+        std::map<std::string,RemoteDetails> remotes;
     };
     
     std::map<std::string,SubscriberDetails> m_subscribers;
@@ -89,7 +93,7 @@ private:
     std::map<std::string,ros::Time> m_channelInfoSentTimes;
     std::map<std::string,ChannelInfo> m_channelInfos;
     
-    SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, std::shared_ptr<Connection> connection);
+    SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection);
     
     ConnectionManager m_connectionManager;
 };

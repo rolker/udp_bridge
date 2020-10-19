@@ -68,7 +68,13 @@ void UDPBridge::spin()
                 for(int i = 0; i < remote.second["topics"].size(); i++)
                 {
                     auto topic = remote.second["topics"][i];
-                    addSubscriberConnection(topic["source"], topic["destination"], 1, connection);
+                    int queue_size = 1;
+                    if (topic.hasMember("queue_size"))
+                        queue_size = topic["queue_size"];
+                    double period = 0.0;
+                    if (topic.hasMember("period"))
+                        period = topic["period"];
+                    addSubscriberConnection(topic["source"], topic["destination"], 1, period, connection);
                 }
             }
         }
@@ -142,23 +148,30 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
     
     for (auto &remote:  m_subscribers[topic_name].remotes)
     {
-        auto c = remote.connection.lock();
+        auto c = remote.second.connection.lock();
         if(c)
         {
             if(sendInfo)
             {
-                ci.destination_topic = remote.destination_topic;
+                ci.destination_topic = remote.second.destination_topic;
                 send(ci, c, PacketType::ChannelInfo);
             }
-        
-            c->send(send_buffer);
             
-            SizeData sd;
-            sd.message_size = msg->size();
-            sd.packet_size = buffer.size();
-            sd.compressed_packet_size = send_buffer.size();
-            sd.timestamp = ros::Time::now();
-            remote.size_statistics.push_back(sd);
+            if (remote.second.period >= 0)
+            {
+                if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
+                {
+                    c->send(send_buffer);
+                    
+                    SizeData sd;
+                    sd.message_size = msg->size();
+                    sd.packet_size = buffer.size();
+                    sd.compressed_packet_size = send_buffer.size();
+                    sd.timestamp = ros::Time::now();
+                    remote.second.size_statistics.push_back(sd);
+                    remote.second.last_sent_time = now;
+                }
+            }
         }
     }
 }
@@ -230,7 +243,7 @@ void UDPBridge::decodeChannelInfo(std::vector<uint8_t> const &message, const soc
     m_channelInfos[addressToDotted(remote_address)+channel_info.source_topic] = channel_info;
 }
 
-const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, std::shared_ptr<Connection> connection)
+const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection)
 {
     if(connection)
     {
@@ -240,10 +253,12 @@ const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::stri
             {
                 this->callback(msg, source_topic);
             };
+            
+            queue_size = std::max(queue_size, uint32_t(1));
 
             m_subscribers[source_topic].subscriber = m_nodeHandle.subscribe(source_topic, queue_size, cb);
         }
-        m_subscribers[source_topic].remotes.push_back(RemoteDetails(destination_topic,connection));
+        m_subscribers[source_topic].remotes[connection->str()] = RemoteDetails(destination_topic, period, connection);
         return &m_subscribers[source_topic];
     }    
     return nullptr;
@@ -259,7 +274,7 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
     ros::serialization::Serializer<RemoteSubscribeInternal>::read(stream, remote_request);
 
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(addressToDotted(remote_address), remote_request.port);
-    auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, connection);
+    auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, connection);
     
 }
 
@@ -292,13 +307,14 @@ template void UDPBridge::send(RemoteSubscribeInternal const &message, std::share
 
 bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response)
 {
-    ROS_INFO_STREAM("subscribe: remote: " << request.remote_host << ":" << request.remote_port << " remote topic: " << request.remote_topic << " local topic: " << request.local_topic);
+    ROS_INFO_STREAM("subscribe: remote: " << request.remote_host << ":" << request.remote_port << " source topic: " << request.source_topic << " destination topic: " << request.destination_topic);
     
     udp_bridge::RemoteSubscribeInternal remote_request;
     remote_request.port = m_port;
-    remote_request.source_topic = request.remote_topic;
-    remote_request.destination_topic = request.local_topic;
+    remote_request.source_topic = request.source_topic;
+    remote_request.destination_topic = request.destination_topic;
     remote_request.queue_size = request.queue_size;
+    remote_request.period = request.period;
 
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.remote_host, request.remote_port);
     send(remote_request, connection, PacketType::SubscribeRequest);
@@ -309,14 +325,7 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
 bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response)
 {
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.remote_host, request.remote_port);
-    auto subscription = addSubscriberConnection(request.local_topic, request.remote_topic, request.queue_size, connection);
-
-    RemoteAdvertiseInternal remote_request;
-    remote_request.destination_topic = request.remote_topic;
-    remote_request.source_topic = request.local_topic;
-    remote_request.queue_size = request.queue_size;
-    
-    send(remote_request, connection, PacketType::AdvertiseRequest);
+    auto subscription = addSubscriberConnection(request.source_topic, request.destination_topic, request.queue_size, request.period, connection);
 
     return true;
 }
@@ -329,38 +338,38 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
     {
         for(auto &remote: subscriber.second.remotes)
         {
-            while (!remote.size_statistics.empty() && now - remote.size_statistics.front().timestamp > ros::Duration(10))
-                remote.size_statistics.pop_front();
+            while (!remote.second.size_statistics.empty() && now - remote.second.size_statistics.front().timestamp > ros::Duration(10))
+                remote.second.size_statistics.pop_front();
             
-            if(remote.size_statistics.size() > 1 && remote.size_statistics.back().timestamp - remote.size_statistics.front().timestamp >= ros::Duration(1.0))
+            if(remote.second.size_statistics.size() > 1 && remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp >= ros::Duration(1.0))
             {
-                auto connection = remote.connection.lock();
+                auto connection = remote.second.connection.lock();
                 if(connection)
                 {
                     ChannelStatistics cs;
                     cs.source_topic = subscriber.first;
-                    cs.destination_topic = remote.destination_topic;
+                    cs.destination_topic = remote.second.destination_topic;
                     cs.destination_host = connection->str();
                     
                     int total_message_size = 0;
                     int total_packet_size = 0;
                     int total_compressed_packet_size = 0;
                     
-                    for(auto data: remote.size_statistics)
+                    for(auto data: remote.second.size_statistics)
                     {
                         total_message_size += data.message_size;
                         total_packet_size += data.packet_size;
                         total_compressed_packet_size += data.compressed_packet_size;
                     }
                     
-                    cs.message_average_size_bytes = total_message_size/float(remote.size_statistics.size());
-                    cs.packet_average_size_bytes = total_packet_size/float(remote.size_statistics.size());
-                    cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.size_statistics.size());
-                    double deltat = (remote.size_statistics.back().timestamp - remote.size_statistics.front().timestamp).toSec();
-                    cs.messages_per_second = (remote.size_statistics.size()-1)/deltat;
-                    cs.message_bytes_per_second = (total_message_size-remote.size_statistics.front().message_size)/deltat;
-                    cs.packet_bytes_per_second = (total_packet_size-remote.size_statistics.front().packet_size)/deltat;
-                    cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.size_statistics.front().compressed_packet_size)/deltat;
+                    cs.message_average_size_bytes = total_message_size/float(remote.second.size_statistics.size());
+                    cs.packet_average_size_bytes = total_packet_size/float(remote.second.size_statistics.size());
+                    cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size_statistics.size());
+                    double deltat = (remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp).toSec();
+                    cs.messages_per_second = (remote.second.size_statistics.size()-1)/deltat;
+                    cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
+                    cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
+                    cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
                     csa.channels.push_back(cs);
                 }
                 

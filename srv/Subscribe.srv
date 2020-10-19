@@ -1,6 +1,10 @@
 string remote_host
 uint16 remote_port
-string remote_topic
-string local_topic
+string source_topic
+string destination_topic
 uint32 queue_size
+
+# Allows limiting message rate by specifying minimum period in seconds between sent messages
+# 0 -> no limits, negative -> no messages sent, positive -> time in seconds between sent messages
+float32 period
 ---
