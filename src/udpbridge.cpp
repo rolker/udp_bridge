@@ -74,7 +74,11 @@ void UDPBridge::spin()
                     double period = 0.0;
                     if (topic.hasMember("period"))
                         period = topic["period"];
-                    addSubscriberConnection(topic["source"], topic["destination"], 1, period, connection);
+                    std::string source = topic["source"];
+                    std::string destination = source;
+                    if (topic.hasMember("destination"))
+                      destination = std::string(topic["destination"]);
+                    addSubscriberConnection(source, destination, 1, period, connection);
                 }
             }
         }

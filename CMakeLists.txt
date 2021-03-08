@@ -5,15 +5,8 @@ project(udp_bridge)
 add_compile_options(-std=c++11)
 
 find_package(catkin REQUIRED COMPONENTS
-    roscpp
-    message_generation
-  geographic_msgs
-  geometry_msgs
-  marine_msgs
-  std_msgs
-  project11
-  diagnostic_msgs
-  geographic_visualization_msgs
+  roscpp
+  message_generation
   topic_tools
 )
 
@@ -59,32 +52,12 @@ set(UDP_BRIDGE_SOURCES
 
 add_executable(udp_bridge_node src/udp_bridge_node.cpp ${UDP_BRIDGE_SOURCES})
 add_executable(udp_bridge_ui src/udpbridge_ui.cpp)
-add_executable(operator_node src/operator.cpp)
-add_executable(vehicle_node src/vehicle.cpp)
-add_executable(remote_server_node src/remote_server.cpp)
-add_executable(remote_client_node src/remote_client.cpp)
-add_executable(johnny5_server_node src/johnny5_server.cpp)
-add_executable(johnny5_client_node src/johnny5_client.cpp)
-add_executable(position_server_node src/position_server.cpp)
-add_executable(position_client_node src/position_client.cpp)
 
 add_dependencies(${PROJECT_NAME}_node ${PROJECT_NAME}_generate_messages_cpp)
 add_dependencies(${PROJECT_NAME}_ui ${PROJECT_NAME}_generate_messages_cpp)
-add_dependencies(operator_node geographic_visualization_msgs_generate_messages_cpp)
-add_dependencies(vehicle_node geographic_visualization_msgs_generate_messages_cpp)
-add_dependencies(remote_server_node geographic_visualization_msgs_generate_messages_cpp)
-add_dependencies(remote_client_node geographic_visualization_msgs_generate_messages_cpp)
 
 target_link_libraries(udp_bridge_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
 target_link_libraries(udp_bridge_ui ${catkin_LIBRARIES})
-target_link_libraries(operator_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(vehicle_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(remote_server_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(remote_client_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(johnny5_server_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(johnny5_client_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(position_server_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(position_client_node ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
     find_package(rostest REQUIRED)
