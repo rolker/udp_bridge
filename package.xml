@@ -12,14 +12,6 @@
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
   <depend>roscpp</depend>
-  
-  <depend>geographic_visualization_msgs</depend>
-  <depend>geographic_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>marine_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>project11</depend>
-  <depend>diagnostic_msgs</depend>
   <depend>topic_tools</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
