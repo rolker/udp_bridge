@@ -52,9 +52,12 @@ Connection::~Connection()
     close(m_socket);
 }
 
-void Connection::send(std::vector<uint8_t> const &data)
+int Connection::send(std::vector<uint8_t> const &data)
 {
-    ::send(m_socket, data.data(), data.size(), 0);
+  int e = ::send(m_socket, data.data(), data.size(), 0);
+  if(e == -1)
+    return errno;
+  return 0;
 }
 
 std::string Connection::str() const

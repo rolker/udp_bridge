@@ -166,7 +166,9 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
             {
                 if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
                 {
-                    c->send(send_buffer);
+                    int e = c->send(send_buffer);
+                    if(e != 0)
+                      ROS_WARN_STREAM("udp buffer: " << strerror(e));
                     
                     SizeData sd;
                     sd.message_size = msg->size();

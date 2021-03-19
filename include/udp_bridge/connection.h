@@ -16,7 +16,8 @@ class Connection
 public:
     ~Connection();
     
-    void send(std::vector<uint8_t> const &data);
+    // return 0 if ok, errno if error occured
+    int send(std::vector<uint8_t> const &data);
     std::string str() const;
 private:
     friend class ConnectionManager;
