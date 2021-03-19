@@ -75,6 +75,7 @@ void UDPBridge::spin()
                     if (topic.hasMember("period"))
                         period = topic["period"];
                     std::string source = topic["source"];
+                    source = ros::names::resolve(source);
                     std::string destination = source;
                     if (topic.hasMember("destination"))
                       destination = std::string(topic["destination"]);
