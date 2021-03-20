@@ -4,7 +4,7 @@
 
 void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
 {
-    std::vector<std::string> headers {"source topic", "remote host", "   messages", "message data", " packet data", " compressed", "  ratio", "send error"};
+    std::vector<std::string> headers {"source topic", "remote host", "     messages", "message data", " packet data", "  compressed", "  ratio", "send error"};
     std::vector<int> column_widths;
     for(auto h: headers)
         column_widths.push_back(h.size());
@@ -18,6 +18,7 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
     std::cout << std::left;
     for(int i = 0; i < headers.size(); i++)
         std::cout << std::setw(column_widths[i]+1) << headers[i];
+    std::cout << std::endl;
 
     std::vector<float> totals {0.0, 0.0, 0.0, 0.0};
     
