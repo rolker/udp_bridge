@@ -48,6 +48,9 @@ private:
     bool remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response);
 
     template <typename MessageType> void send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType);
+
+    /// Sends the raw data to the connection. Returns true on success.
+    bool send(const std::vector<uint8_t>& data, std::shared_ptr<Connection> connection);
     
     /// Timer callback where data rate stats are reported
     void statsReportCallback(const ros::TimerEvent&);
@@ -70,6 +73,7 @@ private:
     
     struct SizeData
     {
+        bool sent_success;
         int message_size;
         int packet_size;
         int compressed_packet_size;

@@ -177,21 +177,15 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
             {
                 if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
                 {
+                    bool success = true;
                     if(fragments.size())
                         for(const auto& f: fragments)
-                        {
-                            int e = c->send(f);
-                            if(e != 0)
-                                ROS_WARN_STREAM("udp buffer: " << strerror(e));
-                        }
+                            success = success && send(f,c);
                     else
-                    {
-                        int e = c->send(send_buffer);
-                        if(e != 0)
-                            ROS_WARN_STREAM("udp buffer: " << strerror(e));
-                    }
+                        success = send(send_buffer,c);
                     
                     SizeData sd;
+                    sd.sent_success = success;
                     sd.message_size = msg->size();
                     sd.packet_size = buffer.size();
                     sd.compressed_packet_size = send_buffer.size();
@@ -249,10 +243,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
         ss.morph(m_channelInfos[info_label].md5sum, m_channelInfos[info_label].datatype, m_channelInfos[info_label].message_definition, "");
         ros::serialization::IStream message_stream(outer_message.data.data(), outer_message.data.size());
         ss.read(message_stream);
-        ROS_DEBUG_STREAM("type: " << ss.getDataType());
-        ROS_DEBUG_STREAM("MD5Sum: " << ss.getMD5Sum());
-        ROS_DEBUG_STREAM("definition: " << ss.getMessageDefinition());
-        ROS_DEBUG_STREAM("size: " << ss.size());
+        ROS_DEBUG_STREAM("type: " << ss.getDataType() << "size: " << ss.size());
         
         
         // publish, but first advertise if publisher not present
@@ -261,6 +252,8 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
         
         m_publishers[m_channelInfos[info_label].destination_topic].publish(ss);
     }
+    else
+        ROS_DEBUG_STREAM("no info yet for " << info_label);
     
 }
 
@@ -321,6 +314,15 @@ void UDPBridge::decodeAdvertiseRequest(std::vector<uint8_t> const &message)
     ros::serialization::Serializer<RemoteAdvertiseInternal>::read(stream, remote_request);
 }
 
+bool UDPBridge::send(const std::vector<uint8_t>& data, std::shared_ptr<Connection> connection)
+{
+    int e = connection->send(data);
+    if(e == 0)
+        return true;
+    ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << strerror(e));
+    return false;
+}
+
 template <typename MessageType> void UDPBridge::send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType)
 {
     auto serial_size = ros::serialization::serializationLength(message);
@@ -332,8 +334,13 @@ template <typename MessageType> void UDPBridge::send(MessageType const &message,
     packet->type = packetType;
     
     auto compressed_packet_data = compress(packet_data);
-    
-    connection->send(compressed_packet_data);
+    auto fragments = fragment(compressed_packet_data);
+
+    if(fragments.size())
+        for(const auto& f: fragments)
+            send(f,connection);
+    else
+        send(compressed_packet_data, connection);
 }
 
 template void UDPBridge::send(RemoteSubscribeInternal const &message, std::shared_ptr<Connection> connection, PacketType packetType);
@@ -387,12 +394,15 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
                     int total_message_size = 0;
                     int total_packet_size = 0;
                     int total_compressed_packet_size = 0;
+                    int total_sent_success = 0;
                     
                     for(auto data: remote.second.size_statistics)
                     {
                         total_message_size += data.message_size;
                         total_packet_size += data.packet_size;
                         total_compressed_packet_size += data.compressed_packet_size;
+                        if(data.sent_success)
+                            total_sent_success++;
                     }
                     
                     cs.message_average_size_bytes = total_message_size/float(remote.second.size_statistics.size());
@@ -400,6 +410,7 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
                     cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size_statistics.size());
                     double deltat = (remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp).toSec();
                     cs.messages_per_second = (remote.second.size_statistics.size()-1)/deltat;
+                    cs.send_success_rate = total_sent_success/float(remote.second.size_statistics.size());
                     cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
                     cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
                     cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
@@ -417,7 +428,6 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
     std::vector<std::vector<uint8_t> > ret;
 
     unsigned long max_fragment_payload_size = m_max_packet_size-sizeof(FragmentHeader);
-    ROS_DEBUG_STREAM("data size: " << data.size() << " max size: " << m_max_packet_size);
     if(data.size() > m_max_packet_size)
     {
         for(unsigned long i = 0; i < data.size(); i += max_fragment_payload_size)
@@ -434,7 +444,7 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
            reinterpret_cast<Fragment*>(frag_vec.data())->fragment_count = ret.size(); 
         m_next_packet_id++;
     }
-    ROS_DEBUG_STREAM(ret.size() << " fragments");
+    ROS_DEBUG_STREAM("fragment: data size: " << data.size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
     return ret;
 }
 
