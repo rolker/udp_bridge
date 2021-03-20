@@ -19,6 +19,7 @@ public:
     // return 0 if ok, errno if error occured
     int send(std::vector<uint8_t> const &data);
     std::string str() const;
+    int sendBufferSize() const;
 private:
     friend class ConnectionManager;
     
@@ -27,6 +28,7 @@ private:
     std::string m_host;
     uint16_t m_port;
     int m_socket;
+    int m_send_buffer_size;
 };
 
 class ConnectionManager

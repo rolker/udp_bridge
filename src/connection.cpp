@@ -35,7 +35,11 @@ Connection::Connection(std::string const &host, uint16_t port):m_host(host),m_po
         }
         
         if(connect(m_socket, address->ai_addr, address->ai_addrlen) == 0)
+        {
+            unsigned int s = sizeof(m_send_buffer_size);
+            getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
             break;
+        }
         
         error = errno;
         close(m_socket);
@@ -67,7 +71,10 @@ std::string Connection::str() const
     return ret.str();
 }
 
-
+int Connection::sendBufferSize() const
+{
+    return m_send_buffer_size;
+}
 
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port)
 {
