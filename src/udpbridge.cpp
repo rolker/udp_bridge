@@ -104,11 +104,13 @@ void UDPBridge::spin()
         if(receive_length > 0)
         {
             buffer.resize(receive_length);
-            ROS_DEBUG_STREAM("received " << buffer.size() << " bytes");
+            //ROS_DEBUG_STREAM("received " << buffer.size() << " bytes");
             
             decode(buffer, addressToDotted(remote_address));
         }
-        m_defragmenter.cleanup(ros::Duration(10));
+        int discard_count = m_defragmenter.cleanup(ros::Duration(10));
+        if(discard_count)
+            ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplet packets");
 
         ros::spinOnce();
     }
@@ -116,12 +118,7 @@ void UDPBridge::spin()
 
 void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const std::string &topic_name)
 {
-    ROS_DEBUG_STREAM("msg on topic: " << topic_name);
-    ROS_DEBUG_STREAM("type: " << msg->getDataType());
-    ROS_DEBUG_STREAM("MD5Sum: " << msg->getMD5Sum());
-    ROS_DEBUG_STREAM("definition: " << msg->getMessageDefinition());
-    ROS_DEBUG_STREAM("size: " << msg->size());
-    
+    ROS_DEBUG_STREAM("local msg on topic: " << topic_name << " type: " << msg->getDataType() << " size: " << msg->size());
 
     // First, serialize message in a MessageInternal message
     MessageInternal message;
@@ -201,6 +198,7 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
 void UDPBridge::decode(std::vector<uint8_t> const &message, const std::string &remote_address)
 {
     const Packet *packet = reinterpret_cast<const Packet*>(message.data());
+    ROS_DEBUG_STREAM("Received packet of type " << int(packet->type) << " and size " << message.size());
     switch(packet->type)
     {
         case PacketType::Data:
@@ -223,6 +221,8 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const std::string &r
                 for(auto p: m_defragmenter.getPackets())
                     decode(p.first, p.second);
             break;
+        default:
+            ROS_DEBUG_STREAM("Unkown packet type: " << int(packet->type));
     }
 }
 
@@ -243,7 +243,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
         ss.morph(m_channelInfos[info_label].md5sum, m_channelInfos[info_label].datatype, m_channelInfos[info_label].message_definition, "");
         ros::serialization::IStream message_stream(outer_message.data.data(), outer_message.data.size());
         ss.read(message_stream);
-        ROS_DEBUG_STREAM("type: " << ss.getDataType() << "size: " << ss.size());
+        ROS_DEBUG_STREAM("decoded message of type: " << ss.getDataType() << " and size: " << ss.size());
         
         
         // publish, but first advertise if publisher not present

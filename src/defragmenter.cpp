@@ -8,6 +8,7 @@ bool Defragmenter::addFragment(std::vector<uint8_t> fragment, const std::string 
   Fragment* fragment_packet = reinterpret_cast<Fragment*>(fragment.data());
   if(fragment_packet->type == PacketType::Fragment)
   {
+    ROS_DEBUG_STREAM("Fragment " << int(fragment_packet->fragment_number) << " of " << int(fragment_packet->fragment_count) << " for packet " << fragment_packet->packet_id);
     if(m_fragment_map[remote_address].find(fragment_packet->packet_id) == m_fragment_map[remote_address].end())
     {
       m_fragment_map[remote_address][fragment_packet->packet_id].first_arrival_time = ros::Time::now();
@@ -23,6 +24,8 @@ bool Defragmenter::addFragment(std::vector<uint8_t> fragment, const std::string 
     m_fragment_map[remote_address].erase(fragment_packet->packet_id);
     return true;
   }
+  else
+    ROS_WARN_STREAM("Trying to add a fragment from a packet of type " << int(fragment_packet->type));
   return false;
 }
 
