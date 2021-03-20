@@ -48,6 +48,7 @@ set(UDP_BRIDGE_SOURCES
     src/packet.cpp
     src/connection.cpp
     src/udpbridge.cpp
+    src/defragmenter.cpp
 )
 
 add_executable(udp_bridge_node src/udp_bridge_node.cpp ${UDP_BRIDGE_SOURCES})

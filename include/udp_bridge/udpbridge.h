@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include "connection.h"
 #include "packet.h"
+#include "defragmenter.h"
 #include <deque>
 
 namespace udp_bridge
@@ -26,16 +27,16 @@ private:
     
     /// Decodes outer layer of packets recieved over the UDP link and calls appropriate handlers base
     /// on packet type.
-    void decode(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
+    void decode(std::vector<uint8_t> const &message, const std::string &remote_address);
     
     /// Decodes data from a remote subscription recieved over the UDP link.
-    void decodeData(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
+    void decodeData(std::vector<uint8_t> const &message, const std::string &remote_address);
     
     /// Decodes metadata used to decode remote messages.
-    void decodeChannelInfo(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
+    void decodeChannelInfo(std::vector<uint8_t> const &message, const std::string &remote_address);
     
     /// Decodes a request from a remote node to subscribe to a local topic.
-    void decodeSubscribeRequest(std::vector<uint8_t> const &message, const sockaddr_in &remote_address);
+    void decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::string &remote_address);
     
     /// Decodes a request from a remote node to advertise a topic locally.
     void decodeAdvertiseRequest(std::vector<uint8_t> const &message);
@@ -50,10 +51,18 @@ private:
     
     /// Timer callback where data rate stats are reported
     void statsReportCallback(const ros::TimerEvent&);
-    
+
+    /// Splits up a packet, if necessary.
+    /// Returns an empty vector if fragmentation is not necessary.
+    std::vector<std::vector<uint8_t> > fragment(const std::vector<uint8_t>& data);    
 
     int m_listen_socket;
     int m_port {4200};
+    int m_max_packet_size {65500};
+    uint32_t m_next_packet_id {0};
+
+    Defragmenter m_defragmenter;
+
     ros::NodeHandle m_nodeHandle;
     
     ros::Timer m_statsReportTimer;
