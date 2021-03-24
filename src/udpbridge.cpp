@@ -54,6 +54,9 @@ void UDPBridge::spin()
     ros::NodeHandle private_nodeHandle("~");
     ros::ServiceServer susbcribe_service = private_nodeHandle.advertiseService("remote_subscribe", &UDPBridge::remoteSubscribe, this);
     ros::ServiceServer advertise_service = private_nodeHandle.advertiseService("remote_advertise", &UDPBridge::remoteAdvertise, this);
+
+    ros::ServiceServer add_remote_service = private_nodeHandle.advertiseService("add_remote", &UDPBridge::addRemote, this);
+    ros::ServiceServer list_remotes_service = private_nodeHandle.advertiseService("list_remotes", &UDPBridge::listRemotes, this);
     
     m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
     
@@ -67,21 +70,26 @@ void UDPBridge::spin()
                 std::cerr << remote.first << ": " << std::endl;
                 std::string host = remote.second["host"];
                 int port = remote.second["port"];
+                std::string remote_name = remote.first;
+                if(remote.second.hasMember("name"))
+                    remote_name = std::string(remote.second["name"]);
                 std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
-                for(int i = 0; i < remote.second["topics"].size(); i++)
+                m_connectionNames[remote_name] = connection;
+                for(auto topic: remote.second["topics"])
                 {
-                    auto topic = remote.second["topics"][i];
                     int queue_size = 1;
-                    if (topic.hasMember("queue_size"))
-                        queue_size = topic["queue_size"];
+                    if (topic.second.hasMember("queue_size"))
+                        queue_size = topic.second["queue_size"];
                     double period = 0.0;
-                    if (topic.hasMember("period"))
-                        period = topic["period"];
-                    std::string source = topic["source"];
+                    if (topic.second.hasMember("period"))
+                        period = topic.second["period"];
+                    std::string source = topic.first;
+                    if (topic.second.hasMember("source"))
+                      source = std::string(topic.second["source"]);
                     source = ros::names::resolve(source);
                     std::string destination = source;
-                    if (topic.hasMember("destination"))
-                      destination = std::string(topic["destination"]);
+                    if (topic.second.hasMember("destination"))
+                      destination = std::string(topic.second["destination"]);
                     addSubscriberConnection(source, destination, 1, period, connection);
                 }
             }
@@ -319,7 +327,8 @@ bool UDPBridge::send(const std::vector<uint8_t>& data, std::shared_ptr<Connectio
     int e = connection->send(data);
     if(e == 0)
         return true;
-    ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << strerror(e));
+    if( e != ECONNREFUSED)
+        ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << std::to_string(e) << " " << strerror(e));
     return false;
 }
 
@@ -347,7 +356,7 @@ template void UDPBridge::send(RemoteSubscribeInternal const &message, std::share
 
 bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response)
 {
-    ROS_INFO_STREAM("subscribe: remote: " << request.remote_host << ":" << request.remote_port << " source topic: " << request.source_topic << " destination topic: " << request.destination_topic);
+    ROS_INFO_STREAM("subscribe: remote: " << request.remote << ":" << " source topic: " << request.source_topic << " destination topic: " << request.destination_topic);
     
     udp_bridge::RemoteSubscribeInternal remote_request;
     remote_request.port = m_port;
@@ -356,7 +365,9 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
     remote_request.queue_size = request.queue_size;
     remote_request.period = request.period;
 
-    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.remote_host, request.remote_port);
+    std::shared_ptr<Connection> connection = m_connectionNames[request.remote].lock();
+    if(!connection)
+        return false;
     send(remote_request, connection, PacketType::SubscribeRequest);
 
     return true;
@@ -364,7 +375,10 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
 
 bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response)
 {
-    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.remote_host, request.remote_port);
+    std::shared_ptr<Connection> connection =  m_connectionNames[request.remote].lock();
+    if(!connection)
+        return false;
+
     auto subscription = addSubscriberConnection(request.source_topic, request.destination_topic, request.queue_size, request.period, connection);
 
     return true;
@@ -446,6 +460,27 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
     }
     ROS_DEBUG_STREAM("fragment: data size: " << data.size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
     return ret;
+}
+
+bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response)
+{
+    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, request.port);
+    m_connectionNames[request.name] = connection;
+    return true;
+}
+
+bool UDPBridge::listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridge::ListRemotes::Response &response)
+{
+    for(auto c: m_connectionNames)
+    {
+        udp_bridge::Remote r;
+        r.name = c.first;
+        auto cp = c.second.lock();
+        if(cp)
+          r.connection = cp->str();
+        response.remotes.push_back(r);
+    }
+    return true;
 }
 
 } // namespace udp_bridge

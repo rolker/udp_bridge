@@ -3,6 +3,8 @@
 
 #include <topic_tools/shape_shifter.h>
 #include "udp_bridge/Subscribe.h"
+#include "udp_bridge/AddRemote.h"
+#include "udp_bridge/ListRemotes.h"
 #include "udp_bridge/ChannelInfo.h"
 #include <netinet/in.h>
 #include "connection.h"
@@ -46,6 +48,12 @@ private:
 
     /// Service handler to advertise on a remote node a local topic.
     bool remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response);
+
+    /// Service handler to add a named remote
+    bool addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response);
+
+    /// Service handler to list named remotes
+    bool listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridge::ListRemotes::Response &response);
 
     template <typename MessageType> void send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType);
 
@@ -105,6 +113,7 @@ private:
     std::map<std::string,ros::Publisher> m_publishers;
     std::map<std::string,ros::Time> m_channelInfoSentTimes;
     std::map<std::string,ChannelInfo> m_channelInfos;
+    std::map<std::string, std::weak_ptr<Connection> > m_connectionNames;
     
     SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection);
     

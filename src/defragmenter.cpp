@@ -36,16 +36,20 @@ std::vector<std::pair<std::vector<uint8_t>, std::string> > Defragmenter::getPack
 
 int Defragmenter::cleanup(ros::Duration maxAge)
 {
-  std::vector<std::pair<std::string, uint32_t> > discard_pile;
-  ros::Time discard_time = ros::Time::now()-maxAge;
-  for(auto fm: m_fragment_map)
-    for(auto f: fm.second)
-      if(f.second.first_arrival_time < discard_time)
-        discard_pile.push_back(std::make_pair(fm.first, f.first));
-  for(auto id: discard_pile)
-    m_fragment_map[id.first].erase(id.second);
-  return discard_pile.size();
+  ros::Time now = ros::Time::now();
+  if(!now.is_zero())
+  {
+    std::vector<std::pair<std::string, uint32_t> > discard_pile;
+    ros::Time discard_time = now-maxAge;
+    for(auto fm: m_fragment_map)
+      for(auto f: fm.second)
+        if(f.second.first_arrival_time < discard_time)
+          discard_pile.push_back(std::make_pair(fm.first, f.first));
+    for(auto id: discard_pile)
+      m_fragment_map[id.first].erase(id.second);
+    return discard_pile.size();
+  }
+  return 0;
 }
-
 
 }

@@ -21,11 +21,14 @@ add_message_files(
   ChannelInfoArray.msg
   ChannelStatistics.msg
   ChannelStatisticsArray.msg
+  Remote.msg
 )
 
 add_service_files(
   FILES
   Subscribe.srv
+  AddRemote.srv
+  ListRemotes.srv
 )
 
 generate_messages(

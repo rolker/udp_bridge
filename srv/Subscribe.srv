@@ -1,5 +1,4 @@
-string remote_host
-uint16 remote_port
+string remote
 string source_topic
 string destination_topic
 uint32 queue_size
