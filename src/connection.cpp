@@ -71,6 +71,18 @@ std::string Connection::str() const
     return ret.str();
 }
 
+std::string Connection::label(bool allowEmpty) const
+{
+    if(!allowEmpty && m_label.empty())
+      return str();
+    return m_label;
+}
+
+void Connection::setLabel(const std::string &label)
+{
+    m_label = label;
+}
+
 int Connection::sendBufferSize() const
 {
     return m_send_buffer_size;
@@ -83,6 +95,19 @@ std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &
             return c;
     m_connections.push_back(std::shared_ptr<Connection>(new Connection(host,port)));
     return m_connections.back();
+}
+
+std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &label)
+{
+    for(auto c: m_connections)
+      if(c->label() == label || c->str() == label)
+        return c;
+    return std::shared_ptr<Connection>();
+}
+
+const std::vector<std::shared_ptr<Connection> > & ConnectionManager::connections() const
+{
+    return m_connections;
 }
 
 } // namespace udp_bridge

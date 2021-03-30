@@ -74,7 +74,7 @@ void UDPBridge::spin()
                 if(remote.second.hasMember("name"))
                     remote_name = std::string(remote.second["name"]);
                 std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
-                m_connectionNames[remote_name] = connection;
+                connection->setLabel(remote_name);
                 if(remote.second.hasMember("topics"))
                     for(auto topic: remote.second["topics"])
                     {
@@ -366,7 +366,7 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
     remote_request.queue_size = request.queue_size;
     remote_request.period = request.period;
 
-    std::shared_ptr<Connection> connection = m_connectionNames[request.remote].lock();
+    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.remote);
     if(!connection)
         return false;
     send(remote_request, connection, PacketType::SubscribeRequest);
@@ -376,7 +376,7 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
 
 bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response)
 {
-    std::shared_ptr<Connection> connection =  m_connectionNames[request.remote].lock();
+    std::shared_ptr<Connection> connection =  m_connectionManager.getConnection(request.remote);
     if(!connection)
         return false;
 
@@ -466,19 +466,17 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
 bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response)
 {
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, request.port);
-    m_connectionNames[request.name] = connection;
+    connection->setLabel(request.name);
     return true;
 }
 
 bool UDPBridge::listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridge::ListRemotes::Response &response)
 {
-    for(auto c: m_connectionNames)
+    for(auto c: m_connectionManager.connections())
     {
         udp_bridge::Remote r;
-        r.name = c.first;
-        auto cp = c.second.lock();
-        if(cp)
-          r.connection = cp->str();
+        r.name = c->label();
+        r.connection = c->str();
         response.remotes.push_back(r);
     }
     return true;

@@ -113,7 +113,6 @@ private:
     std::map<std::string,ros::Publisher> m_publishers;
     std::map<std::string,ros::Time> m_channelInfoSentTimes;
     std::map<std::string,ChannelInfo> m_channelInfos;
-    std::map<std::string, std::weak_ptr<Connection> > m_connectionNames;
     
     SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection);
     

@@ -20,6 +20,14 @@ public:
     int send(std::vector<uint8_t> const &data);
     std::string str() const;
     int sendBufferSize() const;
+
+    // Returns the label, or optionally the string representation
+    // of the host and port if the label is empty and allowEmpty
+    // is false.
+    // This makes the label() call always return something
+    // useful to display by default.
+    std::string label(bool allowEmpty = false) const;
+    void setLabel(const std::string &label);
 private:
     friend class ConnectionManager;
     
@@ -29,12 +37,20 @@ private:
     uint16_t m_port;
     int m_socket;
     int m_send_buffer_size;
+    std::string m_label;
 };
 
 class ConnectionManager
 {
 public:
+    // Returns a connection to host:port, creating one if it does not yet exist
     std::shared_ptr<Connection> getConnection(std::string const &host, uint16_t port);
+
+    // Returns a connection with the given label, or matching the string representation
+    // of the form host:port. Returns an empty pointer is not found.
+    std::shared_ptr<Connection> getConnection(std::string const &label);
+
+    const std::vector<std::shared_ptr<Connection> > & connections() const;
 private:
     std::vector<std::shared_ptr<Connection> > m_connections;
 };
