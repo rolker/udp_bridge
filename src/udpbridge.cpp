@@ -360,7 +360,10 @@ template <typename MessageType> void UDPBridge::send(MessageType const &message,
 
     if(fragments.size())
         for(const auto& f: fragments)
+        {
             send(f,connection);
+            usleep(500);
+        }
     else
         send(compressed_packet_data, connection);
 }
