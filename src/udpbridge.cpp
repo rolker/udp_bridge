@@ -47,6 +47,16 @@ UDPBridge::UDPBridge()
         ROS_ERROR("Error setting socket timeout");
         exit(1);
     }
+
+    int recv_buffer_size;
+    unsigned int s = sizeof(recv_buffer_size);
+    getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
+    ROS_INFO_STREAM("recv buffer size:" << recv_buffer_size);
+    recv_buffer_size = 2000000;
+    setsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size));
+    getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
+    ROS_INFO_STREAM("recv buffer size set to:" << recv_buffer_size);
+
 }
 
 void UDPBridge::spin()
@@ -75,6 +85,8 @@ void UDPBridge::spin()
                     remote_name = std::string(remote.second["name"]);
                 std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
                 connection->setLabel(remote_name);
+                ROS_INFO_STREAM("remote: " << remote_name << " send buffer size: " << connection->sendBufferSize());
+
                 if(remote.second.hasMember("topics"))
                     for(auto topic: remote.second["topics"])
                     {
@@ -467,6 +479,7 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
 {
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, request.port);
     connection->setLabel(request.name);
+    ROS_INFO_STREAM("remote: " << request.name << " send buffer size: " << connection->sendBufferSize());
     return true;
 }
 

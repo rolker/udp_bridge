@@ -27,7 +27,7 @@ private:
     /// ShapeShifter is used to be agnostic of message type at compile time.
     void callback(const topic_tools::ShapeShifter::ConstPtr& msg, const std::string &topic_name);
     
-    /// Decodes outer layer of packets recieved over the UDP link and calls appropriate handlers base
+    /// Decodes outer layer of packets received over the UDP link and calls appropriate handlers base
     /// on packet type.
     void decode(std::vector<uint8_t> const &message, const std::string &remote_address);
     

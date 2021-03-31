@@ -38,6 +38,10 @@ Connection::Connection(std::string const &host, uint16_t port):m_host(host),m_po
         {
             unsigned int s = sizeof(m_send_buffer_size);
             getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
+
+            m_send_buffer_size = 2000000;
+            setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &m_send_buffer_size, sizeof(m_send_buffer_size));
+            getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
             break;
         }
         
