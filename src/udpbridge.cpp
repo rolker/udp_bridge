@@ -52,7 +52,7 @@ UDPBridge::UDPBridge()
     unsigned int s = sizeof(recv_buffer_size);
     getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
     ROS_INFO_STREAM("recv buffer size:" << recv_buffer_size);
-    recv_buffer_size = 2000000;
+    recv_buffer_size = 500000;
     setsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size));
     getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
     ROS_INFO_STREAM("recv buffer size set to:" << recv_buffer_size);
