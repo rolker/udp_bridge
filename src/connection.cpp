@@ -60,12 +60,34 @@ Connection::~Connection()
     close(m_socket);
 }
 
-int Connection::send(std::vector<uint8_t> const &data)
+void Connection::send(std::vector<uint8_t> const &data)
 {
-  int e = ::send(m_socket, data.data(), data.size(), 0);
-  if(e == -1)
-    return errno;
-  return 0;
+  int tries = 0;
+  while (tries < 10)
+  {
+    fd_set writefds;
+    FD_ZERO(&writefds);
+    FD_SET(m_socket, &writefds);
+    timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    int ret = select(m_socket+1, nullptr, &writefds, nullptr, &timeout);
+    if(ret > 0)
+    {
+      int e = ::send(m_socket, data.data(), data.size(), 0);
+      if(e == -1)
+        throw(ConnectionException(strerror(errno)));
+    }
+    if(ret == 0)
+      throw(ConnectionException("Timeout"));
+    else if( errno == EAGAIN )
+    {
+      tries += 1;
+      usleep(500);
+    }
+    else
+      throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
+  }
 }
 
 std::string Connection::str() const

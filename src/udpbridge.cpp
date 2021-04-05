@@ -337,11 +337,15 @@ void UDPBridge::decodeAdvertiseRequest(std::vector<uint8_t> const &message)
 
 bool UDPBridge::send(const std::vector<uint8_t>& data, std::shared_ptr<Connection> connection)
 {
-    int e = connection->send(data);
-    if(e == 0)
+    try
+    {
+        connection->send(data);
         return true;
-    if( e != ECONNREFUSED)
-        ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << std::to_string(e) << " " << strerror(e));
+    }
+    catch(const ConnectionException& e)
+    {
+        ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
+    }
     return false;
 }
 

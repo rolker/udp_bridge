@@ -9,6 +9,15 @@
 namespace udp_bridge
 {
 
+class ConnectionException
+{
+  public:
+    ConnectionException(const std::string &msg):m_msg(msg) {}
+    const std::string & getMessage() const {return m_msg;}
+  private:
+    std::string m_msg;
+};
+
 class ConnectionManager;
 
 class Connection
@@ -17,7 +26,7 @@ public:
     ~Connection();
     
     // return 0 if ok, errno if error occured
-    int send(std::vector<uint8_t> const &data);
+    void send(std::vector<uint8_t> const &data);
     std::string str() const;
     int sendBufferSize() const;
 
