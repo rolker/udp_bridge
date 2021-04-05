@@ -69,18 +69,19 @@ void Connection::send(std::vector<uint8_t> const &data)
     FD_ZERO(&writefds);
     FD_SET(m_socket, &writefds);
     timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 500;
     int ret = select(m_socket+1, nullptr, &writefds, nullptr, &timeout);
     if(ret > 0)
     {
       int e = ::send(m_socket, data.data(), data.size(), 0);
       if(e == -1)
         throw(ConnectionException(strerror(errno)));
+      break;
     }
     if(ret == 0)
       throw(ConnectionException("Timeout"));
-    else if( errno == EAGAIN && tries < 2000)
+    else if( errno == EAGAIN && tries < 20)
     {
       tries += 1;
       usleep(500);
