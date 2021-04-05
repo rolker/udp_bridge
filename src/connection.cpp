@@ -63,7 +63,7 @@ Connection::~Connection()
 void Connection::send(std::vector<uint8_t> const &data)
 {
   int tries = 0;
-  while (tries < 10)
+  while (true)
   {
     fd_set writefds;
     FD_ZERO(&writefds);
@@ -80,7 +80,7 @@ void Connection::send(std::vector<uint8_t> const &data)
     }
     if(ret == 0)
       throw(ConnectionException("Timeout"));
-    else if( errno == EAGAIN )
+    else if( errno == EAGAIN && tries < 25)
     {
       tries += 1;
       usleep(500);
