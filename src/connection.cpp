@@ -75,7 +75,7 @@ void Connection::send(std::vector<uint8_t> const &data)
     if(ret > 0)
     {
       int e = ::send(m_socket, data.data(), data.size(), 0);
-      if(e == -1)
+      if(e == -1 && errno != ECONNREFUSED)
         throw(ConnectionException(strerror(errno)));
       break;
     }
