@@ -77,6 +77,8 @@ void Connection::send(std::vector<uint8_t> const &data)
       int e = ::send(m_socket, data.data(), data.size(), 0);
       if(e == -1 && errno != ECONNREFUSED)
         throw(ConnectionException(strerror(errno)));
+      if(e < data.size())
+      throw(ConnectionException("only "+std::to_string(e) +" of " +std::to_string(data.size()) + " sent"));
       break;
     }
     if(ret == 0)
