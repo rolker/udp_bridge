@@ -81,7 +81,7 @@ void Connection::send(std::vector<uint8_t> const &data)
     }
     if(ret == 0)
       throw(ConnectionException("Timeout"));
-    else if( errno == EAGAIN && tries < 20)
+    else if( errno == EAGAIN && tries < 200)
     {
       tries += 1;
       usleep(500);
