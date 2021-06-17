@@ -198,7 +198,10 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
                     bool success = true;
                     if(fragments.size())
                         for(const auto& f: fragments)
+                        {
                             success = success && send(f,c);
+                            usleep(500);
+                        }
                     else
                         success = send(send_buffer,c);
                     
