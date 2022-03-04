@@ -4,7 +4,6 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include "udp_bridge/RemoteSubscribeInternal.h"
-#include "udp_bridge/RemoteAdvertiseInternal.h"
 #include "udp_bridge/MessageInternal.h"
 #include "udp_bridge/ChannelStatisticsArray.h"
 #include "udp_bridge/ChannelInfo.h"
@@ -234,9 +233,6 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const std::string &r
         case PacketType::SubscribeRequest:
             decodeSubscribeRequest(message, remote_address);
             break;
-        case PacketType::AdvertiseRequest:
-            decodeAdvertiseRequest(message);
-            break;
         case PacketType::ChannelInfo:
             decodeChannelInfo(message, remote_address);
             break;
@@ -323,19 +319,12 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
     RemoteSubscribeInternal remote_request;
     ros::serialization::Serializer<RemoteSubscribeInternal>::read(stream, remote_request);
 
-    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(remote_address, remote_request.port);
-    auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, connection);
-    
-}
+    std::string host = remote_address;
+    if(!remote_request.return_address.empty())
+        host = remote_request.return_address;
 
-void UDPBridge::decodeAdvertiseRequest(std::vector<uint8_t> const &message)
-{
-    const Packet* packet = reinterpret_cast<const Packet*>(message.data());
-    
-    ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
-    
-    RemoteAdvertiseInternal remote_request;
-    ros::serialization::Serializer<RemoteAdvertiseInternal>::read(stream, remote_request);
+    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, remote_request.port);
+    auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, connection);
 }
 
 bool UDPBridge::send(const std::vector<uint8_t>& data, std::shared_ptr<Connection> connection)
@@ -391,6 +380,7 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.remote);
     if(!connection)
         return false;
+    remote_request.return_address = connection->returnHost();
     send(remote_request, connection, PacketType::SubscribeRequest);
 
     return true;
@@ -489,6 +479,7 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
 {
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, request.port);
     connection->setLabel(request.name);
+    connection->setReturnHost(request.return_address);
     ROS_INFO_STREAM("remote: " << request.name << " send buffer size: " << connection->sendBufferSize());
     return true;
 }

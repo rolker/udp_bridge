@@ -10,7 +10,7 @@
 namespace udp_bridge
 {
 
-Connection::Connection(std::string const &host, uint16_t port):m_host(host),m_port(port)
+Connection::Connection(std::string const &host, uint16_t port, std::string return_host):m_host(host),m_port(port),m_return_host(return_host)
 {
     struct addrinfo hints = {0}, *addresses;
     
@@ -112,6 +112,16 @@ void Connection::setLabel(const std::string &label)
     m_label = label;
 }
 
+const std::string& Connection::returnHost() const
+{
+  return m_return_host;
+}
+
+void Connection::setReturnHost(const std::string &return_host)
+{
+  m_return_host = return_host;
+}
+
 int Connection::sendBufferSize() const
 {
     return m_send_buffer_size;
@@ -119,11 +129,11 @@ int Connection::sendBufferSize() const
 
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port)
 {
-    for(auto c: m_connections)
-        if(c->m_host == host && c->m_port == port)
-            return c;
-    m_connections.push_back(std::shared_ptr<Connection>(new Connection(host,port)));
-    return m_connections.back();
+  for(auto c: m_connections)
+    if(c->m_host == host && c->m_port == port)
+      return c;
+  m_connections.push_back(std::shared_ptr<Connection>(new Connection(host,port)));
+  return m_connections.back();
 }
 
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &label)

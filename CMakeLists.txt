@@ -14,14 +14,16 @@ find_package(ZLIB REQUIRED)
 
 add_message_files(
   FILES
-  RemoteAdvertiseInternal.msg
-  RemoteSubscribeInternal.msg
-  MessageInternal.msg
+  BridgeInfo.msg
   ChannelInfo.msg
   ChannelInfoArray.msg
   ChannelStatistics.msg
   ChannelStatisticsArray.msg
+  MessageInternal.msg
   Remote.msg
+  RemoteSubscribeInternal.msg
+  TopicInfo.msg
+  TopicRemoteDetails.msg
 )
 
 add_service_files(

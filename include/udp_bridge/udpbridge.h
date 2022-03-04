@@ -40,9 +40,6 @@ private:
     /// Decodes a request from a remote node to subscribe to a local topic.
     void decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::string &remote_address);
     
-    /// Decodes a request from a remote node to advertise a topic locally.
-    void decodeAdvertiseRequest(std::vector<uint8_t> const &message);
-    
     /// Service handler for local request to subscribe to a remote topic.
     bool remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response);
 
