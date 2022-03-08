@@ -7,6 +7,7 @@
 #include "udp_bridge/ListRemotes.h"
 #include "udp_bridge/ChannelInfo.h"
 #ifdef WIN32
+#include <winsock.h>
 #else
 #include <netinet/in.h>
 #endif

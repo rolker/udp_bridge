@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #ifdef WIN32
+#include <winsock.h>
 #else
 #include <netinet/in.h>
 #endif
@@ -53,7 +54,7 @@ struct Fragment: public FragmentHeader
 std::vector<uint8_t> compress(std::vector<uint8_t> const &data);
 std::vector<uint8_t> uncompress(std::vector<uint8_t> const &data);
 
-std::string addressToDotted(const struct sockaddr_in &address);
+std::string addressToDotted(const sockaddr_in &address);
 
 
 } // namespace udp_bridge
