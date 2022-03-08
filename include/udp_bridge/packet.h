@@ -4,7 +4,10 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#ifdef WIN32
+#else
 #include <netinet/in.h>
+#endif
 
 namespace udp_bridge
 {

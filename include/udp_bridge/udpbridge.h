@@ -6,7 +6,10 @@
 #include "udp_bridge/AddRemote.h"
 #include "udp_bridge/ListRemotes.h"
 #include "udp_bridge/ChannelInfo.h"
+#ifdef WIN32
+#else
 #include <netinet/in.h>
+#endif
 #include "connection.h"
 #include "packet.h"
 #include "defragmenter.h"
