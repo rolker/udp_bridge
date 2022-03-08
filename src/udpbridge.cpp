@@ -1,8 +1,19 @@
 #include "udp_bridge/udpbridge.h"
 
 #include "ros/ros.h"
+
+#ifdef WIN32
+
+#include <winsock.h>
+#pragma comment(lib, "ws2_32.lib") 
+
+#else
+
 #include <sys/socket.h>
 #include <netdb.h>
+
+#endif
+
 #include "udp_bridge/RemoteSubscribeInternal.h"
 #include "udp_bridge/MessageInternal.h"
 #include "udp_bridge/ChannelStatisticsArray.h"

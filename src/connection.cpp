@@ -1,9 +1,19 @@
 #include "udp_bridge/connection.h"
 
+#ifdef WIN32
+
+#include <winsock.h>
+#pragma comment(lib, "ws2_32.lib") 
+
+#else
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+
+#endif
+
 #include <cstring>
 #include <sstream>
 
