@@ -51,7 +51,7 @@ std::vector<uint8_t> uncompress(std::vector<uint8_t> const &data)
     return ret;
 }    
     
-std::string addressToDotted(const sockaddr_in& address)
+std::string addressToDotted(const struct sockaddr_in& address)
 {
     return std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[0])+"."+
            std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[1])+"."+
