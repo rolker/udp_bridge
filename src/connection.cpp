@@ -4,6 +4,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <Windows.h>
 #pragma comment(lib, "ws2_32.lib") 
 
 #else
@@ -48,16 +49,25 @@ Connection::Connection(std::string const &host, uint16_t port, std::string retur
         if(connect(m_socket, address->ai_addr, address->ai_addrlen) == 0)
         {
             unsigned int s = sizeof(m_send_buffer_size);
+    #ifdef WIN32
+    #else
             getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
-
+    #endif
             m_send_buffer_size = 500000;
             setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &m_send_buffer_size, sizeof(m_send_buffer_size));
+    #ifdef WIN32
+    #else
             getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
+    #endif
             break;
         }
         
         error = errno;
+        #ifdef  WIN32
+        closesocket(m_socket);
+        #else
         close(m_socket);
+        #endif
         m_socket = -1;
     }
     freeaddrinfo(addresses);
@@ -68,7 +78,11 @@ Connection::Connection(std::string const &host, uint16_t port, std::string retur
     
 Connection::~Connection()
 {
-    close(m_socket);
+  #ifdef  WIN32
+  closesocket(m_socket);
+  #else
+  close(m_socket);
+  #endif
 }
 
 void Connection::send(std::vector<uint8_t> const &data)
@@ -85,7 +99,11 @@ void Connection::send(std::vector<uint8_t> const &data)
     int ret = select(m_socket+1, nullptr, &writefds, nullptr, &timeout);
     if(ret > 0)
     {
+      #ifdef WIN32
+      int e = ::send(m_socket, reinterpret_cast<const char *>(data.data()), data.size(), 0);
+      #else
       int e = ::send(m_socket, data.data(), data.size(), 0);
+      #endif
       if(e == -1 && errno != ECONNREFUSED)
         throw(ConnectionException(strerror(errno)));
       if(e < data.size())
@@ -97,7 +115,11 @@ void Connection::send(std::vector<uint8_t> const &data)
     else if( errno == EAGAIN && tries < 200)
     {
       tries += 1;
+      #ifdef WIN32
+      Sleep(500);
+      #else
       usleep(500);
+      #endif
     }
     else
       throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
