@@ -60,13 +60,18 @@ UDPBridge::UDPBridge()
 
     int recv_buffer_size;
     unsigned int s = sizeof(recv_buffer_size);
+    #ifdef WIN32
+    #else
     getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
     ROS_INFO_STREAM("recv buffer size:" << recv_buffer_size);
+    #endif
     recv_buffer_size = 500000;
     setsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size));
+    #ifdef WIN32
+    #else
     getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
     ROS_INFO_STREAM("recv buffer size set to:" << recv_buffer_size);
-
+    #endif
 }
 
 void UDPBridge::spin()
