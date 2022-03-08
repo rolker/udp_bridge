@@ -3,6 +3,7 @@
 #ifdef WIN32
 
 #include <winsock.h>
+#include <ws2def.h>
 #pragma comment(lib, "ws2_32.lib") 
 
 #else
