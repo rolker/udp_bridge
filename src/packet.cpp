@@ -5,20 +5,20 @@
 namespace udp_bridge
 {
 
-std::vector<uint8_t> compress(std::vector<uint8_t> const &data)
+std::shared_ptr<std::vector<uint8_t> > compress(std::vector<uint8_t> const &data)
 {
     uLong comp_buffer_size = compressBound(data.size());
-    std::vector<uint8_t> ret(sizeof(CompressedPacketHeader)+comp_buffer_size);
-    CompressedPacket * compressed_packet = reinterpret_cast<CompressedPacket*>(ret.data());
+    auto ret = std::make_shared<std::vector<uint8_t> >(sizeof(CompressedPacketHeader)+comp_buffer_size);
+    CompressedPacket * compressed_packet = reinterpret_cast<CompressedPacket*>(ret->data());
     int com_ret = ::compress(compressed_packet->compressed_data,&comp_buffer_size, data.data(), data.size());
     if(com_ret == Z_OK)
     {
         compressed_packet->type = PacketType::Compressed;
         compressed_packet->uncompressed_size = data.size();
-        ret.resize(sizeof(CompressedPacketHeader)+comp_buffer_size);
+        ret->resize(sizeof(CompressedPacketHeader)+comp_buffer_size);
     }
     else
-        ret.clear();
+        ret.reset();
     return ret;
 }
 

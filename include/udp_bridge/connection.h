@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <memory>
+#include <list>
 
 namespace udp_bridge
 {
@@ -25,8 +26,8 @@ class Connection
 public:
     ~Connection();
     
-    // return 0 if ok, errno if error occured
-    void send(std::vector<uint8_t> const &data);
+    //void send(std::vector<uint8_t> const &data);
+    void send(std::shared_ptr<std::vector<uint8_t> > data);
     std::string str() const;
     int sendBufferSize() const;
 
@@ -54,6 +55,9 @@ private:
 
     // Used be the remote to refer to us. Usefull if they are behind a nat
     std::string m_return_host;
+
+    std::list<std::shared_ptr<std::vector<uint8_t> > > packet_buffer_;
+    int packet_buffer_length_ = 100;
 };
 
 class ConnectionManager

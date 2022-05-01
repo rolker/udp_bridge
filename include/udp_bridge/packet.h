@@ -1,14 +1,11 @@
 #ifndef UDP_BRIDGE_SOCKET_H
 #define UDP_BRIDGE_SOCKET_H
 
+#include <memory>
 #include <cstdint>
 #include <vector>
 #include <string>
-#ifdef WIN32
-#include <winsock2.h>
-#else
 #include <netinet/in.h>
-#endif
 
 namespace udp_bridge
 {
@@ -51,7 +48,7 @@ struct Fragment: public FragmentHeader
 
 #pragma pack(pop)
 
-std::vector<uint8_t> compress(std::vector<uint8_t> const &data);
+std::shared_ptr<std::vector<uint8_t> > compress(std::vector<uint8_t> const &data);
 std::vector<uint8_t> uncompress(std::vector<uint8_t> const &data);
 
 std::string addressToDotted(const sockaddr_in &address);

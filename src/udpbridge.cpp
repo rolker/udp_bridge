@@ -2,17 +2,8 @@
 
 #include "ros/ros.h"
 
-#ifdef WIN32
-
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib") 
-
-#else
-
 #include <sys/socket.h>
 #include <netdb.h>
-
-#endif
 
 #include "udp_bridge/RemoteSubscribeInternal.h"
 #include "udp_bridge/MessageInternal.h"
@@ -60,18 +51,12 @@ UDPBridge::UDPBridge()
 
     int recv_buffer_size;
     unsigned int s = sizeof(recv_buffer_size);
-    #ifdef WIN32
-    #else
     getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
     ROS_INFO_STREAM("recv buffer size:" << recv_buffer_size);
-    #endif
     recv_buffer_size = 500000;
     setsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size));
-    #ifdef WIN32
-    #else
     getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
     ROS_INFO_STREAM("recv buffer size set to:" << recv_buffer_size);
-    #endif
 }
 
 void UDPBridge::spin()
@@ -191,9 +176,9 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
     ros::serialization::serialize(message_stream,message);
 
     // Now, compress the uncompressed packet
-    std::vector<uint8_t> send_buffer = compress(buffer);
+    std::shared_ptr<std::vector<uint8_t> > send_buffer = compress(buffer);
 
-    std::vector<std::vector<uint8_t> > fragments = fragment(send_buffer);
+    std::vector<std::shared_ptr<std::vector<uint8_t> > > fragments = fragment(send_buffer);
     
     for (auto &remote:  m_subscribers[topic_name].remotes)
     {
@@ -224,7 +209,7 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
                     sd.sent_success = success;
                     sd.message_size = msg->size();
                     sd.packet_size = buffer.size();
-                    sd.compressed_packet_size = send_buffer.size();
+                    sd.compressed_packet_size = send_buffer->size();
                     sd.timestamp = ros::Time::now();
                     remote.second.size_statistics.push_back(sd);
                     remote.second.last_sent_time = now;
@@ -343,7 +328,7 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
     auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, connection);
 }
 
-bool UDPBridge::send(const std::vector<uint8_t>& data, std::shared_ptr<Connection> connection)
+bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection)
 {
     try
     {
@@ -352,7 +337,7 @@ bool UDPBridge::send(const std::vector<uint8_t>& data, std::shared_ptr<Connectio
     }
     catch(const ConnectionException& e)
     {
-        ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
+        ROS_WARN_STREAM("error sending data of size " << data->size() << ": " << e.getMessage());
     }
     return false;
 }
@@ -466,29 +451,29 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
     m_channelInfoPublisher.publish(csa);
 }
 
-std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t>& data)
+std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::shared_ptr<std::vector<uint8_t> > data)
 {
-    std::vector<std::vector<uint8_t> > ret;
+  std::vector<std::shared_ptr<std::vector<uint8_t> > > ret;
 
-    unsigned long max_fragment_payload_size = m_max_packet_size-sizeof(FragmentHeader);
-    if(data.size() > m_max_packet_size)
+  unsigned long max_fragment_payload_size = m_max_packet_size-sizeof(FragmentHeader);
+  if(data->size() > m_max_packet_size)
+  {
+    for(unsigned long i = 0; i < data->size(); i += max_fragment_payload_size)
     {
-        for(unsigned long i = 0; i < data.size(); i += max_fragment_payload_size)
-        {
-            unsigned long fragment_data_size = std::min(max_fragment_payload_size, data.size()-i);
-            ret.push_back(std::vector<uint8_t>(sizeof(FragmentHeader)+fragment_data_size));
-            Fragment * fragment_packet = reinterpret_cast<Fragment*>(ret.back().data());
-            fragment_packet->type = PacketType::Fragment;
-            fragment_packet->packet_id = m_next_packet_id;
-            fragment_packet->fragment_number = ret.size();
-            memcpy(fragment_packet->fragment_data, &data.at(i), fragment_data_size);
-        }
-        for(auto & frag_vec: ret)
-           reinterpret_cast<Fragment*>(frag_vec.data())->fragment_count = ret.size(); 
-        m_next_packet_id++;
+      unsigned long fragment_data_size = std::min(max_fragment_payload_size, data->size()-i);
+      ret.push_back(std::make_shared<std::vector<uint8_t> >(sizeof(FragmentHeader)+fragment_data_size));
+      Fragment * fragment_packet = reinterpret_cast<Fragment*>(ret.back()->data());
+      fragment_packet->type = PacketType::Fragment;
+      fragment_packet->packet_id = m_next_packet_id;
+      fragment_packet->fragment_number = ret.size();
+      memcpy(fragment_packet->fragment_data, &data->at(i), fragment_data_size);
     }
-    ROS_DEBUG_STREAM("fragment: data size: " << data.size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
-    return ret;
+    for(auto & frag_vec: ret)
+      reinterpret_cast<Fragment*>(frag_vec->data())->fragment_count = ret.size(); 
+    m_next_packet_id++;
+  }
+  ROS_DEBUG_STREAM("fragment: data size: " << data->size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
+  return ret;
 }
 
 bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response)

@@ -6,11 +6,7 @@
 #include "udp_bridge/AddRemote.h"
 #include "udp_bridge/ListRemotes.h"
 #include "udp_bridge/ChannelInfo.h"
-#ifdef WIN32
-#include <winsock2.h>
-#else
 #include <netinet/in.h>
-#endif
 #include "connection.h"
 #include "packet.h"
 #include "defragmenter.h"
@@ -59,14 +55,14 @@ private:
     template <typename MessageType> void send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType);
 
     /// Sends the raw data to the connection. Returns true on success.
-    bool send(const std::vector<uint8_t>& data, std::shared_ptr<Connection> connection);
+    bool send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection);
     
     /// Timer callback where data rate stats are reported
     void statsReportCallback(const ros::TimerEvent&);
 
     /// Splits up a packet, if necessary.
     /// Returns an empty vector if fragmentation is not necessary.
-    std::vector<std::vector<uint8_t> > fragment(const std::vector<uint8_t>& data);    
+    std::vector<std::shared_ptr<std::vector<uint8_t> > > fragment(std::shared_ptr<std::vector<uint8_t> > data);    
 
     int m_listen_socket;
     int m_port {4200};
