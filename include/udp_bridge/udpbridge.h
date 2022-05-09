@@ -60,6 +60,10 @@ private:
     /// Timer callback where data rate stats are reported
     void statsReportCallback(const ros::TimerEvent&);
 
+
+    /// Timer callback where info on subscibed channels are reported
+    void bridgeInfoCallback(const ros::TimerEvent&);
+
     /// Splits up a packet, if necessary.
     /// Returns an empty vector if fragmentation is not necessary.
     std::vector<std::shared_ptr<std::vector<uint8_t> > > fragment(std::shared_ptr<std::vector<uint8_t> > data);    
@@ -75,6 +79,9 @@ private:
     
     ros::Timer m_statsReportTimer;
     ros::Publisher m_channelInfoPublisher;
+
+    ros::Timer m_bridgeInfoTimer;
+    ros::Publisher m_bridgeInfoPublisher;
     
     struct SizeData
     {
@@ -110,6 +117,7 @@ private:
     std::map<std::string,ros::Publisher> m_publishers;
     std::map<std::string,ros::Time> m_channelInfoSentTimes;
     std::map<std::string,ChannelInfo> m_channelInfos;
+    std::map<std::string, std::string> local_topic_types_;
     
     SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection);
     

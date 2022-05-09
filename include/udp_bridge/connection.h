@@ -53,7 +53,7 @@ private:
     int m_send_buffer_size;
     std::string m_label;
 
-    // Used be the remote to refer to us. Usefull if they are behind a nat
+    // Used by the remote to refer to us. Usefull if they are behind a nat
     std::string m_return_host;
 
     std::list<std::shared_ptr<std::vector<uint8_t> > > packet_buffer_;

@@ -9,6 +9,7 @@
 #include "udp_bridge/MessageInternal.h"
 #include "udp_bridge/ChannelStatisticsArray.h"
 #include "udp_bridge/ChannelInfo.h"
+#include "udp_bridge/BridgeInfo.h"
 
 namespace udp_bridge
 {
@@ -69,6 +70,7 @@ void UDPBridge::spin()
     ros::ServiceServer list_remotes_service = private_nodeHandle.advertiseService("list_remotes", &UDPBridge::listRemotes, this);
     
     m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
+    m_bridgeInfoPublisher = private_nodeHandle.advertise<BridgeInfo>("bridge_info", 10, false);
     
     XmlRpc::XmlRpcValue remotes_dict;
     if(private_nodeHandle.getParam("remotes",remotes_dict))
@@ -110,6 +112,7 @@ void UDPBridge::spin()
     }
     
     m_statsReportTimer = m_nodeHandle.createTimer(ros::Duration(1.0), &UDPBridge::statsReportCallback, this);
+    m_bridgeInfoTimer = m_nodeHandle.createTimer(ros::Duration(10.0), &UDPBridge::bridgeInfoCallback, this);
     
     while(ros::ok())
     {   
@@ -131,7 +134,7 @@ void UDPBridge::spin()
         }
         int discard_count = m_defragmenter.cleanup(ros::Duration(10));
         if(discard_count)
-            ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplet packets");
+            ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplete packets");
 
         ros::spinOnce();
     }
@@ -140,6 +143,8 @@ void UDPBridge::spin()
 void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const std::string &topic_name)
 {
     ROS_DEBUG_STREAM("local msg on topic: " << topic_name << " type: " << msg->getDataType() << " size: " << msg->size());
+
+    local_topic_types_[topic_name] = msg->getDataType();
 
     // First, serialize message in a MessageInternal message
     MessageInternal message;
@@ -474,6 +479,31 @@ std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::sh
   }
   ROS_DEBUG_STREAM("fragment: data size: " << data->size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
   return ret;
+}
+
+void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
+{
+  BridgeInfo bi;
+  bi.port = m_port;
+  for(auto s: m_subscribers)
+  {
+    TopicInfo ti;
+    ti.topic = s.first;
+    ti.datatype = local_topic_types_[s.first];
+    for (auto r: s.second.remotes)
+    {
+      TopicRemoteDetails trd;
+      trd.remote.connection = r.first;
+      auto c = r.second.connection.lock();
+      if(c)
+        trd.remote.name = c->label(true);
+      trd.destination_topic = r.second.destination_topic;
+      trd.period = r.second.period;
+      ti.remotes.push_back(trd);
+    }
+    bi.topics.push_back(ti);
+  }
+  m_bridgeInfoPublisher.publish(bi);
 }
 
 bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response)

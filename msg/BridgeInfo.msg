@@ -1,2 +1,2 @@
-uint16    port
-TopicInfo topics
+uint16      port
+TopicInfo[] topics
