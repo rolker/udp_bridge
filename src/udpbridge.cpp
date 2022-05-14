@@ -265,21 +265,24 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
     std::string info_label = remote_address+outer_message.source_topic;
     if(m_channelInfos.find(info_label) != m_channelInfos.end())
     {    
-        topic_tools::ShapeShifter ss;
-        ss.morph(m_channelInfos[info_label].md5sum, m_channelInfos[info_label].datatype, m_channelInfos[info_label].message_definition, "");
-        ros::serialization::IStream message_stream(outer_message.data.data(), outer_message.data.size());
-        ss.read(message_stream);
-        ROS_DEBUG_STREAM("decoded message of type: " << ss.getDataType() << " and size: " << ss.size());
-        
-        
-        // publish, but first advertise if publisher not present
-        if (m_publishers.find(m_channelInfos[info_label].destination_topic) == m_publishers.end())
-            m_publishers[m_channelInfos[info_label].destination_topic] = ss.advertise(m_nodeHandle, m_channelInfos[info_label].destination_topic, 1);
-        
-        m_publishers[m_channelInfos[info_label].destination_topic].publish(ss);
+      topic_tools::ShapeShifter ss;
+      ss.morph(m_channelInfos[info_label].md5sum, m_channelInfos[info_label].datatype, m_channelInfos[info_label].message_definition, "");
+      ros::serialization::IStream message_stream(outer_message.data.data(), outer_message.data.size());
+      ss.read(message_stream);
+      ROS_DEBUG_STREAM("decoded message of type: " << ss.getDataType() << " and size: " << ss.size());
+      
+      
+      // publish, but first advertise if publisher not present
+      auto topic = m_channelInfos[info_label].destination_topic;
+      if(topic.empty())
+        topic =m_channelInfos[info_label].source_topic;
+      if (m_publishers.find(topic) == m_publishers.end())
+        m_publishers[topic] = ss.advertise(m_nodeHandle, topic, 1);
+      
+      m_publishers[topic].publish(ss);
     }
     else
-        ROS_DEBUG_STREAM("no info yet for " << info_label);
+      ROS_DEBUG_STREAM("no info yet for " << info_label);
     
 }
 
@@ -485,21 +488,27 @@ void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
 {
   BridgeInfo bi;
   bi.port = m_port;
-  for(auto s: m_subscribers)
+  ros::master::V_TopicInfo topics;
+  ros::master::getTopics(topics);
+  for(auto mti: topics)
   {
+    std::cerr << mti.name << ": " << mti.datatype << std::endl;
     TopicInfo ti;
-    ti.topic = s.first;
-    ti.datatype = local_topic_types_[s.first];
-    for (auto r: s.second.remotes)
+    ti.topic = mti.name;
+    ti.datatype = mti.datatype;
+    if (m_subscribers.find(mti.name) != m_subscribers.end())
     {
-      TopicRemoteDetails trd;
-      trd.remote.connection = r.first;
-      auto c = r.second.connection.lock();
-      if(c)
-        trd.remote.name = c->label(true);
-      trd.destination_topic = r.second.destination_topic;
-      trd.period = r.second.period;
-      ti.remotes.push_back(trd);
+      for(auto r: m_subscribers[mti.name].remotes)
+      {
+        TopicRemoteDetails trd;
+        trd.remote.connection = r.first;
+        auto c = r.second.connection.lock();
+        if(c)
+          trd.remote.name = c->label(true);
+        trd.destination_topic = r.second.destination_topic;
+        trd.period = r.second.period;
+        ti.remotes.push_back(trd);
+      }
     }
     bi.topics.push_back(ti);
   }
