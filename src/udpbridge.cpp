@@ -492,7 +492,7 @@ void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
   ros::master::getTopics(topics);
   for(auto mti: topics)
   {
-    std::cerr << mti.name << ": " << mti.datatype << std::endl;
+    //std::cerr << mti.name << ": " << mti.datatype << std::endl;
     TopicInfo ti;
     ti.topic = mti.name;
     ti.datatype = mti.datatype;
