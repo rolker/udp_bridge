@@ -70,6 +70,7 @@ void UDPBridge::spin()
     ros::ServiceServer list_remotes_service = private_nodeHandle.advertiseService("list_remotes", &UDPBridge::listRemotes, this);
     
     m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
+    m_bridge_info_publisher = private_nodeHandle.advertise<BridgeInfo>("bridge_info", 1, true);
     
     XmlRpc::XmlRpcValue remotes_dict;
     if(private_nodeHandle.getParam("remotes",remotes_dict))
@@ -78,7 +79,7 @@ void UDPBridge::spin()
         {
             for(auto remote:remotes_dict)
             {
-                std::cerr << remote.first << ": " << std::endl;
+                //std::cerr << remote.first << ": " << std::endl;
                 std::string host = remote.second["host"];
                 int port = remote.second["port"];
                 std::string remote_name = remote.first;
@@ -309,10 +310,21 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std:
     BridgeInfo bridge_info;
     ros::serialization::Serializer<BridgeInfo>::read(stream, bridge_info);
     
-    std::cerr << "BridgeInfo from " << remote_address << std::endl;
+    //std::cerr << "BridgeInfo from " << remote_address << std::endl;
     auto c = m_connectionManager.getConnection(remote_address, bridge_info.port);
     auto label = c->label();
-    std::cerr << "connection: " << label << std::endl;
+    if(!std::isalpha(label[0]))
+      label = "r"+label;
+    for(int i = 0; i < label.size(); i++)
+      if(!(std::isalnum(label[i]) || label[i] == '_' || label[i] == '/'))
+        label[i] = '_';
+    //std::cerr << "remote: " << label << std::endl;
+    if(m_bridge_info_publishers.find(label) == m_bridge_info_publishers.end())
+    {
+      ros::NodeHandle private_nodeHandle("~");
+      m_bridge_info_publishers[label] = private_nodeHandle.advertise<BridgeInfo>("remotes/"+label,1,true);
+    }
+    m_bridge_info_publishers[label].publish(bridge_info);
 }
 
 
@@ -435,7 +447,6 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
             while (!remote.second.size_statistics.empty() && now - remote.second.size_statistics.front().timestamp > ros::Duration(10))
                 remote.second.size_statistics.pop_front();
             
-            if(remote.second.size_statistics.size() > 1 && remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp >= ros::Duration(1.0))
             {
                 auto connection = remote.second.connection.lock();
                 if(connection)
@@ -459,15 +470,18 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
                             total_sent_success++;
                     }
                     
-                    cs.message_average_size_bytes = total_message_size/float(remote.second.size_statistics.size());
-                    cs.packet_average_size_bytes = total_packet_size/float(remote.second.size_statistics.size());
-                    cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size_statistics.size());
-                    double deltat = (remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp).toSec();
-                    cs.messages_per_second = (remote.second.size_statistics.size()-1)/deltat;
-                    cs.send_success_rate = total_sent_success/float(remote.second.size_statistics.size());
-                    cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
-                    cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
-                    cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
+                    if(!remote.second.size_statistics.empty())
+                    {
+                      cs.message_average_size_bytes = total_message_size/float(remote.second.size_statistics.size());
+                      cs.packet_average_size_bytes = total_packet_size/float(remote.second.size_statistics.size());
+                      cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size_statistics.size());
+                      double deltat = (remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp).toSec();
+                      cs.messages_per_second = (remote.second.size_statistics.size()-1)/deltat;
+                      cs.send_success_rate = total_sent_success/float(remote.second.size_statistics.size());
+                      cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
+                      cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
+                      cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
+                    }
                     csa.channels.push_back(cs);
                 }
                 
@@ -531,6 +545,7 @@ void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
     bi.topics.push_back(ti);
   }
 
+  m_bridge_info_publisher.publish(bi);
   for(auto c: m_connectionManager.connections())
   {
     if(c)

@@ -84,6 +84,7 @@ private:
     ros::Publisher m_channelInfoPublisher;
 
     ros::Timer m_bridgeInfoTimer;
+    ros::Publisher m_bridge_info_publisher;
         
     struct SizeData
     {
@@ -120,6 +121,7 @@ private:
     std::map<std::string,ros::Time> m_channelInfoSentTimes;
     std::map<std::string,ChannelInfo> m_channelInfos;
     std::map<std::string, std::string> local_topic_types_;
+    std::map<std::string,ros::Publisher> m_bridge_info_publishers;
     
     SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection);
     
