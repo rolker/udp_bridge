@@ -38,7 +38,10 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
         std::cout << std::setw(7) << c.packet_bytes_per_second/125.0 << " kbps ";
         std::cout << std::setw(7) << c.compressed_bytes_per_second/125.0 << " kbps";
         
-        std::cout << std::setw(7) << 100*c.compressed_bytes_per_second/c.message_bytes_per_second << "%";
+        if(c.message_bytes_per_second > 0)
+            std::cout << std::setw(7) << 100*c.compressed_bytes_per_second/c.message_bytes_per_second << "%";
+        else
+            std::cout << std::setw(7) << 0 << "%";
 
         std::cout << std::setw(7) << 100*(1.0-c.send_success_rate) << "%";
         
@@ -56,7 +59,10 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
     std::cout << std::setw(7) << totals[1]/125.0 << " kbps ";
     std::cout << std::setw(7) << totals[2]/125.0 << " kbps ";
     std::cout << std::setw(7) << totals[3]/125.0 << " kbps";
-    std::cout << std::setw(7) << 100*totals[3]/totals[1] << "%";
+    if(totals[1]>0)
+        std::cout << std::setw(7) << 100*totals[3]/totals[1] << "%";
+    else
+        std::cout << std::setw(7) << 0 << "%";
     std::cout << std::endl;
     
     std::cout << std::endl;
