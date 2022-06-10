@@ -310,6 +310,9 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std:
     ros::serialization::Serializer<BridgeInfo>::read(stream, bridge_info);
     
     std::cerr << "BridgeInfo from " << remote_address << std::endl;
+    auto c = m_connectionManager.getConnection(remote_address, bridge_info.port);
+    auto label = c->label();
+    std::cerr << "connection: " << label << std::endl;
 }
 
 
