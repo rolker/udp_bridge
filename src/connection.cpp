@@ -139,14 +139,18 @@ std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &
         if(c->m_host == host && c->m_port == port)
           return c;
         else
-        {
-          c = std::shared_ptr<Connection>(new Connection(host,port));        
-          return c;
-        }
+          c.reset();
   }
   for(auto c: m_connections)
-    if(c->m_host == host && c->m_port == port)
+    if(c && c->m_host == host && c->m_port == port)
       return c;
+  // Look for a free spot before creating a new one
+  for(auto& c: m_connections)
+    if(!c)
+    {
+      c = std::shared_ptr<Connection>(new Connection(host, port));
+      return c;
+    }
   m_connections.push_back(std::shared_ptr<Connection>(new Connection(host,port)));
   return m_connections.back();
 }
