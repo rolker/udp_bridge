@@ -36,6 +36,9 @@ private:
     
     /// Decodes metadata used to decode remote messages.
     void decodeChannelInfo(std::vector<uint8_t> const &message, const std::string &remote_address);
+
+    /// Decodes topic info from remote.
+    void decodeBridgeInfo(std::vector<uint8_t> const &message, const std::string &remote_address);
     
     /// Decodes a request from a remote node to subscribe to a local topic.
     void decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::string &remote_address);
@@ -81,8 +84,7 @@ private:
     ros::Publisher m_channelInfoPublisher;
 
     ros::Timer m_bridgeInfoTimer;
-    ros::Publisher m_bridgeInfoPublisher;
-    
+        
     struct SizeData
     {
         bool sent_success;

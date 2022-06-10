@@ -53,7 +53,7 @@ private:
     int m_send_buffer_size;
     std::string m_label;
 
-    // Used by the remote to refer to us. Usefull if they are behind a nat
+    // Used by the remote to refer to us. Useful if they are behind a nat
     std::string m_return_host;
 
     std::list<std::shared_ptr<std::vector<uint8_t> > > packet_buffer_;
@@ -64,7 +64,8 @@ class ConnectionManager
 {
 public:
     // Returns a connection to host:port, creating one if it does not yet exist
-    std::shared_ptr<Connection> getConnection(std::string const &host, uint16_t port);
+    // If label is not empty and a connection exists with given label, replace it if necessary.
+    std::shared_ptr<Connection> getConnection(std::string const &host, uint16_t port, std::string label=std::string());
 
     // Returns a connection with the given label, or matching the string representation
     // of the form host:port. Returns an empty pointer if not found.

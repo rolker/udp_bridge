@@ -70,7 +70,6 @@ void UDPBridge::spin()
     ros::ServiceServer list_remotes_service = private_nodeHandle.advertiseService("list_remotes", &UDPBridge::listRemotes, this);
     
     m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
-    m_bridgeInfoPublisher = private_nodeHandle.advertise<BridgeInfo>("bridge_info", 10, false);
     
     XmlRpc::XmlRpcValue remotes_dict;
     if(private_nodeHandle.getParam("remotes",remotes_dict))
@@ -247,6 +246,9 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const std::string &r
                 for(auto p: m_defragmenter.getPackets())
                     decode(p.first, p.second);
             break;
+        case PacketType::BridgeInfo:
+            decodeBridgeInfo(message, remote_address);
+            break;
         default:
             ROS_DEBUG_STREAM("Unkown packet type: " << int(packet->type));
     }
@@ -297,6 +299,19 @@ void UDPBridge::decodeChannelInfo(std::vector<uint8_t> const &message, const std
     
     m_channelInfos[remote_address+channel_info.source_topic] = channel_info;
 }
+
+void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std::string &remote_address)
+{
+    const Packet* packet = reinterpret_cast<const Packet*>(message.data());
+    
+    ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
+    
+    BridgeInfo bridge_info;
+    ros::serialization::Serializer<BridgeInfo>::read(stream, bridge_info);
+    
+    std::cerr << "BridgeInfo from " << remote_address << std::endl;
+}
+
 
 const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection)
 {
@@ -487,6 +502,7 @@ std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::sh
 void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
 {
   BridgeInfo bi;
+  bi.stamp = ros::Time::now();
   bi.port = m_port;
   ros::master::V_TopicInfo topics;
   ros::master::getTopics(topics);
@@ -511,12 +527,20 @@ void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
     }
     bi.topics.push_back(ti);
   }
-  m_bridgeInfoPublisher.publish(bi);
+
+  for(auto c: m_connectionManager.connections())
+  {
+    if(c)
+      send(bi, c, PacketType::BridgeInfo);
+  }
 }
 
 bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response)
 {
-    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, request.port);
+    uint16_t port = 4200;
+    if (request.port != 0)
+        port = request.port;
+    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, port, request.name);
     connection->setLabel(request.name);
     connection->setReturnHost(request.return_address);
     ROS_INFO_STREAM("remote: " << request.name << " send buffer size: " << connection->sendBufferSize());

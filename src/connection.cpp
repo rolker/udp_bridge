@@ -130,8 +130,20 @@ int Connection::sendBufferSize() const
     return m_send_buffer_size;
 }
 
-std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port)
+std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port, std::string label)
 {
+  if(!label.empty())
+  {
+    for(auto& c: m_connections)
+      if(c->label() == label)
+        if(c->m_host == host && c->m_port == port)
+          return c;
+        else
+        {
+          c = std::shared_ptr<Connection>(new Connection(host,port));        
+          return c;
+        }
+  }
   for(auto c: m_connections)
     if(c->m_host == host && c->m_port == port)
       return c;
