@@ -454,7 +454,7 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
                     ChannelStatistics cs;
                     cs.source_topic = subscriber.first;
                     cs.destination_topic = remote.second.destination_topic;
-                    cs.destination_host = connection->str();
+                    cs.remote = connection->label();
                     
                     int total_message_size = 0;
                     int total_packet_size = 0;

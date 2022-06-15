@@ -12,7 +12,7 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
     for(auto c: stats.channels)
     {
         column_widths[0] = std::max(column_widths[0], int(c.source_topic.size()));
-        column_widths[1] = std::max(column_widths[1], int(c.destination_host.size()));
+        column_widths[1] = std::max(column_widths[1], int(c.remote.size()));
     }
 
     std::cout << std::left;
@@ -26,7 +26,7 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
     {
         std::cout << std::left;
         std::cout << std::setw(column_widths[0]+1) << c.source_topic;
-        std::cout << std::setw(column_widths[1]+1) << c.destination_host;
+        std::cout << std::setw(column_widths[1]+1) << c.remote;
         
         std::cout << std::fixed;
         std::cout << std::setprecision(1);

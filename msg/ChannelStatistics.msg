@@ -1,6 +1,6 @@
 string source_topic
 string destination_topic
-string destination_host
+string remote
 float32 message_average_size_bytes
 float32 packet_average_size_bytes
 float32 compressed_average_size_bytes
