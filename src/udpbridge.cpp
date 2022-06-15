@@ -345,7 +345,8 @@ const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::stri
         }
         m_subscribers[source_topic].remotes[connection->str()] = RemoteDetails(destination_topic, period, connection);
         return &m_subscribers[source_topic];
-    }    
+    }
+    sendBridgeInfo();
     return nullptr;
 }
 
@@ -432,7 +433,6 @@ bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bri
         return false;
 
     auto subscription = addSubscriberConnection(request.source_topic, request.destination_topic, request.queue_size, request.period, connection);
-
     return true;
 }
 
@@ -518,6 +518,11 @@ std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::sh
 
 void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
 {
+    sendBridgeInfo();
+}
+
+void UDPBridge::sendBridgeInfo()
+{
   BridgeInfo bi;
   bi.stamp = ros::Time::now();
   bi.port = m_port;
@@ -533,16 +538,28 @@ void UDPBridge::bridgeInfoCallback(ros::TimerEvent const &event)
       for(auto r: m_subscribers[mti.name].remotes)
       {
         TopicRemoteDetails trd;
-        trd.remote.connection = r.first;
         auto c = r.second.connection.lock();
         if(c)
-          trd.remote.name = c->label(true);
+          trd.remote = c->label(true);
         trd.destination_topic = r.second.destination_topic;
         trd.period = r.second.period;
         ti.remotes.push_back(trd);
       }
     }
     bi.topics.push_back(ti);
+  }
+
+  for(auto r: m_connectionManager.connections())
+  {
+    if(r)
+    {
+        udp_bridge::Remote remote;
+        remote.name = r->label();
+        remote.host = r->host();
+        remote.port = r->port();
+        remote.ip_address = r->ip_address();
+        bi.remotes.push_back(remote);
+    }
   }
 
   m_bridge_info_publisher.publish(bi);
@@ -569,10 +586,15 @@ bool UDPBridge::listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridg
 {
     for(auto c: m_connectionManager.connections())
     {
+      if(c)
+      {  
         udp_bridge::Remote r;
         r.name = c->label();
-        r.connection = c->str();
+        r.host = c->host();
+        r.ip_address = c->ip_address();
+        r.port = c->port();
         response.remotes.push_back(r);
+      }
     }
     return true;
 }

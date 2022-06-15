@@ -43,6 +43,10 @@ public:
     // Used to tell the remote host the address to get back to us.
     const std::string& returnHost() const;
     void setReturnHost(const std::string &return_host);
+
+    const std::string& host() const;
+    uint16_t port() const;
+    const std::string& ip_address() const;
 private:
     friend class ConnectionManager;
     

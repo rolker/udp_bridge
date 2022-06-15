@@ -64,8 +64,11 @@ private:
     void statsReportCallback(const ros::TimerEvent&);
 
 
-    /// Timer callback where info on subscibed channels are reported
+    /// Timer callback where info on subscibed channels are periodically reported
     void bridgeInfoCallback(const ros::TimerEvent&);
+
+    /// Send topics and remotes info to remotes and publishes locally
+    void sendBridgeInfo();
 
     /// Splits up a packet, if necessary.
     /// Returns an empty vector if fragmentation is not necessary.

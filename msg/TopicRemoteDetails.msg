@@ -1,3 +1,3 @@
-Remote  remote
+string  remote
 string  destination_topic
 float32 period

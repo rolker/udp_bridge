@@ -131,6 +131,21 @@ int Connection::sendBufferSize() const
     return m_send_buffer_size;
 }
 
+const std::string& Connection::host() const
+{
+  return m_host;
+}
+
+uint16_t Connection::port() const
+{
+  return m_port;
+}
+
+const std::string& Connection::ip_address() const
+{
+  return m_ip_address;
+}
+
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port, std::string label)
 {
   if(!label.empty())
@@ -145,6 +160,16 @@ std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &
   for(auto c: m_connections)
     if(c && (c->m_host == host || c->m_ip_address == host)  && c->m_port == port)
       return c;
+  
+  auto new_connection = std::shared_ptr<Connection>(new Connection(host, port));
+  // Is the new connection the same ip/port as an existing one?
+  for(auto& c: m_connections)
+    if(c && (c->m_ip_address == new_connection->m_ip_address)  && c->m_port == port)
+    {
+      c->m_host = host;
+      return c;
+    }
+
   // Look for a free spot before creating a new one
   for(auto& c: m_connections)
     if(!c)
