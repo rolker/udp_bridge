@@ -36,12 +36,13 @@ Connection::Connection(std::string const &host, uint16_t port, std::string retur
         
         if(connect(m_socket, address->ai_addr, address->ai_addrlen) == 0)
         {
-            unsigned int s = sizeof(m_send_buffer_size);
-            getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
-            m_send_buffer_size = 500000;
-            setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &m_send_buffer_size, sizeof(m_send_buffer_size));
-            getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
-            break;
+          m_ip_address = addressToDotted(*reinterpret_cast<sockaddr_in*>( address->ai_addr));
+          unsigned int s = sizeof(m_send_buffer_size);
+          getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
+          m_send_buffer_size = 500000;
+          setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &m_send_buffer_size, sizeof(m_send_buffer_size));
+          getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
+          break;
         }
         
         error = errno;
@@ -136,13 +137,13 @@ std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &
   {
     for(auto& c: m_connections)
       if(c->label() == label)
-        if(c->m_host == host && c->m_port == port)
+        if((c->m_host == host || c->m_ip_address == host) && c->m_port == port)
           return c;
         else
           c.reset();
   }
   for(auto c: m_connections)
-    if(c && c->m_host == host && c->m_port == port)
+    if(c && (c->m_host == host || c->m_ip_address == host)  && c->m_port == port)
       return c;
   // Look for a free spot before creating a new one
   for(auto& c: m_connections)
@@ -167,5 +168,15 @@ const std::vector<std::shared_ptr<Connection> > & ConnectionManager::connections
 {
     return m_connections;
 }
+
+
+std::string addressToDotted(const sockaddr_in& address)
+{
+    return std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[0])+"."+
+           std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[1])+"."+
+           std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[2])+"."+
+           std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[3]);
+}
+
 
 } // namespace udp_bridge

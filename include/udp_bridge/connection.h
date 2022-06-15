@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <list>
+#include <netinet/in.h>
 
 namespace udp_bridge
 {
@@ -48,6 +49,7 @@ private:
     Connection(std::string const &host, uint16_t port, std::string return_host=std::string());
     
     std::string m_host;
+    std::string m_ip_address; // resolved ip address
     uint16_t m_port;
     int m_socket;
     int m_send_buffer_size;
@@ -76,6 +78,7 @@ private:
     std::vector<std::shared_ptr<Connection> > m_connections;
 };
 
+std::string addressToDotted(const sockaddr_in &address);
     
 } // namespace udp_bridge
 

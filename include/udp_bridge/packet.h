@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <vector>
 #include <string>
-#include <netinet/in.h>
 
 namespace udp_bridge
 {
@@ -50,9 +49,6 @@ struct Fragment: public FragmentHeader
 
 std::shared_ptr<std::vector<uint8_t> > compress(std::vector<uint8_t> const &data);
 std::vector<uint8_t> uncompress(std::vector<uint8_t> const &data);
-
-std::string addressToDotted(const sockaddr_in &address);
-
 
 } // namespace udp_bridge
 
