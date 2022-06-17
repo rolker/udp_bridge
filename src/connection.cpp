@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <sstream>
+#include <iostream>
 
 namespace udp_bridge
 {
@@ -14,7 +15,7 @@ Connection::Connection(std::string const &host, uint16_t port, std::string retur
 {
     struct addrinfo hints = {0}, *addresses;
     
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_protocol = IPPROTO_UDP;
     
@@ -24,77 +25,23 @@ Connection::Connection(std::string const &host, uint16_t port, std::string retur
     if(ret != 0)
         throw std::runtime_error(gai_strerror(ret));
     
-    int error {0};
     for (struct addrinfo *address = addresses; address != nullptr; address = address->ai_next)
     {
-        m_socket = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-        if(m_socket == -1)
-        {
-            error = errno;
-            continue;
-        }
-        
-        if(connect(m_socket, address->ai_addr, address->ai_addrlen) == 0)
-        {
-          m_ip_address = addressToDotted(*reinterpret_cast<sockaddr_in*>( address->ai_addr));
-          unsigned int s = sizeof(m_send_buffer_size);
-          getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
-          m_send_buffer_size = 500000;
-          setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &m_send_buffer_size, sizeof(m_send_buffer_size));
-          getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&m_send_buffer_size, &s);
-          break;
-        }
-        
-        error = errno;
-        close(m_socket);
-        m_socket = -1;
+      m_addresses.push_back(*reinterpret_cast<sockaddr_in*>(address->ai_addr));
+      std::cerr << host << ":" << port << " adding address: " << address->ai_canonname << " " << addressToDotted(m_addresses.back()) << ":" << ntohs(m_addresses.back().sin_port) << std::endl;
+      if(m_addresses.size() == 1)
+        m_ip_address = addressToDotted(m_addresses.back());
     }
     freeaddrinfo(addresses);
-    if(m_socket == -1)
-        throw std::runtime_error(strerror(error));
 }
-    
     
 Connection::~Connection()
 {
-  close(m_socket);
 }
 
-//void Connection::send(std::vector<uint8_t> const &data)
-void Connection::send(std::shared_ptr<std::vector<uint8_t> > data)
+const sockaddr_in& Connection::socket_address() const
 {
-  int tries = 0;
-  while (true)
-  {
-    fd_set writefds;
-    FD_ZERO(&writefds);
-    FD_SET(m_socket, &writefds);
-    timeval timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 500;
-    int ret = select(m_socket+1, nullptr, &writefds, nullptr, &timeout);
-    if(ret > 0)
-    {
-      int e = ::send(m_socket, data->data(), data->size(), 0);
-      if(e == -1 && errno != ECONNREFUSED)
-        throw(ConnectionException(strerror(errno)));
-      if(e < data->size())
-      throw(ConnectionException("only "+std::to_string(e) +" of " +std::to_string(data->size()) + " sent"));
-      break;
-    }
-    if(ret == 0)
-      throw(ConnectionException("Timeout"));
-    else if( errno == EAGAIN && tries < 20)
-    {
-      tries += 1;
-      usleep(500);
-    }
-    else
-      throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
-  }
-  packet_buffer_.push_back(data);
-  while(packet_buffer_.size() > packet_buffer_length_)
-    packet_buffer_.pop_front();
+  return m_addresses.front();
 }
 
 std::string Connection::str() const
@@ -116,6 +63,17 @@ void Connection::setLabel(const std::string &label)
     m_label = label;
 }
 
+std::string Connection::topicLabel() const
+{
+  std::string ret = label();
+  if(!std::isalpha(ret[0]))
+    ret = "r"+ret;
+  for(int i = 0; i < ret.size(); i++)
+    if(!(std::isalnum(ret[i]) || ret[i] == '_' || ret[i] == '/'))
+      ret[i] = '_';
+  return ret;
+}
+
 const std::string& Connection::returnHost() const
 {
   return m_return_host;
@@ -124,11 +82,6 @@ const std::string& Connection::returnHost() const
 void Connection::setReturnHost(const std::string &return_host)
 {
   m_return_host = return_host;
-}
-
-int Connection::sendBufferSize() const
-{
-    return m_send_buffer_size;
 }
 
 const std::string& Connection::host() const
@@ -144,6 +97,11 @@ uint16_t Connection::port() const
 const std::string& Connection::ip_address() const
 {
   return m_ip_address;
+}
+
+std::string Connection::ip_address_with_port() const
+{
+  return m_ip_address+":"+std::to_string(m_port);
 }
 
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port, std::string label)

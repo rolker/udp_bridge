@@ -28,9 +28,9 @@ public:
     ~Connection();
     
     //void send(std::vector<uint8_t> const &data);
-    void send(std::shared_ptr<std::vector<uint8_t> > data);
+    //void send(std::shared_ptr<std::vector<uint8_t> > data);
     std::string str() const;
-    int sendBufferSize() const;
+    //int sendBufferSize() const;
 
     // Returns the label, or optionally the string representation
     // of the host and port if the label is empty and allowEmpty
@@ -40,6 +40,9 @@ public:
     std::string label(bool allowEmpty = false) const;
     void setLabel(const std::string &label);
 
+    // returns a label sutible for use as a topic name.
+    std::string topicLabel() const;
+
     // Used to tell the remote host the address to get back to us.
     const std::string& returnHost() const;
     void setReturnHost(const std::string &return_host);
@@ -47,6 +50,9 @@ public:
     const std::string& host() const;
     uint16_t port() const;
     const std::string& ip_address() const;
+    std::string ip_address_with_port() const;
+
+    const sockaddr_in& socket_address() const;
 private:
     friend class ConnectionManager;
     
@@ -55,15 +61,15 @@ private:
     std::string m_host;
     std::string m_ip_address; // resolved ip address
     uint16_t m_port;
-    int m_socket;
-    int m_send_buffer_size;
+    //int m_socket;
+    //int m_send_buffer_size;
     std::string m_label;
+
+    std::vector<sockaddr_in> m_addresses;
 
     // Used by the remote to refer to us. Useful if they are behind a nat
     std::string m_return_host;
 
-    std::list<std::shared_ptr<std::vector<uint8_t> > > packet_buffer_;
-    int packet_buffer_length_ = 100;
 };
 
 class ConnectionManager

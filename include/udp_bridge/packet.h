@@ -9,7 +9,7 @@
 namespace udp_bridge
 {
 
-enum class PacketType: uint8_t {Data, Compressed, SubscribeRequest, AdvertiseRequest, ChannelInfo, Fragment, BridgeInfo};
+enum class PacketType: uint8_t {Data, Compressed, SubscribeRequest, AdvertiseRequest, ChannelInfo, Fragment, BridgeInfo, ChannelStatistics};
 
 #pragma pack(push, 1)
 

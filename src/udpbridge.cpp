@@ -4,6 +4,7 @@
 
 #include <sys/socket.h>
 #include <netdb.h>
+#include <poll.h>
 
 #include "udp_bridge/RemoteSubscribeInternal.h"
 #include "udp_bridge/MessageInternal.h"
@@ -22,8 +23,8 @@ UDPBridge::UDPBridge()
     ros::param::param<int>("~maxPacketSize", m_max_packet_size, m_max_packet_size);
     ROS_INFO_STREAM("maxPacketSize: " << m_max_packet_size); 
 
-    m_listen_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if(m_listen_socket < 0)
+    m_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if(m_socket < 0)
     {
         ROS_ERROR("Failed creating socket");
         exit(1);
@@ -35,7 +36,7 @@ UDPBridge::UDPBridge()
     bind_address.sin_addr.s_addr = htonl(INADDR_ANY);
     bind_address.sin_port = htons(m_port);
     
-    if(bind(m_listen_socket, (sockaddr*)&bind_address, sizeof(bind_address)) < 0)
+    if(bind(m_socket, (sockaddr*)&bind_address, sizeof(bind_address)) < 0)
     {
         ROS_ERROR("Error binding socket");
         exit(1);
@@ -44,100 +45,120 @@ UDPBridge::UDPBridge()
     timeval socket_timeout;
     socket_timeout.tv_sec = 0;
     socket_timeout.tv_usec = 1000;
-    if(setsockopt(m_listen_socket, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout, sizeof(socket_timeout)) < 0)
+    if(setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout, sizeof(socket_timeout)) < 0)
     {
         ROS_ERROR("Error setting socket timeout");
         exit(1);
     }
 
-    int recv_buffer_size;
-    unsigned int s = sizeof(recv_buffer_size);
-    getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
-    ROS_INFO_STREAM("recv buffer size:" << recv_buffer_size);
-    recv_buffer_size = 500000;
-    setsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size));
-    getsockopt(m_listen_socket, SOL_SOCKET, SO_RCVBUF, (void*)&recv_buffer_size, &s);
-    ROS_INFO_STREAM("recv buffer size set to:" << recv_buffer_size);
+    int buffer_size;
+    unsigned int s = sizeof(buffer_size);
+    getsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, (void*)&buffer_size, &s);
+    ROS_INFO_STREAM("recv buffer size:" << buffer_size);
+    buffer_size = 500000;
+    setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
+    getsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, (void*)&buffer_size, &s);
+    ROS_INFO_STREAM("recv buffer size set to:" << buffer_size);
+    buffer_size = 500000;
+    setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size));
+    getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&buffer_size, &s);
+    ROS_INFO_STREAM("send buffer size set to:" << buffer_size);
 }
 
 void UDPBridge::spin()
 {
-    ros::NodeHandle private_nodeHandle("~");
-    ros::ServiceServer susbcribe_service = private_nodeHandle.advertiseService("remote_subscribe", &UDPBridge::remoteSubscribe, this);
-    ros::ServiceServer advertise_service = private_nodeHandle.advertiseService("remote_advertise", &UDPBridge::remoteAdvertise, this);
+  ros::NodeHandle private_nodeHandle("~");
+  ros::ServiceServer susbcribe_service = private_nodeHandle.advertiseService("remote_subscribe", &UDPBridge::remoteSubscribe, this);
+  ros::ServiceServer advertise_service = private_nodeHandle.advertiseService("remote_advertise", &UDPBridge::remoteAdvertise, this);
 
-    ros::ServiceServer add_remote_service = private_nodeHandle.advertiseService("add_remote", &UDPBridge::addRemote, this);
-    ros::ServiceServer list_remotes_service = private_nodeHandle.advertiseService("list_remotes", &UDPBridge::listRemotes, this);
-    
-    m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
-    m_bridge_info_publisher = private_nodeHandle.advertise<BridgeInfo>("bridge_info", 1, true);
-    
-    XmlRpc::XmlRpcValue remotes_dict;
-    if(private_nodeHandle.getParam("remotes",remotes_dict))
+  ros::ServiceServer add_remote_service = private_nodeHandle.advertiseService("add_remote", &UDPBridge::addRemote, this);
+  ros::ServiceServer list_remotes_service = private_nodeHandle.advertiseService("list_remotes", &UDPBridge::listRemotes, this);
+  
+  m_channelInfoPublisher = private_nodeHandle.advertise<ChannelStatisticsArray>("channel_info",10,false);
+  m_bridge_info_publisher = private_nodeHandle.advertise<BridgeInfo>("bridge_info", 1, true);
+  
+  XmlRpc::XmlRpcValue remotes_dict;
+  if(private_nodeHandle.getParam("remotes",remotes_dict))
+  {
+      if(remotes_dict.getType() == XmlRpc::XmlRpcValue::TypeStruct)
+      {
+          for(auto remote:remotes_dict)
+          {
+              //std::cerr << remote.first << ": " << std::endl;
+              std::string host = remote.second["host"];
+              int port = remote.second["port"];
+              std::string remote_name = remote.first;
+              if(remote.second.hasMember("name"))
+                  remote_name = std::string(remote.second["name"]);
+              std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
+              connection->setLabel(remote_name);
+              ROS_INFO_STREAM("remote: " << remote_name << " address: " << connection->ip_address_with_port());
+
+              if(remote.second.hasMember("topics"))
+                  for(auto topic: remote.second["topics"])
+                  {
+                      int queue_size = 1;
+                      if (topic.second.hasMember("queue_size"))
+                          queue_size = topic.second["queue_size"];
+                      double period = 0.0;
+                      if (topic.second.hasMember("period"))
+                          period = topic.second["period"];
+                      std::string source = topic.first;
+                      if (topic.second.hasMember("source"))
+                      source = std::string(topic.second["source"]);
+                      source = ros::names::resolve(source);
+                      std::string destination = source;
+                      if (topic.second.hasMember("destination"))
+                      destination = std::string(topic.second["destination"]);
+                      addSubscriberConnection(source, destination, 1, period, connection);
+                  }
+          }
+      }
+  }
+  
+  m_statsReportTimer = m_nodeHandle.createTimer(ros::Duration(1.0), &UDPBridge::statsReportCallback, this);
+  m_bridgeInfoTimer = m_nodeHandle.createTimer(ros::Duration(5.0), &UDPBridge::bridgeInfoCallback, this);
+  
+  while(ros::ok())
+  {   
+    sockaddr_in remote_address;
+    socklen_t remote_address_length = sizeof(remote_address);
+    while(true)
     {
-        if(remotes_dict.getType() == XmlRpc::XmlRpcValue::TypeStruct)
-        {
-            for(auto remote:remotes_dict)
-            {
-                //std::cerr << remote.first << ": " << std::endl;
-                std::string host = remote.second["host"];
-                int port = remote.second["port"];
-                std::string remote_name = remote.first;
-                if(remote.second.hasMember("name"))
-                    remote_name = std::string(remote.second["name"]);
-                std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
-                connection->setLabel(remote_name);
-                ROS_INFO_STREAM("remote: " << remote_name << " send buffer size: " << connection->sendBufferSize());
-
-                if(remote.second.hasMember("topics"))
-                    for(auto topic: remote.second["topics"])
-                    {
-                        int queue_size = 1;
-                        if (topic.second.hasMember("queue_size"))
-                            queue_size = topic.second["queue_size"];
-                        double period = 0.0;
-                        if (topic.second.hasMember("period"))
-                            period = topic.second["period"];
-                        std::string source = topic.first;
-                        if (topic.second.hasMember("source"))
-                        source = std::string(topic.second["source"]);
-                        source = ros::names::resolve(source);
-                        std::string destination = source;
-                        if (topic.second.hasMember("destination"))
-                        destination = std::string(topic.second["destination"]);
-                        addSubscriberConnection(source, destination, 1, period, connection);
-                    }
-            }
-        }
-    }
-    
-    m_statsReportTimer = m_nodeHandle.createTimer(ros::Duration(1.0), &UDPBridge::statsReportCallback, this);
-    m_bridgeInfoTimer = m_nodeHandle.createTimer(ros::Duration(10.0), &UDPBridge::bridgeInfoCallback, this);
-    
-    while(ros::ok())
-    {   
-        sockaddr_in remote_address;
-        socklen_t remote_address_length = sizeof(remote_address);
+      pollfd p;
+      p.fd = m_socket;
+      p.events = POLLIN;
+      int ret = poll(&p, 1, 0);
+      if(ret < 0)
+        ROS_WARN_STREAM("poll error: " << int(errno) << " " << strerror(errno));
+      if(ret > 0 && p.revents & POLLIN)
+      {
         int receive_length = 0;
         std::vector<uint8_t> buffer;
         int buffer_size;
         unsigned int buffer_size_size = sizeof(buffer_size);
-        getsockopt(m_listen_socket,SOL_SOCKET,SO_RCVBUF,&buffer_size,&buffer_size_size);
+        getsockopt(m_socket,SOL_SOCKET,SO_RCVBUF,&buffer_size,&buffer_size_size);
         buffer.resize(buffer_size);
-        receive_length = recvfrom(m_listen_socket, &buffer.front(), buffer_size, 0, (sockaddr*)&remote_address, &remote_address_length);
+        receive_length = recvfrom(m_socket, &buffer.front(), buffer_size, 0, (sockaddr*)&remote_address, &remote_address_length);
         if(receive_length > 0)
         {
-            buffer.resize(receive_length);
-            //ROS_DEBUG_STREAM("received " << buffer.size() << " bytes");
-            
-            decode(buffer, addressToDotted(remote_address));
-        }
-        int discard_count = m_defragmenter.cleanup(ros::Duration(10));
-        if(discard_count)
-            ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplete packets");
+          auto host = addressToDotted(remote_address);
+          auto port = ntohs(remote_address.sin_port);
+          auto c = m_connectionManager.getConnection(host, port);
 
-        ros::spinOnce();
+          buffer.resize(receive_length);
+          //ROS_DEBUG_STREAM("received " << buffer.size() << " bytes");
+          decode(buffer, c);
+        }
+      }
+      else
+        break;
     }
+    int discard_count = m_defragmenter.cleanup(ros::Duration(10));
+    if(discard_count)
+        ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplete packets");
+    ros::spinOnce();
+  }
 }
 
 void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const std::string &topic_name)
@@ -224,38 +245,41 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
     }
 }
 
-void UDPBridge::decode(std::vector<uint8_t> const &message, const std::string &remote_address)
+void UDPBridge::decode(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
 {
     const Packet *packet = reinterpret_cast<const Packet*>(message.data());
     ROS_DEBUG_STREAM("Received packet of type " << int(packet->type) << " and size " << message.size());
     switch(packet->type)
     {
         case PacketType::Data:
-            decodeData(message, remote_address);
+            decodeData(message, connection);
             break;
         case PacketType::Compressed:
-            decode(uncompress(message), remote_address);
+            decode(uncompress(message), connection);
             break;
         case PacketType::SubscribeRequest:
-            decodeSubscribeRequest(message, remote_address);
+            decodeSubscribeRequest(message, connection);
             break;
         case PacketType::ChannelInfo:
-            decodeChannelInfo(message, remote_address);
+            decodeChannelInfo(message, connection);
             break;
         case PacketType::Fragment:
-            if(m_defragmenter.addFragment(message, remote_address))
+            if(m_defragmenter.addFragment(message, connection->label()))
                 for(auto p: m_defragmenter.getPackets())
-                    decode(p.first, p.second);
+                    decode(p.first, m_connectionManager.getConnection(p.second));
             break;
         case PacketType::BridgeInfo:
-            decodeBridgeInfo(message, remote_address);
+            decodeBridgeInfo(message, connection);
+            break;
+        case PacketType::ChannelStatistics:
+            decodeChannelStatistics(message, connection);
             break;
         default:
             ROS_DEBUG_STREAM("Unkown packet type: " << int(packet->type));
     }
 }
 
-void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::string &remote_address)
+void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
 {
     const Packet *packet = reinterpret_cast<const Packet*>(message.data());
     auto payload_size = message.size() - sizeof(PacketHeader);
@@ -265,7 +289,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
     ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),payload_size);
     ros::serialization::Serializer<MessageInternal>::read(stream, outer_message);
     
-    std::string info_label = remote_address+outer_message.source_topic;
+    std::string info_label = connection->ip_address_with_port()+outer_message.source_topic;
     if(m_channelInfos.find(info_label) != m_channelInfos.end())
     {    
       topic_tools::ShapeShifter ss;
@@ -280,7 +304,10 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
       if(topic.empty())
         topic =m_channelInfos[info_label].source_topic;
       if (m_publishers.find(topic) == m_publishers.end())
+      {
         m_publishers[topic] = ss.advertise(m_nodeHandle, topic, 1);
+        sendBridgeInfo();
+      }
       
       m_publishers[topic].publish(ss);
     }
@@ -289,7 +316,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const std::strin
     
 }
 
-void UDPBridge::decodeChannelInfo(std::vector<uint8_t> const &message, const std::string &remote_address)
+void UDPBridge::decodeChannelInfo(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
 {
     const Packet* packet = reinterpret_cast<const Packet*>(message.data());
     
@@ -298,33 +325,96 @@ void UDPBridge::decodeChannelInfo(std::vector<uint8_t> const &message, const std
     ChannelInfo channel_info;
     ros::serialization::Serializer<ChannelInfo>::read(stream, channel_info);
     
-    m_channelInfos[remote_address+channel_info.source_topic] = channel_info;
+    m_channelInfos[connection->ip_address_with_port()+channel_info.source_topic] = channel_info;
 }
 
-void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std::string &remote_address)
+void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
 {
-    const Packet* packet = reinterpret_cast<const Packet*>(message.data());
-    
-    ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
-    
-    BridgeInfo bridge_info;
+  const Packet* packet = reinterpret_cast<const Packet*>(message.data());
+  
+  ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
+  
+  BridgeInfo bridge_info;
+  try
+  {
     ros::serialization::Serializer<BridgeInfo>::read(stream, bridge_info);
-    
-    //std::cerr << "BridgeInfo from " << remote_address << std::endl;
-    auto c = m_connectionManager.getConnection(remote_address, bridge_info.port);
-    auto label = c->label();
-    if(!std::isalpha(label[0]))
-      label = "r"+label;
-    for(int i = 0; i < label.size(); i++)
-      if(!(std::isalnum(label[i]) || label[i] == '_' || label[i] == '/'))
-        label[i] = '_';
-    //std::cerr << "remote: " << label << std::endl;
-    if(m_bridge_info_publishers.find(label) == m_bridge_info_publishers.end())
-    {
-      ros::NodeHandle private_nodeHandle("~");
-      m_bridge_info_publishers[label] = private_nodeHandle.advertise<BridgeInfo>("remotes/"+label,1,true);
-    }
-    m_bridge_info_publishers[label].publish(bridge_info);
+  }
+  catch(const std::exception& e)
+  {
+    ROS_WARN_STREAM("Error decoding BridgeInfo: " << e.what());
+    return;
+  }
+  
+  //std::cerr << "BridgeInfo from " << remote_address << std::endl;
+  auto label = connection->topicLabel();
+
+  bool updated = false;
+
+  if(m_bridge_info_publishers.find(label) == m_bridge_info_publishers.end())
+  {
+    ros::NodeHandle private_nodeHandle("~");
+    m_bridge_info_publishers[label] = std::make_pair(private_nodeHandle.advertise<BridgeInfo>("remotes/"+label+"/bridge_info",1,true),ros::Time());
+    updated = true;
+  }
+  m_bridge_info_publishers[label].first.publish(bridge_info);
+  auto now = ros::Time::now();
+  m_bridge_info_publishers[label].second = now;
+
+  auto expire_time = now-ros::Duration(60.0);
+  std::vector<std::string> expired;
+  for(auto bip: m_bridge_info_publishers)
+    if(bip.second.second < expire_time)
+      expired.push_back(bip.first);
+
+  for(auto e: expired)
+  {
+    ROS_INFO_STREAM(e << " expired");
+    m_bridge_info_publishers[e].first.shutdown();
+    m_bridge_info_publishers.erase(e);
+    updated = true;
+  }
+  if(updated)
+    sendBridgeInfo();
+}
+
+void UDPBridge::decodeChannelStatistics(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
+{
+  const Packet* packet = reinterpret_cast<const Packet*>(message.data());
+  
+  ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
+  
+  ChannelStatisticsArray channel_statistics;
+  ros::serialization::Serializer<ChannelStatisticsArray>::read(stream, channel_statistics);
+  
+  auto label = connection->topicLabel();
+
+  bool updated = false;
+
+  if(m_channel_statistics_publishers.find(label) == m_channel_statistics_publishers.end())
+  {
+    ros::NodeHandle private_nodeHandle("~");
+    m_channel_statistics_publishers[label] = std::make_pair(private_nodeHandle.advertise<ChannelStatisticsArray>("remotes/"+label+"/channel_statistics",1,true),ros::Time());
+    updated = true;
+  }
+  m_channel_statistics_publishers[label].first.publish(channel_statistics);
+  auto now = ros::Time::now();
+  m_channel_statistics_publishers[label].second = now;
+
+  auto expire_time = now-ros::Duration(60.0);
+  std::vector<std::string> expired;
+  for(auto csp: m_channel_statistics_publishers)
+    if(csp.second.second < expire_time)
+      expired.push_back(csp.first);
+
+  for(auto e: expired)
+  {
+    ROS_INFO_STREAM(e << " expired");
+    m_channel_statistics_publishers[e].first.shutdown();
+    m_channel_statistics_publishers.erase(e);
+    updated = true;
+  }
+  if(updated)
+    sendBridgeInfo();
 }
 
 
@@ -350,7 +440,7 @@ const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::stri
     return nullptr;
 }
 
-void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::string &remote_address)
+void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
 {
     const Packet* packet = reinterpret_cast<const Packet*>(message.data());
     
@@ -359,26 +449,63 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
     RemoteSubscribeInternal remote_request;
     ros::serialization::Serializer<RemoteSubscribeInternal>::read(stream, remote_request);
 
-    std::string host = remote_address;
-    if(!remote_request.return_address.empty())
-        host = remote_request.return_address;
+    // std::string host = remote_address;
+    // if(!remote_request.return_address.empty())
+    //     host = remote_request.return_address;
 
-    std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, remote_request.port);
+    // std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, remote_request.port);
     auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, connection);
 }
 
 bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection)
 {
-    try
+  try
+  {
+    int tries = 0;
+    while (true)
     {
-        connection->send(data);
-        return true;
+      pollfd p;
+      p.fd = m_socket;
+      p.events = POLLOUT;
+      int ret = poll(&p, 1, 10);
+      if(ret > 0 && p.revents & POLLOUT)
+      {
+        int e = sendto(m_socket, data->data(), data->size(), 0, reinterpret_cast<const sockaddr*>(&connection->socket_address()), sizeof(connection->socket_address()));
+        if(e == -1)
+          switch(errno)
+          {
+            case EAGAIN:
+              tries+=1;
+              break;
+            case ECONNREFUSED:
+              return false;
+            default:
+              throw(ConnectionException(strerror(errno)));
+          }
+        if(e < data->size())
+          throw(ConnectionException("only "+std::to_string(e) +" of " +std::to_string(data->size()) + " sent"));
+        else
+          break;
+      }
+      else
+        tries+=1;
+
+      if(tries >= 20)
+        if(ret == 0)
+          throw(ConnectionException("Timeout"));
+        else
+          throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
     }
-    catch(const ConnectionException& e)
-    {
-        ROS_WARN_STREAM("error sending data of size " << data->size() << ": " << e.getMessage());
-    }
-    return false;
+    packet_buffer_.push_back(data);
+    while(packet_buffer_.size() > packet_buffer_length_)
+      packet_buffer_.pop_front();
+    return true;
+  }
+  catch(const ConnectionException& e)
+  {
+      ROS_WARN_STREAM("error sending data of size " << data->size() << ": " << e.getMessage());
+  }
+  return false;
 }
 
 template <typename MessageType> void UDPBridge::send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType)
@@ -393,15 +520,24 @@ template <typename MessageType> void UDPBridge::send(MessageType const &message,
     
     auto compressed_packet_data = compress(packet_data);
     auto fragments = fragment(compressed_packet_data);
-
+    
+    bool success = true;
     if(fragments.size())
         for(const auto& f: fragments)
         {
-            send(f,connection);
+            success = success && send(f,connection);
             usleep(1500);
         }
     else
-        send(compressed_packet_data, connection);
+        success = send(compressed_packet_data, connection);
+
+    SizeData sd;
+    sd.sent_success = success;
+    sd.message_size = serial_size;
+    sd.packet_size = packet_data.size();
+    sd.compressed_packet_size = compressed_packet_data->size();
+    sd.timestamp = ros::Time::now();
+    m_overhead_stats[connection->label()].push_back(sd);
 }
 
 template void UDPBridge::send(RemoteSubscribeInternal const &message, std::shared_ptr<Connection> connection, PacketType packetType);
@@ -433,62 +569,124 @@ bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bri
         return false;
 
     auto subscription = addSubscriberConnection(request.source_topic, request.destination_topic, request.queue_size, request.period, connection);
+    sendBridgeInfo();
     return true;
 }
 
 void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
 {
-    ros::Time now = ros::Time::now();
-    ChannelStatisticsArray csa;
-    for(auto &subscriber: m_subscribers)
+  ros::Time now = ros::Time::now();
+  ChannelStatisticsArray csa;
+  for(auto &subscriber: m_subscribers)
+  {
+    for(auto &remote: subscriber.second.remotes)
     {
-        for(auto &remote: subscriber.second.remotes)
+      while (!remote.second.size_statistics.empty() && now - remote.second.size_statistics.front().timestamp > ros::Duration(10))
+        remote.second.size_statistics.pop_front();
+      
+      {
+        auto connection = remote.second.connection.lock();
+        if(connection)
         {
-            while (!remote.second.size_statistics.empty() && now - remote.second.size_statistics.front().timestamp > ros::Duration(10))
-                remote.second.size_statistics.pop_front();
-            
+          ChannelStatistics cs;
+          cs.source_topic = subscriber.first;
+          cs.destination_topic = remote.second.destination_topic;
+          cs.remote = connection->label();
+          
+          int total_message_size = 0;
+          int total_packet_size = 0;
+          int total_compressed_packet_size = 0;
+          int total_sent_success = 0;
+          
+          for(auto data: remote.second.size_statistics)
+          {
+            total_message_size += data.message_size;
+            total_packet_size += data.packet_size;
+            total_compressed_packet_size += data.compressed_packet_size;
+            if(data.sent_success)
+              total_sent_success++;
+          }
+          
+          if(!remote.second.size_statistics.empty())
+          {
+            cs.message_average_size_bytes = total_message_size/float(remote.second.size_statistics.size());
+            cs.packet_average_size_bytes = total_packet_size/float(remote.second.size_statistics.size());
+            cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size_statistics.size());
+            cs.send_success_rate = total_sent_success/float(remote.second.size_statistics.size());
+            double deltat = (remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp).toSec();
+            if(deltat > 0.0)
             {
-                auto connection = remote.second.connection.lock();
-                if(connection)
-                {
-                    ChannelStatistics cs;
-                    cs.source_topic = subscriber.first;
-                    cs.destination_topic = remote.second.destination_topic;
-                    cs.remote = connection->label();
-                    
-                    int total_message_size = 0;
-                    int total_packet_size = 0;
-                    int total_compressed_packet_size = 0;
-                    int total_sent_success = 0;
-                    
-                    for(auto data: remote.second.size_statistics)
-                    {
-                        total_message_size += data.message_size;
-                        total_packet_size += data.packet_size;
-                        total_compressed_packet_size += data.compressed_packet_size;
-                        if(data.sent_success)
-                            total_sent_success++;
-                    }
-                    
-                    if(!remote.second.size_statistics.empty())
-                    {
-                      cs.message_average_size_bytes = total_message_size/float(remote.second.size_statistics.size());
-                      cs.packet_average_size_bytes = total_packet_size/float(remote.second.size_statistics.size());
-                      cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size_statistics.size());
-                      double deltat = (remote.second.size_statistics.back().timestamp - remote.second.size_statistics.front().timestamp).toSec();
-                      cs.messages_per_second = (remote.second.size_statistics.size()-1)/deltat;
-                      cs.send_success_rate = total_sent_success/float(remote.second.size_statistics.size());
-                      cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
-                      cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
-                      cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
-                    }
-                    csa.channels.push_back(cs);
-                }
-                
+              cs.messages_per_second = (remote.second.size_statistics.size()-1)/deltat;
+              cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
+              cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
+              cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
             }
+          }
+          csa.channels.push_back(cs);
         }
+      }
     }
-    m_channelInfoPublisher.publish(csa);
+  }
+  for(auto& remote: m_overhead_stats)
+  {
+    while(!remote.second.empty() && now- remote.second.front().timestamp > ros::Duration(10))
+      remote.second.pop_front();
+    ChannelStatistics cs;
+    cs.remote = remote.first;
+
+    int total_message_size = 0;
+    int total_packet_size = 0;
+    int total_compressed_packet_size = 0;
+    int total_sent_success = 0;
+    
+    for(auto data: remote.second)
+    {
+      total_message_size += data.message_size;
+      total_packet_size += data.packet_size;
+      total_compressed_packet_size += data.compressed_packet_size;
+      if(data.sent_success)
+        total_sent_success++;
+    }
+    
+    if(!remote.second.empty())
+    {
+      cs.message_average_size_bytes = total_message_size/float(remote.second.size());
+      cs.packet_average_size_bytes = total_packet_size/float(remote.second.size());
+      cs.compressed_average_size_bytes = total_compressed_packet_size /float(remote.second.size());
+      double deltat = (remote.second.back().timestamp - remote.second.front().timestamp).toSec();
+      cs.send_success_rate = total_sent_success/float(remote.second.size());
+      if(deltat > 0.0)
+      {
+        cs.messages_per_second = (remote.second.size()-1)/deltat;
+        cs.message_bytes_per_second = (total_message_size-remote.second.front().message_size)/deltat;
+        cs.packet_bytes_per_second = (total_packet_size-remote.second.front().packet_size)/deltat;
+        cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.front().compressed_packet_size)/deltat;
+      }
+    }
+    csa.channels.push_back(cs);
+
+  }
+  m_channelInfoPublisher.publish(csa);
+  for(auto c: m_connectionManager.connections())
+  {
+    if(c)
+    {
+      csa.remote_label = c->label();
+      send(csa, c, PacketType::ChannelStatistics);
+    }
+  }
+
+
+  // clean up stale stats
+  std::vector<std::string> stale;
+  for(auto remote: m_overhead_stats)
+  {
+    auto c = m_connectionManager.getConnection(remote.first);
+    if(!c || c->label() != remote.first) // doesn't exist, or has been renamed
+      stale.push_back(remote.first);
+  }
+  for(auto s: stale)
+    m_overhead_stats.erase(s);
 }
 
 std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::shared_ptr<std::vector<uint8_t> > data)
@@ -558,6 +756,7 @@ void UDPBridge::sendBridgeInfo()
         remote.host = r->host();
         remote.port = r->port();
         remote.ip_address = r->ip_address();
+        remote.topic_label = r->topicLabel();
         bi.remotes.push_back(remote);
     }
   }
@@ -578,7 +777,8 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, port, request.name);
     connection->setLabel(request.name);
     connection->setReturnHost(request.return_address);
-    ROS_INFO_STREAM("remote: " << request.name << " send buffer size: " << connection->sendBufferSize());
+    ROS_INFO_STREAM("remote: " << request.name << " address: " << connection->ip_address_with_port());
+    sendBridgeInfo();
     return true;
 }
 
