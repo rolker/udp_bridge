@@ -368,7 +368,7 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std:
 
   for(auto e: expired)
   {
-    ROS_INFO_STREAM(e << " expired");
+    ROS_INFO_STREAM(e << " bridge_info expired");
     m_bridge_info_publishers[e].first.shutdown();
     m_bridge_info_publishers.erase(e);
     updated = true;
@@ -408,7 +408,7 @@ void UDPBridge::decodeChannelStatistics(std::vector<uint8_t> const &message, con
 
   for(auto e: expired)
   {
-    ROS_INFO_STREAM(e << " expired");
+    ROS_INFO_STREAM(e << " channel_statistics expired");
     m_channel_statistics_publishers[e].first.shutdown();
     m_channel_statistics_publishers.erase(e);
     updated = true;
@@ -433,7 +433,7 @@ const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::stri
 
             m_subscribers[source_topic].subscriber = m_nodeHandle.subscribe(source_topic, queue_size, cb);
         }
-        m_subscribers[source_topic].remotes[connection->str()] = RemoteDetails(destination_topic, period, connection);
+        m_subscribers[source_topic].remotes[connection->ip_address_with_port()] = RemoteDetails(destination_topic, period, connection);
         return &m_subscribers[source_topic];
     }
     sendBridgeInfo();

@@ -28,7 +28,7 @@ Connection::Connection(std::string const &host, uint16_t port, std::string retur
     for (struct addrinfo *address = addresses; address != nullptr; address = address->ai_next)
     {
       m_addresses.push_back(*reinterpret_cast<sockaddr_in*>(address->ai_addr));
-      std::cerr << host << ":" << port << " adding address: " << address->ai_canonname << " " << addressToDotted(m_addresses.back()) << ":" << ntohs(m_addresses.back().sin_port) << std::endl;
+      std::cerr << host << ":" << port << " adding address: " << addressToDotted(m_addresses.back()) << ":" << ntohs(m_addresses.back().sin_port) << std::endl;
       if(m_addresses.size() == 1)
         m_ip_address = addressToDotted(m_addresses.back());
     }
