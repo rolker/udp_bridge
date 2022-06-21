@@ -765,7 +765,10 @@ void UDPBridge::sendBridgeInfo()
   for(auto c: m_connectionManager.connections())
   {
     if(c)
+    {
+      bi.remote_label = c->label();
       send(bi, c, PacketType::BridgeInfo);
+    }
   }
 }
 
