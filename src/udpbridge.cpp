@@ -128,7 +128,7 @@ void UDPBridge::spin()
       pollfd p;
       p.fd = m_socket;
       p.events = POLLIN;
-      int ret = poll(&p, 1, 0);
+      int ret = poll(&p, 1, 10);
       if(ret < 0)
         ROS_WARN_STREAM("poll error: " << int(errno) << " " << strerror(errno));
       if(ret > 0 && p.revents & POLLIN)
