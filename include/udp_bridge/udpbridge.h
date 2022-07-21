@@ -46,6 +46,10 @@ private:
     /// Decodes a request from a remote node to subscribe to a local topic.
     void decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
 
+    /// Decodes a request from a remote node to resend packets.
+    void decodeResendRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
+
+
     /// Unwraps and decodes a packet.
     void unwrap(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
 
@@ -83,6 +87,12 @@ private:
     /// Splits up a packet, if necessary.
     /// Returns an empty vector if fragmentation is not necessary.
     std::vector<std::shared_ptr<std::vector<uint8_t> > > fragment(std::shared_ptr<std::vector<uint8_t> > data);    
+
+    /// Remove old buffered packets
+    void cleanupSentPackets();
+
+    /// Find missing packet and requeuest resend
+    void resendMissingPackets();
 
     int m_socket;
     int m_port {4200};
@@ -155,6 +165,9 @@ private:
     std::map<std::string, uint32_t> next_packet_numbers_;
 
     std::map<std::string, std::map<uint32_t, ros::Time> > received_packet_times_;
+
+    std::map<std::string, std::map<uint32_t, ros::Time> > resend_request_times_;
+
 };
 
 } // namespace udp_bridge

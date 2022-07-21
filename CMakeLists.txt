@@ -22,6 +22,7 @@ add_message_files(
   MessageInternal.msg
   Remote.msg
   RemoteSubscribeInternal.msg
+  ResendRequest.msg
   TopicInfo.msg
   TopicRemoteDetails.msg
 )

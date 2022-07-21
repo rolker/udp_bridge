@@ -11,6 +11,7 @@
 #include "udp_bridge/ChannelStatisticsArray.h"
 #include "udp_bridge/ChannelInfo.h"
 #include "udp_bridge/BridgeInfo.h"
+#include "udp_bridge/ResendRequest.h"
 
 namespace udp_bridge
 {
@@ -157,6 +158,8 @@ void UDPBridge::spin()
     int discard_count = m_defragmenter.cleanup(ros::Duration(10));
     if(discard_count)
         ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplete packets");
+    cleanupSentPackets();
+    resendMissingPackets();
     ros::spinOnce();
   }
 }
@@ -290,6 +293,9 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const std::shared_pt
         case PacketType::WrappedPacket:
           unwrap(message, connection);
           break;
+        case PacketType::ResendRequest:
+          decodeResendRequest(message, connection);
+          break;
         default:
             ROS_DEBUG_STREAM("Unkown packet type: " << int(packet->type));
     }
@@ -393,6 +399,21 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const std:
     sendBridgeInfo();
 }
 
+void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
+{
+  const Packet* packet = reinterpret_cast<const Packet*>(message.data());
+  
+  ros::serialization::IStream stream(const_cast<uint8_t*>(packet->data),message.size()-sizeof(PacketHeader));
+  
+  ResendRequest rr;
+  ros::serialization::Serializer<ResendRequest>::read(stream, rr);
+
+  auto label = connection->label();
+  for(auto p: rr.missing_packets)
+    if(wrapped_packets_[label].find(p) != wrapped_packets_[label].end())
+      send(wrapped_packets_[label][p].packet, connection->socket_address());
+}
+
 void UDPBridge::decodeChannelStatistics(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
 {
   const Packet* packet = reinterpret_cast<const Packet*>(message.data());
@@ -479,6 +500,77 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const std::shared_pt
   decode(std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end()), connection);
 }
 
+void UDPBridge::resendMissingPackets()
+{
+  ros::Time now = ros::Time::now();
+  std::vector<std::pair<std::string, uint32_t> > expired;
+  ros::Time too_old = now - ros::Duration(5.0);
+  for(auto c: received_packet_times_)
+  {
+    auto p = c.second.rbegin();
+    while(p != c.second.rend())
+      if(p->second > too_old)
+        p++;
+      else
+      {
+        p++;
+        while(p != c.second.rend())
+        {
+          expired.push_back(std::make_pair(c.first, p->first));
+          p++;
+        }
+      }
+  }
+  for(auto e: expired)
+  {
+    received_packet_times_[e.first].erase(e.second);
+    if(received_packet_times_[e.first].empty())
+      received_packet_times_.erase(e.first);
+  }
+
+  expired.clear();
+  for(auto c: resend_request_times_)
+    for(auto p: c.second)
+      if(p.second < too_old)
+        expired.push_back(std::make_pair(c.first, p.first));
+
+  for(auto e: expired)
+  {
+    resend_request_times_[e.first].erase(e.second);
+    if(resend_request_times_[e.first].empty())
+      resend_request_times_.erase(e.first);
+  }
+
+  ros::Time can_resend_time = now - ros::Duration(0.2);
+  for(auto c: received_packet_times_)
+    if(!c.second.empty())
+    {
+      auto connection = m_connectionManager.getConnection(c.first);
+      std::vector<uint32_t> missing;
+      for(uint32_t i = c.second.begin()->first+1; i < c.second.rbegin()->first; i++)
+        if(c.second.find(i) == c.second.end())
+          missing.push_back(i);
+      if(!missing.empty())
+      {
+        ResendRequest rr;
+        std::stringstream ss;
+        for(auto m: missing)
+        {
+          ss << m << ",";
+          if(connection && resend_request_times_[c.first][m] < can_resend_time)
+          {
+            rr.missing_packets.push_back(m);
+            resend_request_times_[c.first][m] = now;
+          }
+        }
+        if(!rr.missing_packets.empty())
+          send(rr, connection, PacketType::ResendRequest);
+        ROS_INFO_STREAM("missing for " << c.first << ": " << ss.str());
+      }
+    }
+
+}
+
 bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection)
 {
   auto label = connection->label();
@@ -494,6 +586,22 @@ bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_pt
   return send(wrapped_packet.packet, connection->socket_address());
 }
 
+void UDPBridge::cleanupSentPackets()
+{
+  std::vector<std::pair<std::string, uint32_t> > expired;
+  ros::Time old_enough = ros::Time::now() - ros::Duration(5.0);
+  for(auto c: wrapped_packets_)
+    for(auto p: c.second)
+      if(p.second.timestamp < old_enough)
+        expired.push_back(std::make_pair(c.first, p.second.packet_number));
+  
+  for(auto e: expired)
+  {
+    wrapped_packets_[e.first].erase(e.second);
+    if(wrapped_packets_[e.first].empty())
+      wrapped_packets_.erase(e.first);
+  }
+}
 
 bool UDPBridge::send(const std::vector<uint8_t> &data, const sockaddr_in& address)
 {
