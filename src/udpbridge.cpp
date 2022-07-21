@@ -163,6 +163,39 @@ void UDPBridge::spin()
 
 void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const std::string &topic_name)
 {
+    ros::Time now = ros::Time::now();
+
+    if(now - m_channelInfoSentTimes[topic_name] > ros::Duration(5.0))
+    {
+      ChannelInfo ci;
+      ci.source_topic = topic_name;
+      ci.datatype = msg->getDataType();
+      ci.md5sum = msg->getMD5Sum();
+      ci.message_definition = msg->getMessageDefinition();
+      m_channelInfoSentTimes[topic_name] = now;
+      for (auto &remote:  m_subscribers[topic_name].remotes)
+      {
+        auto c = remote.second.connection.lock();
+        if(c)
+        {
+          ci.destination_topic = remote.second.destination_topic;
+          send(ci, c, PacketType::ChannelInfo);
+        }
+      }
+    }
+
+    bool dueToSend = false;
+    for (auto &remote:  m_subscribers[topic_name].remotes)
+      if (remote.second.period >= 0)
+        if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
+        {
+          dueToSend = true;
+          break;
+        }
+
+    if (!dueToSend)
+      return;
+
     ROS_DEBUG_STREAM("local msg on topic: " << topic_name << " type: " << msg->getDataType() << " size: " << msg->size());
 
     local_topic_types_[topic_name] = msg->getDataType();
@@ -172,20 +205,6 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
     
     message.source_topic = topic_name;
 
-    bool sendInfo = false;    
-    
-    ChannelInfo ci;
-    
-    ros::Time now = ros::Time::now();
-    if(now - m_channelInfoSentTimes[topic_name] > ros::Duration(5.0))
-    {
-        sendInfo = true;
-        ci.source_topic = topic_name;
-        ci.datatype = msg->getDataType();
-        ci.md5sum = msg->getMD5Sum();
-        ci.message_definition = msg->getMessageDefinition();
-        m_channelInfoSentTimes[topic_name] = now;
-    }
     
     message.data.resize(msg->size());
     
@@ -211,12 +230,6 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
         auto c = remote.second.connection.lock();
         if(c)
         {
-            if(sendInfo)
-            {
-                ci.destination_topic = remote.second.destination_topic;
-                send(ci, c, PacketType::ChannelInfo);
-            }
-            
             if (remote.second.period >= 0)
             {
                 if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
