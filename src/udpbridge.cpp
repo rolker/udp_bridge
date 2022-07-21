@@ -476,7 +476,7 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
 void UDPBridge::unwrap(const std::vector<uint8_t>& message, const std::shared_ptr<Connection>& connection)
 {
   received_packet_times_[connection->label()][reinterpret_cast<const SequencedPacket*>(message.data())->packet_number] = ros::Time::now();
-  decode(std::vector<uint8_t>(message.begin()+3, message.end()), connection);
+  decode(std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end()), connection);
 }
 
 bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection)
