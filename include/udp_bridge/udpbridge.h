@@ -45,7 +45,11 @@ private:
 
     /// Decodes a request from a remote node to subscribe to a local topic.
     void decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
-    
+
+    /// Unwraps and decodes a packet.
+    void unwrap(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
+
+
     /// Service handler for local request to subscribe to a remote topic.
     bool remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response);
 
@@ -61,8 +65,11 @@ private:
     template <typename MessageType> void send(MessageType const &message, std::shared_ptr<Connection> connection, PacketType packetType);
 
     /// Sends the raw data to the connection. Returns true on success.
+    bool send(const std::vector<uint8_t>& data, const sockaddr_in& address);
+
+    /// Wraps the raw data and sends it to the connection. Returns true on success.
     bool send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection);
-    
+
     /// Timer callback where data rate stats are reported
     void statsReportCallback(const ros::TimerEvent&);
 
@@ -81,9 +88,6 @@ private:
     int m_port {4200};
     int m_max_packet_size {65500};
     uint32_t m_next_packet_id {0};
-
-    std::list<std::shared_ptr<std::vector<uint8_t> > > packet_buffer_;
-    int packet_buffer_length_ = 100;
 
     Defragmenter m_defragmenter;
 
@@ -139,6 +143,18 @@ private:
     SubscriberDetails const *addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::shared_ptr<Connection> connection);
     
     ConnectionManager m_connectionManager;
+
+    struct WrappedPacket: SequencedPacketHeader
+    {
+        std::vector<uint8_t> packet;
+        ros::Time timestamp;        
+    };
+
+    using WrappedPacketMap = std::map<uint32_t, WrappedPacket>;
+    std::map<std::string, WrappedPacketMap> wrapped_packets_;
+    std::map<std::string, uint32_t> next_packet_numbers_;
+
+    std::map<std::string, std::map<uint32_t, ros::Time> > received_packet_times_;
 };
 
 } // namespace udp_bridge

@@ -287,6 +287,9 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const std::shared_pt
         case PacketType::ChannelStatistics:
             decodeChannelStatistics(message, connection);
             break;
+        case PacketType::WrappedPacket:
+          unwrap(message, connection);
+          break;
         default:
             ROS_DEBUG_STREAM("Unkown packet type: " << int(packet->type));
     }
@@ -470,7 +473,29 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
     auto subscription = addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, connection);
 }
 
+void UDPBridge::unwrap(const std::vector<uint8_t>& message, const std::shared_ptr<Connection>& connection)
+{
+  received_packet_times_[connection->label()][reinterpret_cast<const SequencedPacket*>(message.data())->packet_number] = ros::Time::now();
+  decode(std::vector<uint8_t>(message.begin()+3, message.end()), connection);
+}
+
 bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection)
+{
+  auto label = connection->label();
+  uint32_t packet_number = next_packet_numbers_[label]++;
+  WrappedPacket& wrapped_packet = wrapped_packets_[label][packet_number];
+  wrapped_packet.packet_number = packet_number;
+  wrapped_packet.timestamp = ros::Time::now();
+  wrapped_packet.type = PacketType::WrappedPacket;
+  wrapped_packet.packet.resize(sizeof(SequencedPacketHeader)+data->size());
+  memcpy(wrapped_packet.packet.data(), &wrapped_packet, sizeof(SequencedPacketHeader));
+  memcpy(reinterpret_cast<SequencedPacket*>(wrapped_packet.packet.data())->packet, data->data(), data->size());
+
+  return send(wrapped_packet.packet, connection->socket_address());
+}
+
+
+bool UDPBridge::send(const std::vector<uint8_t> &data, const sockaddr_in& address)
 {
   try
   {
@@ -483,7 +508,7 @@ bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_pt
       int ret = poll(&p, 1, 10);
       if(ret > 0 && p.revents & POLLOUT)
       {
-        int e = sendto(m_socket, data->data(), data->size(), 0, reinterpret_cast<const sockaddr*>(&connection->socket_address()), sizeof(connection->socket_address()));
+        int e = sendto(m_socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
         if(e == -1)
           switch(errno)
           {
@@ -495,8 +520,8 @@ bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_pt
             default:
               throw(ConnectionException(strerror(errno)));
           }
-        if(e < data->size())
-          throw(ConnectionException("only "+std::to_string(e) +" of " +std::to_string(data->size()) + " sent"));
+        if(e < data.size())
+          throw(ConnectionException("only "+std::to_string(e) +" of " +std::to_string(data.size()) + " sent"));
         else
           break;
       }
@@ -509,14 +534,11 @@ bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_pt
         else
           throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
     }
-    packet_buffer_.push_back(data);
-    while(packet_buffer_.size() > packet_buffer_length_)
-      packet_buffer_.pop_front();
     return true;
   }
   catch(const ConnectionException& e)
   {
-      ROS_WARN_STREAM("error sending data of size " << data->size() << ": " << e.getMessage());
+      ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
   }
   return false;
 }

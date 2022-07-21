@@ -7,6 +7,7 @@
 #include <memory>
 #include <list>
 #include <netinet/in.h>
+#include <udp_bridge/packet.h>
 
 namespace udp_bridge
 {
@@ -69,6 +70,12 @@ private:
 
     // Used by the remote to refer to us. Useful if they are behind a nat
     std::string m_return_host;
+
+    struct WrappedPacket: SequencedPacketHeader
+    {
+        std::shared_ptr<std::vector<uint8_t> > packet;
+        
+    };
 
 };
 

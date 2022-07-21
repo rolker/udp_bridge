@@ -9,7 +9,7 @@
 namespace udp_bridge
 {
 
-enum class PacketType: uint8_t {Data, Compressed, SubscribeRequest, AdvertiseRequest, ChannelInfo, Fragment, BridgeInfo, ChannelStatistics};
+enum class PacketType: uint8_t {Data, Compressed, SubscribeRequest, AdvertiseRequest, ChannelInfo, Fragment, BridgeInfo, ChannelStatistics, WrappedPacket};
 
 #pragma pack(push, 1)
 
@@ -43,6 +43,16 @@ struct FragmentHeader: public PacketHeader
 struct Fragment: public FragmentHeader
 {
     uint8_t fragment_data[];
+};
+
+struct SequencedPacketHeader: public PacketHeader
+{
+    uint32_t packet_number;
+};
+
+struct SequencedPacket: public SequencedPacketHeader
+{
+    uint8_t packet[];
 };
 
 #pragma pack(pop)
