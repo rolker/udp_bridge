@@ -565,7 +565,7 @@ void UDPBridge::resendMissingPackets()
         }
         if(!rr.missing_packets.empty())
           send(rr, connection, PacketType::ResendRequest);
-        ROS_INFO_STREAM("missing for " << c.first << ": " << ss.str());
+        ROS_DEBUG_STREAM("missing for " << c.first << ": " << ss.str());
       }
     }
 
