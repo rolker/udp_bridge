@@ -146,6 +146,7 @@ void UDPBridge::spin()
           auto host = addressToDotted(remote_address);
           auto port = ntohs(remote_address.sin_port);
           auto c = m_connectionManager.getConnection(host, port);
+          c->update_last_receive_time(ros::Time::now().toSec());
 
           buffer.resize(receive_length);
           //ROS_DEBUG_STREAM("received " << buffer.size() << " bytes");
@@ -225,8 +226,14 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
 
     // Now, compress the uncompressed packet
     std::shared_ptr<std::vector<uint8_t> > send_buffer = compress(buffer);
-
+    auto send_size = send_buffer->size();
     std::vector<std::shared_ptr<std::vector<uint8_t> > > fragments = fragment(send_buffer);
+    if(!fragments.empty())
+    {
+      send_size = 0;
+      for(auto f: fragments)
+        send_size+= f->size();
+    }
     
     for (auto &remote:  m_subscribers[topic_name].remotes)
     {
@@ -237,6 +244,8 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
             {
                 if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
                 {
+                  if(c->can_send(send_size, now.toSec()))
+                  {
                     bool success = true;
                     if(fragments.size())
                         for(const auto& f: fragments)
@@ -252,9 +261,12 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
                     sd.message_size = msg->size();
                     sd.packet_size = buffer.size();
                     sd.compressed_packet_size = send_buffer->size();
-                    sd.timestamp = ros::Time::now();
+                    sd.timestamp = now;
                     remote.second.size_statistics.push_back(sd);
                     remote.second.last_sent_time = now;
+                  }
+                  else
+                    ROS_DEBUG_STREAM("Dropped " << send_size << " bytes.");
                 }
             }
         }

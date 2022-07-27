@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <list>
+#include <map>
 #include <netinet/in.h>
 #include <udp_bridge/packet.h>
 
@@ -54,6 +55,11 @@ public:
     std::string ip_address_with_port() const;
 
     const sockaddr_in& socket_address() const;
+
+    const double& last_recieve_time() const;
+    void update_last_receive_time(double t);
+
+    bool can_send(uint32_t byte_count, double time);
 private:
     friend class ConnectionManager;
     
@@ -77,6 +83,13 @@ private:
         
     };
 
+    // Time in seconds since epoch that last packet was received
+    double last_receive_time_ = 0.0;
+
+    // Maximum bytes per second to send
+    uint32_t data_rate_limit_ = 500000;
+
+    std::map<double, uint16_t> data_size_sent_history_;
 };
 
 class ConnectionManager

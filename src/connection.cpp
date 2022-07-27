@@ -104,6 +104,34 @@ std::string Connection::ip_address_with_port() const
   return m_ip_address+":"+std::to_string(m_port);
 }
 
+const double& Connection::last_recieve_time() const
+{
+  return last_receive_time_;
+}
+
+void Connection::update_last_receive_time(double t)
+{
+  last_receive_time_ = t;
+}
+
+bool Connection::can_send(uint32_t byte_count, double time)
+{
+  while(!data_size_sent_history_.empty() && data_size_sent_history_.begin()->first < time-1.0)
+    data_size_sent_history_.erase(data_size_sent_history_.begin());
+  uint32_t bytes_sent_last_second = 0;
+  for(auto ds: data_size_sent_history_)
+    bytes_sent_last_second += ds.second;
+  if(bytes_sent_last_second+byte_count <= data_rate_limit_)
+  {
+    data_size_sent_history_[time] += byte_count;
+    return true;
+  }
+  return false;
+}
+
+
+
+
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port, std::string label)
 {
   if(!label.empty())
@@ -160,6 +188,5 @@ std::string addressToDotted(const sockaddr_in& address)
            std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[2])+"."+
            std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[3]);
 }
-
 
 } // namespace udp_bridge
