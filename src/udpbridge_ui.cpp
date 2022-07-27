@@ -4,7 +4,7 @@
 
 void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
 {
-    std::vector<std::string> headers {"source topic", "remote host", "     messages", "message data", " packet data", "  compressed", "  ratio", "send error"};
+    std::vector<std::string> headers {"source topic", "remote host", "     messages", "message data", " packet data", "  compressed", "  ratio", "send error", "     dropped"};
     std::vector<int> column_widths;
     for(auto h: headers)
         column_widths.push_back(h.size());
@@ -44,6 +44,7 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
             std::cout << std::setw(7) << 0 << "%";
 
         std::cout << std::setw(7) << 100*(1.0-c.send_success_rate) << "%";
+        std::cout << std::setw(7) << c.dropped_bytes_per_second/125.0 << " kbps";
         
         std::cout << std::endl;
         

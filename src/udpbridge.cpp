@@ -244,6 +244,11 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
             {
                 if(remote.second.period == 0 ||  now-remote.second.last_sent_time > ros::Duration(remote.second.period))
                 {
+                  SizeData sd;
+                  sd.message_size = msg->size();
+                  sd.packet_size = buffer.size();
+                  sd.compressed_packet_size = send_buffer->size();
+                  sd.timestamp = now;
                   if(c->can_send(send_size, now.toSec()))
                   {
                     bool success = true;
@@ -256,17 +261,17 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
                     else
                         success = send(send_buffer,c);
                     
-                    SizeData sd;
                     sd.sent_success = success;
-                    sd.message_size = msg->size();
-                    sd.packet_size = buffer.size();
-                    sd.compressed_packet_size = send_buffer->size();
-                    sd.timestamp = now;
-                    remote.second.size_statistics.push_back(sd);
-                    remote.second.last_sent_time = now;
+                    sd.dropped = false;
                   }
                   else
+                  {
                     ROS_DEBUG_STREAM("Dropped " << send_size << " bytes.");
+                    sd.sent_success = false;
+                    sd.dropped = true;
+                  }
+                  remote.second.size_statistics.push_back(sd);
+                  remote.second.last_sent_time = now;
                 }
             }
         }
@@ -752,6 +757,7 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
           int total_packet_size = 0;
           int total_compressed_packet_size = 0;
           int total_sent_success = 0;
+          uint32_t total_dropped_bytes = 0;
           
           for(auto data: remote.second.size_statistics)
           {
@@ -760,6 +766,8 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
             total_compressed_packet_size += data.compressed_packet_size;
             if(data.sent_success)
               total_sent_success++;
+            if(data.dropped)
+              total_dropped_bytes += data.compressed_packet_size;
           }
           
           if(!remote.second.size_statistics.empty())
@@ -775,6 +783,7 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
               cs.message_bytes_per_second = (total_message_size-remote.second.size_statistics.front().message_size)/deltat;
               cs.packet_bytes_per_second = (total_packet_size-remote.second.size_statistics.front().packet_size)/deltat;
               cs.compressed_bytes_per_second = (total_compressed_packet_size-remote.second.size_statistics.front().compressed_packet_size)/deltat;
+              cs.dropped_bytes_per_second = total_dropped_bytes/deltat;
             }
           }
           csa.channels.push_back(cs);

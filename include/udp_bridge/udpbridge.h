@@ -115,6 +115,7 @@ private:
         int message_size;
         int packet_size;
         int compressed_packet_size;
+        bool dropped;
         ros::Time timestamp;
     };
 

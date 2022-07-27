@@ -9,3 +9,4 @@ float32 send_success_rate
 float32 message_bytes_per_second
 float32 packet_bytes_per_second
 float32 compressed_bytes_per_second
+float32 dropped_bytes_per_second
