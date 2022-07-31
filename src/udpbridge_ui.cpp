@@ -43,7 +43,7 @@ void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
         else
             std::cout << std::setw(7) << 0 << "%";
 
-        std::cout << std::setw(7) << 100*(1.0-c.send_success_rate) << "%";
+        std::cout << std::setw(7) << 100*(1.0-c.send_success_rate) << "%    ";
         std::cout << std::setw(7) << c.dropped_bytes_per_second/125.0 << " kbps";
         
         std::cout << std::endl;
