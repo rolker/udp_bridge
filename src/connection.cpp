@@ -104,14 +104,15 @@ std::string Connection::ip_address_with_port() const
   return m_ip_address+":"+std::to_string(m_port);
 }
 
-const double& Connection::last_recieve_time() const
+const double& Connection::last_receive_time() const
 {
   return last_receive_time_;
 }
 
-void Connection::update_last_receive_time(double t)
+void Connection::update_last_receive_time(double t, int data_size)
 {
   last_receive_time_ = t;
+  data_size_received_history_[t] += data_size;
 }
 
 bool Connection::can_send(uint32_t byte_count, double time)
@@ -129,7 +130,22 @@ bool Connection::can_send(uint32_t byte_count, double time)
   return false;
 }
 
+double Connection::data_receive_rate(double time)
+{
+  double five_secs_ago = time - 5;
+  while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < five_secs_ago)
+    data_size_received_history_.erase(data_size_received_history_.begin());
 
+  double dt = 1.0;
+  if(!data_size_received_history_.empty())
+    dt = std::max(dt, data_size_received_history_.rbegin()->first - data_size_received_history_.begin()->first);
+
+  uint32_t sum = 0;
+  for(auto ds: data_size_received_history_)
+    sum += ds.second;
+
+  return sum/dt;
+}
 
 
 std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port, std::string label)

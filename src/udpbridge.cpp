@@ -146,7 +146,7 @@ void UDPBridge::spin()
           auto host = addressToDotted(remote_address);
           auto port = ntohs(remote_address.sin_port);
           auto c = m_connectionManager.getConnection(host, port);
-          c->update_last_receive_time(ros::Time::now().toSec());
+          c->update_last_receive_time(ros::Time::now().toSec(), receive_length);
 
           buffer.resize(receive_length);
           //ROS_DEBUG_STREAM("received " << buffer.size() << " bytes");
@@ -915,13 +915,14 @@ void UDPBridge::sendBridgeInfo()
   {
     if(r)
     {
-        udp_bridge::Remote remote;
-        remote.name = r->label();
-        remote.host = r->host();
-        remote.port = r->port();
-        remote.ip_address = r->ip_address();
-        remote.topic_label = r->topicLabel();
-        bi.remotes.push_back(remote);
+      udp_bridge::Remote remote;
+      remote.name = r->label();
+      remote.host = r->host();
+      remote.port = r->port();
+      remote.ip_address = r->ip_address();
+      remote.topic_label = r->topicLabel();
+      remote.received_bytes_per_second = r->data_receive_rate(bi.stamp.toSec());
+      bi.remotes.push_back(remote);
     }
   }
 

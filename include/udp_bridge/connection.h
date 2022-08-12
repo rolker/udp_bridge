@@ -56,10 +56,11 @@ public:
 
     const sockaddr_in& socket_address() const;
 
-    const double& last_recieve_time() const;
-    void update_last_receive_time(double t);
+    const double& last_receive_time() const;
+    void update_last_receive_time(double t, int data_size);
 
     bool can_send(uint32_t byte_count, double time);
+    double data_receive_rate(double time);
 private:
     friend class ConnectionManager;
     
@@ -90,6 +91,7 @@ private:
     uint32_t data_rate_limit_ = 500000;
 
     std::map<double, uint16_t> data_size_sent_history_;
+    std::map<double, uint16_t> data_size_received_history_;
 };
 
 class ConnectionManager
