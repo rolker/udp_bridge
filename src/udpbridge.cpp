@@ -901,9 +901,9 @@ std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::sh
     m_next_packet_id++;
   }
   ROS_DEBUG_STREAM("fragment: data size: " << data->size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
-  if(ret.size() > sizeof(Fragment::fragment_count))
+  if(ret.size() > std::numeric_limits<uint16_t>::max())
   {
-    ROS_WARN_STREAM("Dropping " << ret.size() << " fragments, max frag count:" << sizeof(Fragment::fragment_count) );
+    ROS_WARN_STREAM("Dropping " << ret.size() << " fragments, max frag count:" <<  std::numeric_limits<uint16_t>::max());
     return(std::vector<std::shared_ptr<std::vector<uint8_t> > >());
   }
   return ret;

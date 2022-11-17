@@ -36,8 +36,8 @@ struct CompressedPacket: public CompressedPacketHeader
 struct FragmentHeader: public PacketHeader
 {
     uint32_t packet_id;
-    uint8_t fragment_number;
-    uint8_t fragment_count;
+    uint16_t fragment_number;
+    uint16_t fragment_count;
 };
 
 struct Fragment: public FragmentHeader
