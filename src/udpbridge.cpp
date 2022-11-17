@@ -156,9 +156,9 @@ void UDPBridge::spin()
       else
         break;
     }
-    int discard_count = m_defragmenter.cleanup(ros::Duration(10));
+    int discard_count = m_defragmenter.cleanup(ros::Duration(5));
     if(discard_count)
-        ROS_DEBUG_STREAM("Discarded " << discard_count << " incomplete packets");
+        ROS_INFO_STREAM("Discarded " << discard_count << " incomplete packets");
     cleanupSentPackets();
     resendMissingPackets();
     ros::spinOnce();
@@ -632,7 +632,7 @@ bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_pt
 void UDPBridge::cleanupSentPackets()
 {
   std::vector<std::pair<std::string, uint32_t> > expired;
-  ros::Time old_enough = ros::Time::now() - ros::Duration(5.0);
+  ros::Time old_enough = ros::Time::now() - ros::Duration(3.0);
   for(auto c: wrapped_packets_)
     for(auto p: c.second)
       if(p.second.timestamp < old_enough)
@@ -900,7 +900,7 @@ std::vector<std::shared_ptr<std::vector<uint8_t> > > UDPBridge::fragment(std::sh
       reinterpret_cast<Fragment*>(frag_vec->data())->fragment_count = ret.size(); 
     m_next_packet_id++;
   }
-  ROS_DEBUG_STREAM("fragment: data size: " << data->size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
+  ROS_INFO_STREAM("fragment: data size: " << data->size() << " max size: " << m_max_packet_size << ": " << ret.size() << " fragments");
   return ret;
 }
 
