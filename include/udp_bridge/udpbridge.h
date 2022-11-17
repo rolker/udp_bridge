@@ -161,13 +161,13 @@ private:
         ros::Time timestamp;        
     };
 
-    using WrappedPacketMap = std::map<uint32_t, WrappedPacket>;
+    using WrappedPacketMap = std::map<uint64_t, WrappedPacket>;
     std::map<std::string, WrappedPacketMap> wrapped_packets_;
-    std::map<std::string, uint32_t> next_packet_numbers_;
+    std::map<std::string, uint64_t> next_packet_numbers_;
 
-    std::map<std::string, std::map<uint32_t, ros::Time> > received_packet_times_;
+    std::map<std::string, std::map<uint64_t, ros::Time> > received_packet_times_;
 
-    std::map<std::string, std::map<uint32_t, ros::Time> > resend_request_times_;
+    std::map<std::string, std::map<uint64_t, ros::Time> > resend_request_times_;
 
 };
 

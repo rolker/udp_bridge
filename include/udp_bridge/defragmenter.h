@@ -22,7 +22,7 @@ public:
     /// returns a list of complet packets
     std::vector<std::pair<std::vector<uint8_t>, std::string> > getPackets();
 
-    /// Discard incomplete packetss older than maxAge
+    /// Discard incomplete packets older than maxAge
     /// returns number of discarded packets
     int cleanup(ros::Duration maxAge);
 private:

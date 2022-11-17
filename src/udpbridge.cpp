@@ -513,8 +513,24 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
 
 void UDPBridge::unwrap(const std::vector<uint8_t>& message, const std::shared_ptr<Connection>& connection)
 {
-  received_packet_times_[connection->label()][reinterpret_cast<const SequencedPacket*>(message.data())->packet_number] = ros::Time::now();
-  decode(std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end()), connection);
+  if(message.size() < sizeof(SequencedPacketHeader) || reinterpret_cast<const SequencedPacketHeader*>(message.data())->packet_size != message.size())
+  {
+    ROS_ERROR_STREAM("Can't unwrap packet of size " << message.size());
+    if(message.size() >= sizeof(SequencedPacketHeader))
+      ROS_ERROR_STREAM("Packet reports size: " << reinterpret_cast<const SequencedPacketHeader*>(message.data())->packet_size);
+  }
+  else
+  {  
+    received_packet_times_[connection->label()][reinterpret_cast<const SequencedPacket*>(message.data())->packet_number] = ros::Time::now();
+    try
+    {
+      decode(std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end()), connection);
+    }
+    catch(const std::exception& e)
+    {
+      ROS_ERROR_STREAM("problem decoding packet: " << e.what());
+    }
+  }  
 }
 
 void UDPBridge::resendMissingPackets()
@@ -559,11 +575,20 @@ void UDPBridge::resendMissingPackets()
   }
 
   ros::Time can_resend_time = now - ros::Duration(0.2);
+
   for(auto c: received_packet_times_)
     if(!c.second.empty())
     {
       auto connection = m_connectionManager.getConnection(c.first);
       std::vector<uint32_t> missing;
+
+      ROS_DEBUG_STREAM("packet receive times range: " << c.first << ": " << c.second.begin()->first << " " << c.second.begin()->second << " to " << c.second.rbegin()->first << " " << c.second.rbegin()->second);
+
+      while(!c.second.empty() && c.second.rbegin()->first - c.second.begin()->first > 2500)
+        c.second.erase(c.second.begin());
+
+      ROS_DEBUG_STREAM("packet receive times (after purge) range: " << c.first << ": " << c.second.begin()->first << " " << c.second.begin()->second << " to " << c.second.rbegin()->first << " " << c.second.rbegin()->second);
+
       for(uint32_t i = c.second.begin()->first+1; i < c.second.rbegin()->first; i++)
         if(c.second.find(i) == c.second.end())
           missing.push_back(i);
@@ -591,12 +616,13 @@ void UDPBridge::resendMissingPackets()
 bool UDPBridge::send(std::shared_ptr<std::vector<uint8_t> > data, std::shared_ptr<Connection> connection)
 {
   auto label = connection->label();
-  uint32_t packet_number = next_packet_numbers_[label]++;
+  uint64_t packet_number = next_packet_numbers_[label]++;
   WrappedPacket& wrapped_packet = wrapped_packets_[label][packet_number];
   wrapped_packet.packet_number = packet_number;
+  wrapped_packet.packet_size = sizeof(SequencedPacketHeader)+data->size();
   wrapped_packet.timestamp = ros::Time::now();
   wrapped_packet.type = PacketType::WrappedPacket;
-  wrapped_packet.packet.resize(sizeof(SequencedPacketHeader)+data->size());
+  wrapped_packet.packet.resize(wrapped_packet.packet_size);
   memcpy(wrapped_packet.packet.data(), &wrapped_packet, sizeof(SequencedPacketHeader));
   memcpy(reinterpret_cast<SequencedPacket*>(wrapped_packet.packet.data())->packet, data->data(), data->size());
 

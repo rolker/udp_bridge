@@ -47,7 +47,8 @@ struct Fragment: public FragmentHeader
 
 struct SequencedPacketHeader: public PacketHeader
 {
-    uint32_t packet_number;
+    uint64_t packet_number;
+    uint64_t packet_size;
 };
 
 struct SequencedPacket: public SequencedPacketHeader
