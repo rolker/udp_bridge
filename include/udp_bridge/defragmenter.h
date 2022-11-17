@@ -11,9 +11,9 @@ class Defragmenter
 {
     struct Fragments
     {
-        uint8_t fragment_count;
+        uint16_t fragment_count;
         ros::Time first_arrival_time;
-        std::map<uint8_t, std::vector<uint8_t> > fragment_map;
+        std::map<uint16_t, std::vector<uint8_t> > fragment_map;
     };
 public:
     /// returns true if supplied fragment completed a packet
