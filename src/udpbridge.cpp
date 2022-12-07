@@ -85,34 +85,40 @@ void UDPBridge::spin()
       {
           for(auto remote:remotes_dict)
           {
-              //std::cerr << remote.first << ": " << std::endl;
-              std::string host = remote.second["host"];
-              int port = remote.second["port"];
-              std::string remote_name = remote.first;
-              if(remote.second.hasMember("name"))
-                  remote_name = std::string(remote.second["name"]);
-              std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
-              connection->setLabel(remote_name);
-              ROS_INFO_STREAM("remote: " << remote_name << " address: " << connection->ip_address_with_port());
+              if(!remote.second.hasMember("host"))
+                ROS_WARN_STREAM("No host for remote " << remote.first);
+              else
+              {
 
-              if(remote.second.hasMember("topics"))
-                  for(auto topic: remote.second["topics"])
-                  {
-                      int queue_size = 1;
-                      if (topic.second.hasMember("queue_size"))
-                          queue_size = topic.second["queue_size"];
-                      double period = 0.0;
-                      if (topic.second.hasMember("period"))
-                          period = topic.second["period"];
-                      std::string source = topic.first;
-                      if (topic.second.hasMember("source"))
-                      source = std::string(topic.second["source"]);
-                      source = ros::names::resolve(source);
-                      std::string destination = source;
-                      if (topic.second.hasMember("destination"))
-                      destination = std::string(topic.second["destination"]);
-                      addSubscriberConnection(source, destination, 1, period, connection);
-                  }
+                //std::cerr << remote.first << ": " << std::endl;
+                std::string host = remote.second["host"];
+                int port = remote.second["port"];
+                std::string remote_name = remote.first;
+                if(remote.second.hasMember("name"))
+                    remote_name = std::string(remote.second["name"]);
+                std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
+                connection->setLabel(remote_name);
+                ROS_INFO_STREAM("remote: " << remote_name << " address: " << connection->ip_address_with_port());
+
+                if(remote.second.hasMember("topics"))
+                    for(auto topic: remote.second["topics"])
+                    {
+                        int queue_size = 1;
+                        if (topic.second.hasMember("queue_size"))
+                            queue_size = topic.second["queue_size"];
+                        double period = 0.0;
+                        if (topic.second.hasMember("period"))
+                            period = topic.second["period"];
+                        std::string source = topic.first;
+                        if (topic.second.hasMember("source"))
+                        source = std::string(topic.second["source"]);
+                        source = ros::names::resolve(source);
+                        std::string destination = source;
+                        if (topic.second.hasMember("destination"))
+                        destination = std::string(topic.second["destination"]);
+                        addSubscriberConnection(source, destination, 1, period, connection);
+                    }
+              }
           }
       }
   }
