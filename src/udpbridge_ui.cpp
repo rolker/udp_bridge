@@ -4,6 +4,9 @@
 
 void statisticsCallback(udp_bridge::ChannelStatisticsArray const &stats)
 {
+    if (!stats.remote_label.empty())
+        return; // don't show stats from remotes
+        
     std::vector<std::string> headers {"source topic", "remote host", "     messages", "message data", " packet data", "  compressed", "  ratio", "send error", "     dropped"};
     std::vector<int> column_widths;
     for(auto h: headers)
