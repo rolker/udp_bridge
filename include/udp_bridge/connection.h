@@ -48,6 +48,8 @@ public:
     // Used to tell the remote host the address to get back to us.
     const std::string& returnHost() const;
     void setReturnHost(const std::string &return_host);
+    uint16_t returnPort() const;
+    void setReturnPort(uint16_t port);
 
     const std::string& host() const;
     uint16_t port() const;
@@ -64,7 +66,7 @@ public:
 private:
     friend class ConnectionManager;
     
-    Connection(std::string const &host, uint16_t port, std::string return_host=std::string());
+    Connection(std::string const &host, uint16_t port, std::string return_host=std::string(), uint16_t return_port=0);
     
     std::string m_host;
     std::string m_ip_address; // resolved ip address
@@ -77,6 +79,7 @@ private:
 
     // Used by the remote to refer to us. Useful if they are behind a nat
     std::string m_return_host;
+    uint16_t m_return_port = 0;
 
     struct WrappedPacket: SequencedPacketHeader
     {

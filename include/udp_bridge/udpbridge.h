@@ -44,7 +44,7 @@ private:
     void decodeChannelStatistics(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
 
     /// Decodes a request from a remote node to subscribe to a local topic.
-    void decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);
+    void decodeSubscribeRequest(std::vector<uint8_t> const &message, std::shared_ptr<Connection> connection);
 
     /// Decodes a request from a remote node to resend packets.
     void decodeResendRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection);

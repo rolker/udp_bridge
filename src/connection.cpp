@@ -11,7 +11,7 @@
 namespace udp_bridge
 {
 
-Connection::Connection(std::string const &host, uint16_t port, std::string return_host):m_host(host),m_port(port),m_return_host(return_host)
+Connection::Connection(std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):m_host(host),m_port(port),m_return_host(return_host),m_return_port(return_port)
 {
     struct addrinfo hints = {0}, *addresses;
     
@@ -82,6 +82,16 @@ const std::string& Connection::returnHost() const
 void Connection::setReturnHost(const std::string &return_host)
 {
   m_return_host = return_host;
+}
+
+uint16_t Connection::returnPort() const
+{
+  return m_return_port;
+}
+
+void Connection::setReturnPort(uint16_t port)
+{
+  m_return_port = port;
 }
 
 const std::string& Connection::host() const

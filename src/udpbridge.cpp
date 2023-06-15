@@ -98,6 +98,10 @@ void UDPBridge::spin()
                     remote_name = std::string(remote.second["name"]);
                 std::shared_ptr<Connection> connection = m_connectionManager.getConnection(host, port);
                 connection->setLabel(remote_name);
+                if(remote.second.hasMember("returnHost"))
+                  connection->setReturnHost(remote.second["returnHost"]);
+                if(remote.second.hasMember("returnPort"))
+                  connection->setReturnPort(int(remote.second["remotePort"]));
                 ROS_INFO_STREAM("remote: " << remote_name << " address: " << connection->ip_address_with_port());
 
                 if(remote.second.hasMember("topics"))
@@ -500,7 +504,7 @@ const UDPBridge::SubscriberDetails *UDPBridge::addSubscriberConnection(std::stri
     return nullptr;
 }
 
-void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, const std::shared_ptr<Connection>& connection)
+void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, std::shared_ptr<Connection> connection)
 {
     const Packet* packet = reinterpret_cast<const Packet*>(message.data());
     
@@ -509,6 +513,9 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
     RemoteSubscribeInternal remote_request;
     ros::serialization::Serializer<RemoteSubscribeInternal>::read(stream, remote_request);
 
+
+    if (!remote_request.return_address.empty() && remote_request.return_port != 0)
+      connection = m_connectionManager.getConnection(remote_request.return_address, remote_request.return_port);
     // std::string host = remote_address;
     // if(!remote_request.return_address.empty())
     //     host = remote_request.return_address;
@@ -749,6 +756,7 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
     if(!connection)
         return false;
     remote_request.return_address = connection->returnHost();
+    remote_request.return_port = connection->returnPort();
     send(remote_request, connection, PacketType::SubscribeRequest);
 
     return true;
@@ -957,6 +965,8 @@ void UDPBridge::sendBridgeInfo()
       remote.host = r->host();
       remote.port = r->port();
       remote.ip_address = r->ip_address();
+      remote.return_host = r->returnHost();
+      remote.return_port = r->returnPort();
       remote.topic_label = r->topicLabel();
       remote.received_bytes_per_second = r->data_receive_rate(bi.stamp.toSec());
       bi.remotes.push_back(remote);
@@ -982,6 +992,8 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
     std::shared_ptr<Connection> connection = m_connectionManager.getConnection(request.address, port, request.name);
     connection->setLabel(request.name);
     connection->setReturnHost(request.return_address);
+    connection->setReturnPort(request.return_port);
+
     ROS_INFO_STREAM("remote: " << request.name << " address: " << connection->ip_address_with_port());
     sendBridgeInfo();
     return true;
@@ -998,6 +1010,8 @@ bool UDPBridge::listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridg
         r.host = c->host();
         r.ip_address = c->ip_address();
         r.port = c->port();
+        r.return_host = c->returnHost();
+        r.return_port = c->returnPort();
         response.remotes.push_back(r);
       }
     }
