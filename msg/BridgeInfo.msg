@@ -1,9 +1,13 @@
-time        stamp
-uint16      port
-TopicInfo[] topics
-Remote[]    remotes
+# List of local topics and remote connections.
 
-# When this message is sent to a remote,
-# the remote_label is set to that remote's
-# label used in the channels.
-string      remote_label
+# Name of the node in the udp_bridge network
+string      name
+
+# Time this info was collected/valid
+time        stamp
+
+# Local topics available
+TopicInfo[] topics
+
+# Remote nodes known to this node
+Remote[]    remotes

@@ -2,13 +2,14 @@
     <node pkg="udp_bridge" type="udp_bridge_node" name="sender_bridge" ns="sender">
       <rosparam>
       port: 4200
-      maxPacketSize: 25
+      maxPacketSize: 65
       remotes:
         receiver:
           host: localhost
           port: 4201
           topics:
-            - source: sender_topic
+            test_topics: 
+              source: sender_topic
               destination: receiver_topic
       </rosparam>
     </node>

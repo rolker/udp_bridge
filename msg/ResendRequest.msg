@@ -1,1 +1,1 @@
-uint32[] missing_packets
+uint64[] missing_packets

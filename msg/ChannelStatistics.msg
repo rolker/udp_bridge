@@ -1,12 +1,22 @@
+time stamp
+string source_node
+string destination_node
+string channel_id
 string source_topic
 string destination_topic
-string remote
+
 float32 message_average_size_bytes
 float32 packet_average_size_bytes
 float32 compressed_average_size_bytes
+float32 sent_average_size_bytes
+float32 average_fragment_count
+
 float32 messages_per_second
-float32 send_success_rate
 float32 message_bytes_per_second
 float32 packet_bytes_per_second
 float32 compressed_bytes_per_second
+float32 sent_bytes_per_second
+float32 fragments_per_second
+
+float32 send_success_rate
 float32 dropped_bytes_per_second

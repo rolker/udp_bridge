@@ -1,6 +1,7 @@
 string name
+string connection_id
 string address
-string return_address
 uint16 port
+string return_address
 uint16 return_port
 ---

@@ -21,6 +21,7 @@ add_message_files(
   ChannelStatisticsArray.msg
   MessageInternal.msg
   Remote.msg
+  RemoteConnection.msg
   RemoteSubscribeInternal.msg
   ResendRequest.msg
   TopicInfo.msg
@@ -51,10 +52,14 @@ include_directories(
 )
 
 set(UDP_BRIDGE_SOURCES
-    src/packet.cpp
     src/connection.cpp
-    src/udpbridge.cpp
     src/defragmenter.cpp
+    src/packet.cpp
+    src/remote_node.cpp
+    src/statistics.cpp
+    src/udp_bridge.cpp
+    src/utilities.cpp
+    src/wrapped_packet.cpp
 )
 
 add_executable(udp_bridge_node src/udp_bridge_node.cpp ${UDP_BRIDGE_SOURCES})

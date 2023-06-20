@@ -1,5 +1,5 @@
 #include "udp_bridge/connection.h"
-
+#include <udp_bridge/ChannelStatisticsArray.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -11,107 +11,116 @@
 namespace udp_bridge
 {
 
-Connection::Connection(std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):m_host(host),m_port(port),m_return_host(return_host),m_return_port(return_port)
+// Connection::Connection(std::string remote, std::string id):
+//   remote_(remote), id_(id)
+// {
+// }
+
+Connection::Connection(std::string remote, std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
+  remote_(remote), id_(id), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
 {
-    struct addrinfo hints = {0}, *addresses;
-    
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
-    
-    std::string port_string = std::to_string(port);
-    
-    int ret = getaddrinfo(host.c_str(), port_string.c_str(), &hints, &addresses);
-    if(ret != 0)
-        throw std::runtime_error(gai_strerror(ret));
-    
-    for (struct addrinfo *address = addresses; address != nullptr; address = address->ai_next)
-    {
-      m_addresses.push_back(*reinterpret_cast<sockaddr_in*>(address->ai_addr));
-      std::cerr << host << ":" << port << " adding address: " << addressToDotted(m_addresses.back()) << ":" << ntohs(m_addresses.back().sin_port) << std::endl;
-      if(m_addresses.size() == 1)
-        m_ip_address = addressToDotted(m_addresses.back());
-    }
-    freeaddrinfo(addresses);
-}
-    
-Connection::~Connection()
-{
+  setHostAndPort(host, port);
 }
 
-const sockaddr_in& Connection::socket_address() const
+void Connection::setHostAndPort(const std::string &host, uint16_t port)
 {
-  return m_addresses.front();
+  host_ = host;
+  port_ = port;
+  resolveHost();
+}
+
+void Connection::resolveHost()
+{
+  addresses_.clear();
+
+  auto host = return_host_;
+  if(host.empty())
+    host = host_;
+  if(host.empty())
+    return;
+
+  auto port = return_port_;
+  if(port == 0)
+    port = port_;
+  if(port == 0)
+    return;
+
+  struct addrinfo hints = {0}, *addresses;
+  
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_protocol = IPPROTO_UDP;
+  
+  std::string port_string = std::to_string(port);
+  
+  int ret = getaddrinfo(host.c_str(), port_string.c_str(), &hints, &addresses);
+  if(ret != 0)
+    throw std::runtime_error(gai_strerror(ret));
+
+  for (struct addrinfo *address = addresses; address != nullptr; address = address->ai_next)
+  {
+    addresses_.push_back(*reinterpret_cast<sockaddr_in*>(address->ai_addr));
+    if(addresses_.size() == 1)
+      ip_address_ = addressToDotted(addresses_.back());
+  }
+  freeaddrinfo(addresses);
+}
+
+const sockaddr_in* Connection::socket_address() const
+{
+  if(addresses_.empty())
+    return nullptr;
+  return &addresses_.front();
 }
 
 std::string Connection::str() const
 {
-    std::stringstream ret;
-    ret << m_host << ":" << m_port;
-    return ret.str();
+  std::stringstream ret;
+  ret << host_ << ":" << port_;
+  return ret.str();
 }
 
-std::string Connection::label(bool allowEmpty) const
+const std::string& Connection::id() const
 {
-    if(!allowEmpty && m_label.empty())
-      return str();
-    return m_label;
-}
-
-void Connection::setLabel(const std::string &label)
-{
-    m_label = label;
-}
-
-std::string Connection::topicLabel() const
-{
-  std::string ret = label();
-  if(!std::isalpha(ret[0]))
-    ret = "r"+ret;
-  for(int i = 0; i < ret.size(); i++)
-    if(!(std::isalnum(ret[i]) || ret[i] == '_' || ret[i] == '/'))
-      ret[i] = '_';
-  return ret;
+  return id_;
 }
 
 const std::string& Connection::returnHost() const
 {
-  return m_return_host;
+  return return_host_;
 }
 
-void Connection::setReturnHost(const std::string &return_host)
+void Connection::setReturnHostAndPort(const std::string &return_host, uint16_t return_port)
 {
-  m_return_host = return_host;
+  return_host_ = return_host;
+  return_port_ = return_port;
+
+  resolveHost();
 }
 
 uint16_t Connection::returnPort() const
 {
-  return m_return_port;
-}
-
-void Connection::setReturnPort(uint16_t port)
-{
-  m_return_port = port;
+  return return_port_;
 }
 
 const std::string& Connection::host() const
 {
-  return m_host;
+  return host_;
 }
 
 uint16_t Connection::port() const
 {
-  return m_port;
+  return port_;
 }
 
 const std::string& Connection::ip_address() const
 {
-  return m_ip_address;
+  return ip_address_;
 }
 
 std::string Connection::ip_address_with_port() const
 {
-  return m_ip_address+":"+std::to_string(m_port);
+  return ip_address_+":"+std::to_string(port_);
 }
 
 const double& Connection::last_receive_time() const
@@ -157,62 +166,18 @@ double Connection::data_receive_rate(double time)
   return sum/dt;
 }
 
-
-std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &host, uint16_t port, std::string label)
+std::map<uint64_t, WrappedPacket>& Connection::sentPackets()
 {
-  if(!label.empty())
-  {
-    for(auto& c: m_connections)
-      if(c->label() == label)
-        if((c->m_host == host || c->m_ip_address == host) && c->m_port == port)
-          return c;
-        else
-          c.reset();
-  }
-  for(auto c: m_connections)
-    if(c && (c->m_host == host || c->m_ip_address == host)  && c->m_port == port)
-      return c;
-  
-  auto new_connection = std::shared_ptr<Connection>(new Connection(host, port));
-  // Is the new connection the same ip/port as an existing one?
-  for(auto& c: m_connections)
-    if(c && (c->m_ip_address == new_connection->m_ip_address)  && c->m_port == port)
-    {
-      c->m_host = host;
-      return c;
-    }
-
-  // Look for a free spot before creating a new one
-  for(auto& c: m_connections)
-    if(!c)
-    {
-      c = std::shared_ptr<Connection>(new Connection(host, port));
-      return c;
-    }
-  m_connections.push_back(std::shared_ptr<Connection>(new Connection(host,port)));
-  return m_connections.back();
-}
-
-std::shared_ptr<Connection> ConnectionManager::getConnection(std::string const &label)
-{
-    for(auto c: m_connections)
-      if(c->label() == label || c->str() == label)
-        return c;
-    return std::shared_ptr<Connection>();
-}
-
-const std::vector<std::shared_ptr<Connection> > & ConnectionManager::connections() const
-{
-    return m_connections;
+  return sent_packets_;
 }
 
 
 std::string addressToDotted(const sockaddr_in& address)
 {
-    return std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[0])+"."+
-           std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[1])+"."+
-           std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[2])+"."+
-           std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[3]);
+  return std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[0])+"."+
+          std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[1])+"."+
+          std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[2])+"."+
+          std::to_string(reinterpret_cast<const uint8_t*>(&address.sin_addr.s_addr)[3]);
 }
 
 } // namespace udp_bridge

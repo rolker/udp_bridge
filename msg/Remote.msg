@@ -1,8 +1,9 @@
-string  name
-string  host
-string  ip_address
-uint16  port
-string  return_host
-uint16  return_port
-string  topic_label
-float32 received_bytes_per_second
+# Describes a remote node and connections to it
+
+# name of the node, each udp_bridge node should have a unique name
+string             name
+
+# name sanitized if necessary to be used as a topic name
+string             topic_name
+
+RemoteConnection[] connections
