@@ -5,12 +5,14 @@
       maxPacketSize: 65
       remotes:
         receiver:
-          host: localhost
-          port: 4201
-          topics:
-            test_topics: 
-              source: sender_topic
-              destination: receiver_topic
+          connections:
+            default:
+              host: localhost
+              port: 4201
+              topics:
+                test_topics: 
+                  source: sender_topic
+                  destination: receiver_topic
       </rosparam>
     </node>
     <node pkg="udp_bridge" type="udp_bridge_node" name="receiver_bridge" ns="receiver">

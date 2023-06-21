@@ -111,39 +111,46 @@ void UDPBridge::spin()
         remote_info.name = remote.first;
         if(remote.second.hasMember("name"))
           remote_info.name = std::string(remote.second["name"]);
-        RemoteConnection connection;
-        connection.connection_id = "default";
-        if(remote.second.hasMember("host"))
-          connection.host = std::string(remote.second["host"]);
-        connection.port = 0;
-        if(remote.second.hasMember("port"))
-          connection.port = int(remote.second["port"]);
-        if(remote.second.hasMember("returnHost"))
-          connection.return_host = std::string(remote.second["returnHost"]);
-        connection.return_port = 0;
-        if(remote.second.hasMember("returnPort"))
-          connection.return_port =int(remote.second["remotePort"]);
-        remote_info.connections.push_back(connection);
+
         remote_nodes_[remote_info.name] = std::make_shared<RemoteNode>(remote_info.name, name_);
         remote_nodes_[remote_info.name]->update(remote_info);
 
-        if(remote.second.hasMember("topics"))
-          for(auto topic: remote.second["topics"])
+        if(remote.second.hasMember("connections"))
+          for(auto connection_info: remote.second["connections"])
           {
-              int queue_size = 1;
-              if (topic.second.hasMember("queue_size"))
+            RemoteConnection connection;
+            connection.connection_id = connection_info.first;
+            if(connection_info.second.hasMember("host"))
+              connection.host = std::string(connection_info.second["host"]);
+            connection.port = 0;
+            if(connection_info.second.hasMember("port"))
+              connection.port = int(connection_info.second["port"]);
+            if(connection_info.second.hasMember("returnHost"))
+              connection.return_host = std::string(connection_info.second["returnHost"]);
+            connection.return_port = 0;
+            if(connection_info.second.hasMember("returnPort"))
+              connection.return_port =int(connection_info.second["remotePort"]);
+            remote_info.connections.push_back(connection);
+            remote_nodes_[remote_info.name]->update(remote_info);
+
+            if(connection_info.second.hasMember("topics"))
+              for(auto topic: connection_info.second["topics"])
+              {
+                int queue_size = 1;
+                if (topic.second.hasMember("queue_size"))
                   queue_size = topic.second["queue_size"];
-              double period = 0.0;
-              if (topic.second.hasMember("period"))
+                double period = 0.0;
+                if (topic.second.hasMember("period"))
                   period = topic.second["period"];
-              std::string source = topic.first;
-              if (topic.second.hasMember("source"))
-              source = std::string(topic.second["source"]);
-              source = ros::names::resolve(source);
-              std::string destination = source;
-              if (topic.second.hasMember("destination"))
-              destination = std::string(topic.second["destination"]);
-              addSubscriberConnection(source, destination, 1, period, remote_info.name, connection.connection_id);
+                std::string source = topic.first;
+                if (topic.second.hasMember("source"))
+                  source = std::string(topic.second["source"]);
+                source = ros::names::resolve(source);
+                std::string destination = source;
+                if (topic.second.hasMember("destination"))
+                  destination = std::string(topic.second["destination"]);
+                addSubscriberConnection(source, destination, 1, period, remote_info.name, connection.connection_id);
+              }
           }
       }
     }
