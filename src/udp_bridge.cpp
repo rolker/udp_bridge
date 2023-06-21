@@ -267,6 +267,12 @@ void UDPBridge::callback(const topic_tools::ShapeShifter::ConstPtr& msg, const s
 
 void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
+  if(message.empty())
+  {
+    ROS_WARN_STREAM("empty message from: " << source_info.node_name << " " << source_info.host << ":" << source_info.port);
+    return;
+  }
+
   const Packet *packet = reinterpret_cast<const Packet*>(message.data());
   ROS_DEBUG_STREAM("Received packet of type " << int(packet->type) << " and size " << message.size() << " from '" << source_info.node_name << "' (" << source_info.host << ":" << source_info.port << ")");
   std::shared_ptr<RemoteNode> remote_node;
@@ -306,7 +312,7 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& so
       decodeResendRequest(message, source_info);
       break;
     default:
-        ROS_DEBUG_STREAM("Unknown packet type: " << int(packet->type));
+        ROS_WARN_STREAM("Unknown packet type: " << int(packet->type) << " from: " << source_info.node_name << " " << source_info.host << ":" << source_info.port);
   }
 }
 
