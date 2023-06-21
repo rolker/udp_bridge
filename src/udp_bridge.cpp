@@ -269,7 +269,7 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& so
 {
   if(message.empty())
   {
-    ROS_WARN_STREAM("empty message from: " << source_info.node_name << " " << source_info.host << ":" << source_info.port);
+    ROS_DEBUG_STREAM("empty message from: " << source_info.node_name << " " << source_info.host << ":" << source_info.port);
     return;
   }
 
