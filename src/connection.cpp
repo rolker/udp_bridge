@@ -19,30 +19,24 @@ namespace udp_bridge
 Connection::Connection(std::string remote, std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
   remote_(remote), id_(id), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
 {
-  setHostAndPort(host, port);
+  resolveHost();
 }
 
 void Connection::setHostAndPort(const std::string &host, uint16_t port)
 {
-  host_ = host;
-  port_ = port;
-  resolveHost();
+  if(host != host_ || port != port_)
+  {
+    host_ = host;
+    port_ = port;
+    resolveHost();
+  }
 }
 
 void Connection::resolveHost()
 {
   addresses_.clear();
 
-  auto host = return_host_;
-  if(host.empty())
-    host = host_;
-  if(host.empty())
-    return;
-
-  auto port = return_port_;
-  if(port == 0)
-    port = port_;
-  if(port == 0)
+  if(host_.empty() || port_ == 0)
     return;
 
   struct addrinfo hints = {0}, *addresses;
@@ -51,9 +45,9 @@ void Connection::resolveHost()
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_protocol = IPPROTO_UDP;
   
-  std::string port_string = std::to_string(port);
+  std::string port_string = std::to_string(port_);
   
-  int ret = getaddrinfo(host.c_str(), port_string.c_str(), &hints, &addresses);
+  int ret = getaddrinfo(host_.c_str(), port_string.c_str(), &hints, &addresses);
   if(ret != 0)
     throw std::runtime_error(gai_strerror(ret));
 
@@ -94,8 +88,6 @@ void Connection::setReturnHostAndPort(const std::string &return_host, uint16_t r
 {
   return_host_ = return_host;
   return_port_ = return_port;
-
-  resolveHost();
 }
 
 uint16_t Connection::returnPort() const

@@ -8,6 +8,7 @@ namespace udp_bridge
 
 RemoteNode::RemoteNode(std::string remote_name, std::string local_name): name_(remote_name), local_name_(local_name)
 {
+  assert(remote_name != local_name);
   ros::NodeHandle private_nodeHandle("~");
 
   bridge_info_publisher_ = private_nodeHandle.advertise<BridgeInfo>("remotes/"+topicName()+"/bridge_info",1,true);
@@ -35,12 +36,17 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
       for(auto connection_info: remote.connections)
       {
         auto c = connection(connection_info.connection_id);
+        auto host = connection_info.return_host;
+        if(host.empty())
+          host = source_info.host;
+        auto port = connection_info.return_port;
+        if(port == 0)
+          port = source_info.port;
         if(!c)
-          c = newConnection(connection_info.connection_id, source_info.host, source_info.port);
+          c = newConnection(connection_info.connection_id, host, port);
         if(c)
         {
-          c->setHostAndPort(source_info.host, source_info.port);
-          c->setReturnHostAndPort(connection_info.return_host, connection_info.return_port);
+          c->setHostAndPort(host, port);
         }
       }
 }
