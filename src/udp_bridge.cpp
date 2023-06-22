@@ -877,6 +877,7 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
     connection = remote->newConnection(request.connection_id, request.address, port);
     remote->connections().push_back(connection);
   }
+  connection->setHostAndPort(request.address, request.port);
   connection->setReturnHostAndPort(request.return_address, request.return_port);
 
   sendBridgeInfo();
