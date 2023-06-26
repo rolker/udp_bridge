@@ -11,3 +11,6 @@ TopicInfo[] topics
 
 # Remote nodes known to this node
 Remote[]    remotes
+
+int64       next_packet_number
+time        last_packet_time

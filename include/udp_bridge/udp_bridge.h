@@ -137,6 +137,7 @@ private:
   std::map<std::string, std::string> local_topic_types_;
 
   uint64_t next_packet_number_ = 0;
+  ros::Time last_packet_number_assign_time_;
 
   Statistics overhead_statistics_;
   Statistics resend_statistics_;

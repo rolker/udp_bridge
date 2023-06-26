@@ -50,8 +50,7 @@ public:
 
   void clearReceivedPacketTimesBefore(ros::Time time);
 
-  std::map<uint64_t, ros::Time>& receivedPacketTimes();
-  std::map<uint64_t, ros::Time>& resendRequestTimes();
+  ResendRequest getMissingPackets();
 
 private:
   // name of the remote udp_bridge node
@@ -72,6 +71,9 @@ private:
 
   ros::Publisher bridge_info_publisher_;
   ros::Publisher channel_statistics_publisher_;
+
+  uint64_t next_packet_number_ = 0;
+  ros::Time last_packet_time_;
 };
 
 }  // namespace udp_bridge

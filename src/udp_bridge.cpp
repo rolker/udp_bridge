@@ -157,7 +157,7 @@ void UDPBridge::spin()
   }
   
   ros::Timer statsReportTimer = m_nodeHandle.createTimer(ros::Duration(1.0), &UDPBridge::statsReportCallback, this);
-  ros::Timer bridgeInfoTimer = m_nodeHandle.createTimer(ros::Duration(5.0), &UDPBridge::bridgeInfoCallback, this);
+  ros::Timer bridgeInfoTimer = m_nodeHandle.createTimer(ros::Duration(2.0), &UDPBridge::bridgeInfoCallback, this);
   
   while(ros::ok())
   {   
@@ -508,50 +508,16 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
     ROS_ERROR_STREAM("Incomplete wrapped packet of size: " << message.size());
 }
 
+
 void UDPBridge::resendMissingPackets()
 {
-  ros::Time now = ros::Time::now();
-  if(now.isValid() && !now.isZero())
-  {
-    ros::Time too_old = now - ros::Duration(5.0);
-    for(auto remote: remote_nodes_)
-      if(remote.second)
-        remote.second->clearReceivedPacketTimesBefore(too_old);
-
-    ros::Time can_resend_time = now - ros::Duration(0.2);
-
-    for(auto remote: remote_nodes_)
-      if(remote.second)
-      {
-        auto &rpts = remote.second->receivedPacketTimes();
-
-        // trim the packet numbers that are lower than the largest packet number minus a threshold
-        while(!rpts.empty() && rpts.rbegin()->first - rpts.begin()->first > 2500)
-          rpts.erase(rpts.begin());
-
-        std::vector<uint64_t> missing;
-        if(!rpts.empty())
-          for(auto i = rpts.begin()->first+1; i < rpts.rbegin()->first; i++)
-            if(rpts.find(i) == rpts.end())
-              missing.push_back(i);
-
-        if(!missing.empty())
-        {
-          auto &rrts = remote.second->resendRequestTimes();
-          ResendRequest rr;
-          for(auto m: missing)
-          {
-            if(rrts[m] < can_resend_time)
-            {
-              rr.missing_packets.push_back(m);
-              rrts[m] = now;
-            }
-          }
-          if(!rr.missing_packets.empty())
-            overhead_statistics_.add(send(rr, remote.first));
-        }
-      }
-  }
+  for(auto remote: remote_nodes_)
+    if(remote.second)
+    {
+      auto rr = remote.second->getMissingPackets();
+      if(!rr.missing_packets.empty())
+        overhead_statistics_.add(send(rr, remote.first));
+    }
 }
 
 
@@ -595,6 +561,7 @@ template<> SizeData UDPBridge::send(const std::vector<std::vector<uint8_t> >& da
   for(auto packet: data)
   {
     uint64_t packet_number = next_packet_number_++;
+    last_packet_number_assign_time_ = ros::Time::now();
     wrapped_packets.push_back(WrappedPacket(packet_number, packet));
     size_data.sent_size += wrapped_packets.back().packet.size();
   }
@@ -852,6 +819,8 @@ void UDPBridge::sendBridgeInfo()
       bi.remotes.push_back(remote);
     }
 
+  bi.next_packet_number = next_packet_number_;
+  bi.last_packet_time = last_packet_number_assign_time_;
 
   m_bridge_info_publisher.publish(bi);
 

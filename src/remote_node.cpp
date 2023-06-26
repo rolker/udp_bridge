@@ -33,6 +33,7 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
   bridge_info_publisher_.publish(bridge_info);
   for(auto remote: bridge_info.remotes)
     if(remote.name == local_name_)
+    {
       for(auto connection_info: remote.connections)
       {
         auto c = connection(connection_info.connection_id);
@@ -49,6 +50,22 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           c->setHostAndPort(host, port);
         }
       }
+      if(bridge_info.next_packet_number < next_packet_number_)
+      {
+        ROS_WARN_STREAM("Received next packet number that is less than previous one: " << bridge_info.next_packet_number << " time: " << bridge_info.last_packet_time << " (previous: " << next_packet_number_ << " time: " << last_packet_time_ << ")");
+        if(bridge_info.next_packet_number == 0 || bridge_info.last_packet_time > last_packet_time_)
+        {
+          // Try to detect remote restart of udp_bridge. Assume a reset if next packet number is zero
+          // or if a timestamp for a lower numbered backet is greater than what we last saw for a larger
+          // packet number.
+          ROS_WARN_STREAM("Assuming remote udp_bridge restart");
+          received_packet_times_.clear();
+          resend_request_times_.clear();
+        }
+      } 
+      next_packet_number_ = bridge_info.next_packet_number;
+      last_packet_time_ = bridge_info.last_packet_time;
+    }
 }
 
 
@@ -142,15 +159,32 @@ void RemoteNode::clearReceivedPacketTimesBefore(ros::Time time)
     resend_request_times_.erase(e);
 }
 
-std::map<uint64_t, ros::Time>& RemoteNode::receivedPacketTimes()
+ResendRequest RemoteNode::getMissingPackets()
 {
-  return received_packet_times_;
-}
+  ros::Time now = ros::Time::now();
+  if(now.isValid() && !now.isZero())
+  {
+    ros::Time too_old = now - ros::Duration(5.0);
+    clearReceivedPacketTimesBefore(too_old);
+    ros::Time can_resend_time = now - ros::Duration(0.2);
 
-std::map<uint64_t, ros::Time>& RemoteNode::resendRequestTimes()
-{
-  return resend_request_times_;
+    std::vector<uint64_t> missing;
+    if(!received_packet_times_.empty())
+      for(auto i = received_packet_times_.begin()->first+1; i < received_packet_times_.rbegin()->first; i++)
+        if(received_packet_times_.find(i) == received_packet_times_.end())
+          missing.push_back(i);
+    ResendRequest rr;
+    for(auto m: missing)
+    {
+      if(resend_request_times_[m] < can_resend_time)
+      {
+        rr.missing_packets.push_back(m);
+        resend_request_times_[m] = now;
+      }
+    }
+    return rr;
+  }
+  return {};
 }
-
 
 } // namespace udp_bridge
