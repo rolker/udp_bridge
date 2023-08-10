@@ -1,6 +1,7 @@
 <launch>
     <node pkg="udp_bridge" type="udp_bridge_node" name="sender_bridge" ns="sender">
       <rosparam>
+      name: sender
       port: 4200
       maxPacketSize: 65
       remotes:
@@ -13,10 +14,13 @@
                 test_topics: 
                   source: sender_topic
                   destination: receiver_topic
+                  period: 1.0
       </rosparam>
     </node>
     <node pkg="udp_bridge" type="udp_bridge_node" name="receiver_bridge" ns="receiver">
+      <param name="name" value="receiver"/>
       <param name="port" value="4201"/>
     </node>
+    <node pkg="rostopic" type="rostopic" name="data_publisher" args="pub -r 2 /sender/sender_topic std_msgs/String &quot;data: 'This a test message that should be long enough to get fragmented by udp_bridge.'&quot;" />
 </launch>
 

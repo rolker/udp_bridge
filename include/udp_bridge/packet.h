@@ -6,14 +6,32 @@
 #include <vector>
 #include <string>
 
+
+/// \file packet.h
+/// Defines the structures used for sending data as UDP packets.
+/// In addition to the structs defined here, ROS message types
+/// are also used.
+/// \defgroup packet UDP Packets
+
 namespace udp_bridge
 {
 
 constexpr uint8_t maximum_node_name_size = 24;
-constexpr uint8_t maximum_channel_id_size = 8;
+constexpr uint8_t maximum_connection_id_size = 8;
 
-
-enum class PacketType: uint8_t {Data, Compressed, SubscribeRequest,  ChannelInfo, Fragment, BridgeInfo, ChannelStatistics, WrappedPacket, ResendRequest}; // AdvertiseRequest,
+/// Packet type identifiers.
+/// \ingroup packet
+enum class PacketType: uint8_t {
+  Data,              ///< packet containing MessageInternal message containing a message from a transmitted topic
+  Compressed,        ///< packet of type CompressedPacket
+  SubscribeRequest,  ///< packet containing a RemoteSubscribeInternal message
+  Fragment,          ///< packet of type Fragment
+  BridgeInfo,        ///< packet containing a BridgeInfo message
+  TopicStatistics,   ///< packet containing a TopicStatistics message
+  WrappedPacket,     ///< packet of type SequencedPacket
+  ResendRequest,     ///< packet containing a ResendRequest message
+  Connection,        ///< packet of type ConnectionInternal
+};
 
 template<typename MessageType> PacketType packetTypeOf(const MessageType&);
 
@@ -24,6 +42,8 @@ struct PacketHeader
   PacketType type;
 };
 
+/// Represents any supported packet.
+/// \ingroup packet
 struct Packet: public PacketHeader
 {
   uint8_t data[];
@@ -31,9 +51,12 @@ struct Packet: public PacketHeader
 
 struct CompressedPacketHeader: public PacketHeader
 {
+  /// Size needed for the uncompressed version compressed_data.
   uint32_t uncompressed_size;
 };
 
+/// Packet containing a compressed packet.
+/// \ingroup packet
 struct CompressedPacket: public CompressedPacketHeader
 {
   uint8_t compressed_data[];
@@ -46,6 +69,8 @@ struct FragmentHeader: public PacketHeader
   uint16_t fragment_count;
 };
 
+/// Packet containing a fragment of a larger packet.
+/// \ingroup packet
 struct Fragment: public FragmentHeader
 {
   uint8_t fragment_data[];
@@ -54,11 +79,13 @@ struct Fragment: public FragmentHeader
 struct SequencedPacketHeader: public PacketHeader
 {
   char source_node[maximum_node_name_size];
-  char channel_id[maximum_channel_id_size];
+  char connection_id[maximum_connection_id_size];
   uint64_t packet_number;
-  uint64_t packet_size;
+  uint32_t packet_size;
 };
 
+/// Wrapper packet containing a packet as well as connection metadata
+/// \ingroup packet
 struct SequencedPacket: public SequencedPacketHeader
 {
   uint8_t packet[];

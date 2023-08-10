@@ -25,23 +25,32 @@ class ConnectionException
     std::string msg_;
 };
 
+/// Represents a connection to a remote node.
+/// Multiple connections to a remote node may be used for redundancy.
 class Connection
 {
 public:
-  //Connection(std::string remote, std::string id);
-  Connection(std::string remote, std::string id, std::string const &host, uint16_t port, std::string return_host=std::string(), uint16_t return_port=0);
+  Connection(std::string id, std::string const &host, uint16_t port, std::string return_host=std::string(), uint16_t return_port=0);
 
   void setHostAndPort(const std::string& host, uint16_t port);
+  void setRateLimit(uint32_t maximum_bytes_per_second);
+  uint32_t rateLimit() const;
 
   std::string str() const;
 
-  const std::string &remote() const;
   const std::string &id() const;
 
   // Used to tell the remote host the address to get back to us.
   const std::string& returnHost() const;
   uint16_t returnPort() const;
   void setReturnHostAndPort(const std::string &return_host, uint16_t return_port);
+
+  // IP address and port from incoming packets. May differ from where packets are sent depending
+  // on network architecture.
+  const std::string& sourceIPAddress() const;
+  uint16_t sourcePort() const;
+  void setSourceIPAndPort(const std::string &source_ip, uint16_t source_port);
+
 
   const std::string& host() const;
   uint16_t port() const;
@@ -51,44 +60,63 @@ public:
   const sockaddr_in* socket_address() const;
 
   const double& last_receive_time() const;
-  void update_last_receive_time(double t, int data_size);
+  void update_last_receive_time(double t, int data_size, bool duplicate);
 
   bool can_send(uint32_t byte_count, double time);
-  double data_receive_rate(double time);
+
+  /// Returns the average received data rate at the specified time.
+  /// The first element of the returned pair is for unique bytes/second and the second
+  /// element is for duplicated bytes per second. Duplicated bytes are for packets
+  /// that had already been received on another connection.
+  std::pair<double, double>  data_receive_rate(double time);
 
   std::map<uint64_t, WrappedPacket>& sentPackets();
 
 private:
   void resolveHost();
 
-  // name of the remote this connection belongs to
-  std::string remote_;
-
-  // connection_id of the connection
+  /// connection_id of the connection
   std::string id_;
 
   std::string host_;
-  std::string ip_address_; // resolved ip address
+  std::string ip_address_; ///< resolved ip address
   uint16_t port_;
 
   std::vector<sockaddr_in> addresses_;
 
-  // Used by the remote to refer to us. Useful if they are behind a nat
+  /// Used by the remote to refer to us. Useful if they are behind a nat
   std::string return_host_;
   uint16_t return_port_ = 0;
 
-  // Time in seconds since epoch that last packet was received
+  std::string source_ip_address_; ///< source ip address of incoming packets from remote
+  uint16_t source_port_ = 0; ///< source port of incoming packets from remote
+
+  /// Time in seconds since epoch that last packet was received
   double last_receive_time_ = 0.0;
 
-  // Maximum bytes per second to send
-  uint32_t data_rate_limit_ = 500000;
+  static constexpr uint32_t default_rate_limit = 50000;
 
-  std::map<double, uint16_t> data_size_sent_history_;
-  std::map<double, uint16_t> data_size_received_history_;
+  /// Maximum bytes per second to send.
+  uint32_t data_rate_limit_ = default_rate_limit;
 
-  // Each connection keeps a buffer of sent packets in case a resend is needed
-  // The same data packets are replicated for each connection to account for 
-  // Different source_node or connection_id.
+  std::map<double, uint32_t> data_size_sent_history_;
+
+  /// Info about a received packet useful for data rate statistics.
+  struct ReceivedSize
+  {
+    /// size in bytes of a received packet
+    uint16_t size = 0;
+
+    /// indicates if this is a duplicate packet that has already been seen on a
+    /// different channel.
+    bool duplicate = false;
+  };
+  std::map<double, std::vector<ReceivedSize> > data_size_received_history_;
+
+  /// History of recently sent packets.
+  /// Each connection keeps a buffer of sent packets in case a resend is needed.
+  /// The same data packets are replicated for each connection to account for 
+  /// different source_node or connection_id.
   std::map<uint64_t, WrappedPacket> sent_packets_;
 };
 

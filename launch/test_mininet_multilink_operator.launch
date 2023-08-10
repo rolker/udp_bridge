@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="udp_bridge" type="udp_bridge_node" name="udp_bridge_operator"/>
+    <node pkg="rqt_gui" type="rqt_gui" name="rqt-operator" args="--perspective udp_bridge_mininet_operator"/>
+</launch>
+

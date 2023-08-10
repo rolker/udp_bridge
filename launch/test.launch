@@ -1,4 +1,0 @@
-<launch>
-    <node pkg="udp_bridge" type="udp_bridge_node" name="udp_bridge_node"/>
-</launch>
-

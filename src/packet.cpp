@@ -4,20 +4,21 @@
 
 #include <udp_bridge/MessageInternal.h>
 #include <udp_bridge/RemoteSubscribeInternal.h>
-#include <udp_bridge/ChannelInfo.h>
 #include <udp_bridge/BridgeInfo.h>
-#include <udp_bridge/ChannelStatisticsArray.h>
+#include <udp_bridge/TopicStatisticsArray.h>
 #include <udp_bridge/ResendRequest.h>
+#include <udp_bridge/ConnectionInternal.h>
 
 namespace udp_bridge
 {
 
 template<> PacketType packetTypeOf(const MessageInternal&) { return PacketType::Data;}
 template<> PacketType packetTypeOf(const RemoteSubscribeInternal&) { return PacketType::SubscribeRequest;}
-template<> PacketType packetTypeOf(const ChannelInfo&) { return PacketType::ChannelInfo;}
 template<> PacketType packetTypeOf(const BridgeInfo&) { return PacketType::BridgeInfo;}
-template<> PacketType packetTypeOf(const ChannelStatisticsArray&) { return PacketType::ChannelStatistics;}
+template<> PacketType packetTypeOf(const TopicStatisticsArray&) { return PacketType::TopicStatistics;}
 template<> PacketType packetTypeOf(const ResendRequest&) { return PacketType::ResendRequest;}
+template<> PacketType packetTypeOf(const ConnectionInternal&) { return PacketType::Connection;}
+
 
 std::vector<uint8_t> compress(const std::vector<uint8_t>& data)
 {

@@ -13,7 +13,7 @@ RemoteNode::RemoteNode(std::string remote_name, std::string local_name): name_(r
 
   bridge_info_publisher_ = private_nodeHandle.advertise<BridgeInfo>("remotes/"+topicName()+"/bridge_info",1,true);
 
-  channel_statistics_publisher_ = private_nodeHandle.advertise<ChannelStatisticsArray>("remotes/"+topicName()+"/channel_statistics",1,true);
+  topic_statistics_publisher_ = private_nodeHandle.advertise<TopicStatisticsArray>("remotes/"+topicName()+"/topic_statistics",1,true);
 }
 
 void RemoteNode::update(const Remote& remote_message)
@@ -25,6 +25,7 @@ void RemoteNode::update(const Remote& remote_message)
     if(!connection)
       connection = newConnection(c.connection_id, c.host, c.port);
     connection->setReturnHostAndPort(c.return_host, c.return_port);
+    connection->setRateLimit(c.maximum_bytes_per_second);
   }
 }
 
@@ -45,10 +46,12 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           port = source_info.port;
         if(!c)
           c = newConnection(connection_info.connection_id, host, port);
-        if(c)
+        else
         {
-          c->setHostAndPort(host, port);
+          if(!connection_info.return_host.empty() || connection_info.return_port != 0)
+            c->setHostAndPort(connection_info.return_host, connection_info.return_port);
         }
+        c->setSourceIPAndPort(source_info.host, source_info.port);
       }
       if(bridge_info.next_packet_number < next_packet_number_)
       {
@@ -56,7 +59,7 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
         if(bridge_info.next_packet_number == 0 || bridge_info.last_packet_time > last_packet_time_)
         {
           // Try to detect remote restart of udp_bridge. Assume a reset if next packet number is zero
-          // or if a timestamp for a lower numbered backet is greater than what we last saw for a larger
+          // or if a timestamp for a lower numbered packet is greater than what we last saw for a larger
           // packet number.
           ROS_WARN_STREAM("Assuming remote udp_bridge restart");
           received_packet_times_.clear();
@@ -92,7 +95,7 @@ std::vector<std::shared_ptr<Connection> > RemoteNode::connections()
 
 std::shared_ptr<Connection> RemoteNode::newConnection(std::string connection_id, std::string host, uint16_t port)
 {
-  connections_[connection_id] = std::make_shared<Connection>(name_, connection_id, host, port);
+  connections_[connection_id] = std::make_shared<Connection>(connection_id, host, port);
   return connections_[connection_id];
 }
 
@@ -108,20 +111,22 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
   else
   {
     auto packet = reinterpret_cast<const SequencedPacket*>(message.data());
-    if(received_packet_times_.find(packet->packet_number) != received_packet_times_.end())
-      return {}; // skip duplicate packet
-    received_packet_times_[packet->packet_number] = ros::Time::now();
-    auto c = connection(packet->channel_id);
+    bool duplicate = received_packet_times_.find(packet->packet_number) != received_packet_times_.end();
+    auto c = connection(packet->connection_id);
     if(!c)
-      c = newConnection(packet->channel_id, source_info.host, source_info.port);
-    c->update_last_receive_time(ros::Time::now().toSec(), message.size());
-    try
+      c = newConnection(packet->connection_id, source_info.host, source_info.port);
+    c->update_last_receive_time(ros::Time::now().toSec(), message.size(), duplicate);
+    if(!duplicate)
     {
-      return std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end());
-    }
-    catch(const std::exception& e)
-    {
-      ROS_ERROR_STREAM("problem decoding packet: " << e.what());
+      received_packet_times_[packet->packet_number] = ros::Time::now();
+      try
+      {
+        return std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end());
+      }
+      catch(const std::exception& e)
+      {
+        ROS_ERROR_STREAM("problem decoding packet: " << e.what());
+      }
     }
   }  
   return {};
@@ -132,14 +137,9 @@ Defragmenter& RemoteNode::defragmenter()
   return defragmenter_;
 }
 
-std::map<std::string, ChannelInfo>& RemoteNode::channelInfos()
+void RemoteNode::publishTopicStatistics(const TopicStatisticsArray& statistics)
 {
-  return channelInfos_;
-}
-
-void RemoteNode::publishChannelStatistics(const ChannelStatisticsArray& statistics)
-{
-  channel_statistics_publisher_.publish(statistics);
+  topic_statistics_publisher_.publish(statistics);
 }
 
 void RemoteNode::clearReceivedPacketTimesBefore(ros::Time time)

@@ -13,10 +13,9 @@
   <exec_depend>message_runtime</exec_depend>
   <depend>roscpp</depend>
   <depend>topic_tools</depend>
+  <test_depend>rostest</test_depend>
 
-  <!-- The export tag contains other, unspecified, tags -->
   <export>
-    <!-- Other tools can request additional information be placed here -->
-
+    <rosdoc config="rosdoc.yaml"/>
   </export>
 </package>

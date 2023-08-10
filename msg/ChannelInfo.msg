@@ -1,5 +1,0 @@
-string source_topic
-string destination_topic
-string md5sum
-string datatype
-string message_definition

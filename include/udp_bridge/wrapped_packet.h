@@ -7,6 +7,7 @@
 namespace udp_bridge
 {
 
+/// Generates a SequencedPacket that can be sent using UDP.
 struct WrappedPacket: SequencedPacketHeader
 {
   WrappedPacket() = default;

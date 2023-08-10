@@ -26,8 +26,8 @@ WrappedPacket::WrappedPacket(const WrappedPacket& other, std::string src_node, s
   memset(&source_node, 0, maximum_node_name_size);
   memcpy(&source_node, src_node.c_str(), std::min(src_node.size(), std::size_t(maximum_node_name_size-1)));
 
-  memset(&channel_id, 0, maximum_channel_id_size);
-  memcpy(&channel_id, cid.c_str(), std::min(cid.size(), std::size_t(maximum_channel_id_size-1)));
+  memset(&connection_id, 0, maximum_connection_id_size);
+  memcpy(&connection_id, cid.c_str(), std::min(cid.size(), std::size_t(maximum_connection_id_size-1)));
 
   memcpy(packet.data(), this, sizeof(SequencedPacketHeader));
 }

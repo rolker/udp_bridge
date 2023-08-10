@@ -1,0 +1,29 @@
+<launch>
+  <node pkg="udp_bridge" type="udp_bridge_node" name="udp_bridge_sender">
+    <rosparam>
+    name: sender
+    port: 4200
+    maxPacketSize: 1400
+    remotes:
+      receiver:
+        connections:
+          default:
+            host: localhost
+            port: 4201
+            maximumBytesPerSecond: 1000000
+            topics:
+              video: 
+                source: image_raw
+                destination: /bridged/image_raw
+                period: 1.0
+    </rosparam>
+  </node>
+  <node pkg="udp_bridge" type="udp_bridge_node" name="udp_bridge_receiver">
+    <param name="name" value="receiver"/>
+    <param name="port" value="4201"/>
+  </node>
+  <node pkg="video_stream_opencv" type="video_stream" name="video_stream">
+    <param name="buffer_queue_size" value="1"/>
+  </node>
+</launch>
+

@@ -5,8 +5,7 @@
 #include <udp_bridge/ResendRequest.h>
 #include <udp_bridge/packet.h>
 #include <udp_bridge/defragmenter.h>
-#include "udp_bridge/ChannelInfo.h"
-#include <udp_bridge/ChannelStatisticsArray.h>
+#include <udp_bridge/TopicStatisticsArray.h>
 #include <udp_bridge/BridgeInfo.h>
 #include <udp_bridge/types.h>
 
@@ -44,9 +43,7 @@ public:
 
   Defragmenter& defragmenter();
 
-  std::map<std::string, ChannelInfo>& channelInfos();
-
-  void publishChannelStatistics(const ChannelStatisticsArray& statistics);
+  void publishTopicStatistics(const TopicStatisticsArray& statistics);
 
   void clearReceivedPacketTimesBefore(ros::Time time);
 
@@ -66,11 +63,8 @@ private:
   std::map<uint64_t, ros::Time> received_packet_times_;
   std::map<uint64_t, ros::Time> resend_request_times_;
 
-  // map source topics to ChannelInfos
-  std::map<std::string, ChannelInfo> channelInfos_;
-
   ros::Publisher bridge_info_publisher_;
-  ros::Publisher channel_statistics_publisher_;
+  ros::Publisher topic_statistics_publisher_;
 
   uint64_t next_packet_number_ = 0;
   ros::Time last_packet_time_;

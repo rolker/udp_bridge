@@ -15,17 +15,17 @@ find_package(ZLIB REQUIRED)
 add_message_files(
   FILES
   BridgeInfo.msg
-  ChannelInfo.msg
-  ChannelInfoArray.msg
-  ChannelStatistics.msg
-  ChannelStatisticsArray.msg
+  ConnectionInternal.msg
   MessageInternal.msg
   Remote.msg
   RemoteConnection.msg
   RemoteSubscribeInternal.msg
   ResendRequest.msg
   TopicInfo.msg
+  TopicRemoteConnectionDetails.msg
   TopicRemoteDetails.msg
+  TopicStatistics.msg
+  TopicStatisticsArray.msg
 )
 
 add_service_files(

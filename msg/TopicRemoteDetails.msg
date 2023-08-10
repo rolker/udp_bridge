@@ -1,8 +1,7 @@
+# Part of TopicInfo specifing details about a topic send of a specific connection to a remote 
 string  remote
-string  connection_id
+
+# The optional different topic used to publish on the remote.
 string  destination_topic
 
-# Optional rate limit for sending topic if positive, topic disabled if negative.
-# No rate limit if zero, otherwise, period is
-# time in seconds to wait between sending messages from this topic.
-float32 period
+TopicRemoteConnectionDetails[] connections

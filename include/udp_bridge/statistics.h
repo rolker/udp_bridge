@@ -3,7 +3,7 @@
 
 #include <deque>
 #include <ros/ros.h>
-#include <udp_bridge/ChannelStatistics.h>
+#include <udp_bridge/TopicStatistics.h>
 
 namespace udp_bridge
 {
@@ -18,7 +18,6 @@ struct SizeData
 {
   int message_size = 0;
   int packet_size = 0;
-  int compressed_packet_size = 0;
   int fragment_count = 0;
   int sent_size = 0;
   ros::Time timestamp;
@@ -30,7 +29,7 @@ class Statistics
 public:
   void add(const SizeData& data);
 
-  std::vector<ChannelStatistics> get();
+  std::vector<TopicStatistics> get();
 private:
   std::deque<SizeData> data_;
 

@@ -1,0 +1,49 @@
+/**
+\mainpage
+\htmlinclude manifest.html
+
+See [README.md](README.md) for user documentation.
+
+\section codeapi Code Design
+
+See the udp_bridge::UDPBridge class documentation for an overview of the code layout.
+
+\section testing UDP Bridge Testing
+
+\subsection unit_testing Unit test
+
+  catkin_make run_tests_udp_bridge
+
+\subsection testing_fragments Testing fragments
+
+In multiple terminals:
+
+    roscore
+    mon launch udp_bridge test_fragments.launch
+    rostopic pub -r 1 /sender/sender_topic std_msgs/String "data: 'This is a test of sending fragmented packets over udp_bridge with a small packet size setting.'"
+    rostopic echo /receiver/receiver_topic
+    rostopic echo /sender/sender_bridge/bridge_info
+    rostopic echo /sender/sender_bridge/topic_statistics
+    rqt
+
+\subsection mininet Simulating network issues
+
+Following labs demonstrate using mininet to simulate a network and netem to add delays and packet loss.
+
+http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%201.pdf
+http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%202.pdf
+http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%203.pdf
+http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%204.pdf
+
+http://mininet.org/
+
+\subsubsection installing_mininet Installing latest mininet
+
+    cd ~/src/
+    git clone https://github.com/mininet/mininet
+    PYTHON=python3 ./mininet/util/install.sh -nvf
+
+
+
+
+*/

@@ -1,3 +1,4 @@
+# Message used by BridgeInfo message and ListRemotes service.
 # Describes a remote node and connections to it
 
 # name of the node, each udp_bridge node should have a unique name
