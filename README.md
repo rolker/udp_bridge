@@ -14,20 +14,22 @@ List of nodes:
 
 udp_bridge_node subscribes to topics to be sent to remote udp_bridge_nodes and publishes messages received from remote udp_bridge_nodes and provides services to manage remote connections and transmitted topics.
 
+udp_bridge_node uses names to identify remote nodes. Make sure to set the name private parameter if the node name is not unique in the network.
+
 #### Usage
 
-  rosrun udp_bridge udp_bridge_node
+    rosrun udp_bridge udp_bridge_node
 
 Example of running two bridge nodes on a single ROS core for testing.
 
-  ROS_NAMESPACE=foo rosrun udp_bridge udp_bridge_node
-  ROS_NAMESPACE=bar rosrun udp_bridge udp_bridge_node _port:=4201
+    ROS_NAMESPACE=foo rosrun udp_bridge udp_bridge_node _name:=node_a
+    ROS_NAMESPACE=bar rosrun udp_bridge udp_bridge_node _name:=node_b _port:=4201
 
-  rosservice call /foo/udp_bridge_node/add_remote
-  rosservice call /foo/udp_bridge_node/remote_advertise
+    rosservice call /foo/udp_bridge_node/add_remote
+    rosservice call /foo/udp_bridge_node/remote_advertise
 
-  rostopic pub /send_topic hello
-  rostopic echo /receive_topic
+    rostopic pub /send_topic hello
+    rostopic echo /receive_topic
 
 #### ROS topics
 
@@ -40,7 +42,7 @@ Publishes to:
 
 Reads the following parameters from the parameter server. Lists are encoded as labeled structures to allow updating details in launch files.
 
-- ~name: [string] name used to when communicating with remotes. Should be unique. Defaults to the node's namespace or name if the node is not in a namespace.
+- ~name: [string] name used to when communicating with remotes. Should be unique. Defaults to the node's name.
 - ~port: [integer] UDP port number used for listening for incoming data. Defaults to 4200.
 - ~maxPacketSize: [integer] Maximum packet size to use to send data. Defaults to 65500.
 - ~remotes: [struct] List of initial remotes nodes.
