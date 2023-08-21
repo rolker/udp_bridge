@@ -6,6 +6,7 @@
 #include <cstring>
 #include <sstream>
 #include <iostream>
+#include <poll.h>
 
 namespace udp_bridge
 {
@@ -152,29 +153,118 @@ void Connection::update_last_receive_time(double t, int data_size, bool duplicat
   data_size_received_history_[t].push_back(rs);
 }
 
-bool Connection::can_send(uint32_t byte_count, double time)
+
+SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead)
 {
-  ROS_DEBUG_STREAM_NAMED("rate_limit", "Can " << byte_count << " bytes be sent at " << time << "?");
-  while(!data_size_sent_history_.empty() && data_size_sent_history_.begin()->first < time-1.0)
+  uint32_t total_size = 0;
+  for(const auto& p: packets)
+    total_size += p.packet_size;
+
+  auto now = ros::Time::now();
+  if(!sent_packet_statistics_.can_send(total_size, data_rate_limit_, now))
   {
-    ROS_DEBUG_STREAM_NAMED("rate_limit", " erasing " << data_size_sent_history_.begin()->second << " bytes received at " << data_size_sent_history_.begin()->first);
-    data_size_sent_history_.erase(data_size_sent_history_.begin());
+    for(const auto& p: packets)
+    {
+
+      PacketSizeData size_data;
+      size_data.timestamp = now;
+      size_data.size = p.packet_size;
+      if(is_overhead)
+        size_data.category = PacketSendCategory::overhead;
+      else
+        size_data.category = PacketSendCategory::message;
+      size_data.send_result = SendResult::dropped;
+      sent_packet_statistics_.add(size_data);
+    }
+    return SendResult::dropped;
   }
-  uint32_t bytes_sent_last_second = 0;
-  for(auto ds: data_size_sent_history_)
+
+  SendResult ret = SendResult::success;
+  for(const auto& p: packets)
   {
-    ROS_DEBUG_STREAM_NAMED("rate_limit", " adding to sum " << ds.second << " bytes sent at " << ds.first); 
-    bytes_sent_last_second += ds.second;
+    auto packet = WrappedPacket(p, remote, id_);
+    sent_packets_[packet.packet_number] = packet;
+    PacketSendCategory category = PacketSendCategory::message;
+    if(is_overhead)
+      category = PacketSendCategory::overhead;
+    auto send_ret = send(packet.packet, socket, category);
+    if(send_ret.send_result != SendResult::success)
+      ret = send_ret.send_result;
   }
-  ROS_DEBUG_STREAM_NAMED("rate_limit", " already sent: " << bytes_sent_last_second << " want to send: " << byte_count << " totaling: " << bytes_sent_last_second+byte_count << " limit: " << data_rate_limit_);
-  if(bytes_sent_last_second+byte_count <= data_rate_limit_)
+  return ret;
+}
+
+
+PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category)
+{
+  PacketSizeData ret;
+  ret.timestamp = ros::Time::now();
+  ret.size = data.size();
+  ret.category = category;
+  ret.send_result = SendResult::failed;
+  if(addresses_.empty())
   {
-    ROS_DEBUG_STREAM_NAMED("rate_limit","OK to send");
-    data_size_sent_history_[time] += byte_count;
-    return true;
+    sent_packet_statistics_.add(ret);
+    return ret;
   }
-  ROS_DEBUG_STREAM_NAMED("rate_limit","NOT OK to send");
-  return false;
+
+  if(!sent_packet_statistics_.can_send(data.size(), data_rate_limit_, ret.timestamp))
+  {
+    ret.send_result = SendResult::dropped;
+    sent_packet_statistics_.add(ret);
+    return ret;
+  }
+
+  int bytes_sent = 0;
+  try
+  {
+    int tries = 0;
+    while (true)
+    {
+      pollfd p;
+      p.fd = socket;
+      p.events = POLLOUT;
+      int poll_ret = poll(&p, 1, 10);
+      if(poll_ret > 0 && p.revents & POLLOUT)
+      {
+        bytes_sent = sendto(socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(addresses_.data()), sizeof(sockaddr_in));
+        if(bytes_sent == -1)
+          switch(errno)
+          {
+            case EAGAIN:
+              tries+=1;
+              break;
+            case ECONNREFUSED:
+              sent_packet_statistics_.add(ret);
+              return ret;
+            default:
+              throw(ConnectionException(strerror(errno)));
+          }
+        if(bytes_sent < data.size())
+          throw(ConnectionException("only "+std::to_string(bytes_sent) +" of " +std::to_string(data.size()) + " sent"));
+        else
+        {
+          ret.send_result = SendResult::success;
+          sent_packet_statistics_.add(ret);
+          return ret;
+        }
+      }
+      else
+        tries+=1;
+
+      if(tries >= 20)
+        if(poll_ret == 0)
+          throw(ConnectionException("Timeout"));
+        else
+          throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
+    }
+  }
+  catch(const ConnectionException& e)
+  {
+      ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
+  }
+  sent_packet_statistics_.add(ret);
+  return ret;
 }
 
 std::pair<double, double> Connection::data_receive_rate(double time)
@@ -201,10 +291,33 @@ std::pair<double, double> Connection::data_receive_rate(double time)
   return std::make_pair<double, double>(unique_sum/dt, duplicate_sum/dt);
 }
 
-std::map<uint64_t, WrappedPacket>& Connection::sentPackets()
+DataRates Connection::data_sent_rate(ros::Time time, PacketSendCategory category)
 {
-  return sent_packets_;
+  return sent_packet_statistics_.get(category);
 }
+
+
+void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, int socket)
+{
+  for(auto packet_number: missing_packets)
+  {
+    auto packet_to_resend = sent_packets_.find(packet_number);
+    if(packet_to_resend != sent_packets_.end())
+      send(packet_to_resend->second.packet, socket, PacketSendCategory::resend);
+  }
+}
+
+void Connection::cleanup_sent_packets(ros::Time cutoff_time)
+{
+  std::vector<uint64_t> expired;
+  for(auto sp: sent_packets_)
+    if(sp.second.timestamp < cutoff_time)
+      expired.push_back(sp.first);
+  for(auto e: expired)
+    sent_packets_.erase(e);
+}
+
+
 
 
 std::string addressToDotted(const sockaddr_in& address)

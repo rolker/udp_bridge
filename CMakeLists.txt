@@ -16,6 +16,7 @@ add_message_files(
   FILES
   BridgeInfo.msg
   ConnectionInternal.msg
+  DataRates.msg
   MessageInternal.msg
   Remote.msg
   RemoteConnection.msg

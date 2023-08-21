@@ -7,7 +7,7 @@ void statisticsCallback(udp_bridge::TopicStatisticsArray const &stats)
     // if (!stats.remote_label.empty())
     //     return; // don't show stats from remotes
         
-  std::vector<std::string> headers {"source topic", "remote host", "     messages", "message data", " packet data", "     send ok", "   send fail", "     dropped"};
+  std::vector<std::string> headers {"source topic", "remote host", "     messages", "message data", "     send ok", "   send fail", "     dropped"};
   std::vector<int> column_widths;
   for(auto h: headers)
     column_widths.push_back(h.size());
@@ -23,7 +23,7 @@ void statisticsCallback(udp_bridge::TopicStatisticsArray const &stats)
     std::cout << std::setw(column_widths[i]+1) << headers[i];
   std::cout << std::endl;
 
-  std::vector<float> totals {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  std::vector<float> totals {0.0, 0.0, 0.0, 0.0, 0.0};
     
   for(auto c: stats.topics)
   {
@@ -38,19 +38,18 @@ void statisticsCallback(udp_bridge::TopicStatisticsArray const &stats)
     std::cout << std::setw(5) << c.messages_per_second << " msg/sec ";
     // bytes to kilobits, *8/100 -> /125
     std::cout << std::setw(7) << c.message_bytes_per_second/125.0 << " kbps ";
-    std::cout << std::setw(7) << c.packet_bytes_per_second/125.0 << " kbps ";
-    std::cout << std::setw(7) << c.ok_sent_bytes_per_second/125.0 << " kbps ";
-    std::cout << std::setw(7) << c.failed_sent_bytes_per_second/125.0 << " kbps ";
-    std::cout << std::setw(7) << c.dropped_bytes_per_second/125.0 << " kbps";
+    
+    std::cout << std::setw(7) << c.send.success_bytes_per_second/125.0 << " kbps ";
+    std::cout << std::setw(7) << c.send.failed_bytes_per_second/125.0 << " kbps ";
+    std::cout << std::setw(7) << c.send.dropped_bytes_per_second/125.0 << " kbps";
     
     std::cout << std::endl;
     
     totals[0] += c.messages_per_second;
     totals[1] += c.message_bytes_per_second;
-    totals[2] += c.packet_bytes_per_second;
-    totals[3] += c.ok_sent_bytes_per_second;
-    totals[4] += c.failed_sent_bytes_per_second;
-    totals[5] += c.dropped_bytes_per_second;
+    totals[2] += c.send.success_bytes_per_second;
+    totals[3] += c.send.failed_bytes_per_second;
+    totals[4] += c.send.dropped_bytes_per_second;
   }
   std::cout << std::left;
   std::cout << std::setw(column_widths[0]+column_widths[1]+2) << "totals:";
@@ -60,7 +59,6 @@ void statisticsCallback(udp_bridge::TopicStatisticsArray const &stats)
   std::cout << std::setw(7) << totals[2]/125.0 << " kbps ";
   std::cout << std::setw(7) << totals[3]/125.0 << " kbps";
   std::cout << std::setw(7) << totals[4]/125.0 << " kbps";
-  std::cout << std::setw(7) << totals[5]/125.0 << " kbps";
   std::cout << std::endl;
   
   std::cout << std::endl;

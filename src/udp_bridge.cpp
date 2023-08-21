@@ -248,7 +248,7 @@ void UDPBridge::callback(const ros::MessageEvent<topic_tools::ShapeShifter>& eve
         }
   }
 
-  SizeData size_data;
+  MessageSizeData size_data;
   size_data.message_size = msg->size();
   ROS_DEBUG_STREAM_NAMED("send_messages", "message size: " << size_data.message_size);
   size_data.timestamp = now;
@@ -279,7 +279,7 @@ void UDPBridge::callback(const ros::MessageEvent<topic_tools::ShapeShifter>& eve
     message.destination_topic = m_subscribers[topic_name].remote_details[destination.first].destination_topic;
     RemoteConnectionsList connections;
     connections[destination.first] = destination.second;
-    size_data = send(message, connections);
+    size_data = send(message, connections, false);
     size_data.message_size = msg->size();
     m_subscribers[topic_name].statistics.add(size_data);
   }  
@@ -407,15 +407,8 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
 
   auto remote_node = remote_nodes_.find(source_info.node_name);
   if(remote_node != remote_nodes_.end())
-  {
-    for(auto packet_number: rr.missing_packets)
-      for(auto connection: remote_node->second->connections())
-      {
-        auto packet_to_resend = connection->sentPackets().find(packet_number);
-        if(packet_to_resend != connection->sentPackets().end())
-          send(packet_to_resend->second.packet, connection->socket_address());
-      }
-  }
+    for(auto connection: remote_node->second->connections())
+      connection->resend_packets(rr.missing_packets, m_socket);
 }
 
 void UDPBridge::decodeTopicStatistics(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -536,10 +529,12 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
         }
         else
           connection->setHostAndPort(host, port);
+        if(connection_internal.return_maximum_bytes_per_second > 0)
+          connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
         connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
         connection_internal.return_host = connection->returnHost();
         connection_internal.return_port = connection->returnPort();
-        overhead_statistics_.add(send(connection_internal, source_info.node_name));
+        send(connection_internal, source_info.node_name, true);
       }
       break;
     case ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE:
@@ -553,15 +548,18 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
         }
         auto connection = remote->connection(connection_internal.connection_id);
         auto pending_connection = pending_connections_[connection_internal.sequence_number].connection;
-        if(!connection)
+        if(pending_connection)
         {
-          connection = pending_connection;
-          remote->connections().push_back(connection);
-        }
-        else
-        {
-          connection->setRateLimit(pending_connection->rateLimit());
-          connection->setReturnHostAndPort(pending_connection->returnHost(), pending_connection->returnPort());
+          if(!connection)
+          {
+            connection = pending_connection;
+            remote->connections().push_back(connection);
+          }
+          else
+          {
+            connection->setRateLimit(pending_connection->rateLimit());
+            connection->setReturnHostAndPort(pending_connection->returnHost(), pending_connection->returnPort());
+          }
         }
         pending_connections_.erase(connection_internal.sequence_number);
       }
@@ -582,13 +580,13 @@ void UDPBridge::resendMissingPackets()
       if(!rr.missing_packets.empty())
       {
         ROS_DEBUG_STREAM_NAMED("resend", "Sending a request to resend " << rr.missing_packets.size() << " packets");
-        overhead_statistics_.add(send(rr, remote.first));
+        send(rr, remote.first, true);
       }
     }
 }
 
 
-template <typename MessageType> SizeData UDPBridge::send(MessageType const &message, const RemoteConnectionsList& remotes)
+template <typename MessageType> MessageSizeData UDPBridge::send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead)
 {
   auto serial_size = ros::serialization::serializationLength(message);
   
@@ -611,34 +609,44 @@ template <typename MessageType> SizeData UDPBridge::send(MessageType const &mess
   auto fragments = fragment(packet_data);
   ROS_DEBUG_STREAM_NAMED("send_messages", "fragment count: " << fragments.size());
 
-  auto size_data = send(fragments, remotes);
+  auto size_data = send(fragments, remotes, is_overhead);
 
   for(auto remote_result: size_data.send_results)
   {
     for(auto connection_result: remote_result.second)
     {
-      ROS_DEBUG_STREAM_NAMED("send_messages", remote_result.first << ":" << connection_result.first << " success: " << connection_result.second.sent_success << " dropped: " << connection_result.second.dropped);
+      switch(connection_result.second)
+      {
+      case SendResult::success:
+        ROS_DEBUG_STREAM_NAMED("send_messages", remote_result.first << ":" << connection_result.first << " success");
+        break;
+      case SendResult::failed:
+        ROS_DEBUG_STREAM_NAMED("send_messages", remote_result.first << ":" << connection_result.first << " failed");
+        break;
+      case SendResult::dropped:
+        ROS_DEBUG_STREAM_NAMED("send_messages", remote_result.first << ":" << connection_result.first << " dropped");
+        break;
+      }
     }
   }
 
   size_data.message_size = serial_size;
-  size_data.packet_size = packet_data.size();
   size_data.fragment_count = fragments.size();
   return size_data;
 }
 
-template <typename MessageType> SizeData UDPBridge::send(MessageType const &message, const std::string& remote)
+template <typename MessageType> MessageSizeData UDPBridge::send(MessageType const &message, const std::string& remote, bool is_overhead)
 {
   RemoteConnectionsList rcl;
   rcl[remote];
-  return send(message, rcl);
+  return send(message, rcl, is_overhead);
 }
 
 
 // wrap and send a series of packets that should be sent as a group, such as fragments.
-template<> SizeData UDPBridge::send(const std::vector<std::vector<uint8_t> >& data, const RemoteConnectionsList& remotes)
+template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t> >& data, const RemoteConnectionsList& remotes, bool is_overhead)
 {
-  SizeData size_data;
+  MessageSizeData size_data;
   std::vector<WrappedPacket> wrapped_packets;
   
   ROS_DEBUG_STREAM_NAMED("send_messages", "begin packet number: " << next_packet_number_);
@@ -679,23 +687,9 @@ template<> SizeData UDPBridge::send(const std::vector<std::vector<uint8_t> >& da
         }
       }
       for(auto connection: connections)
-        if(connection && !connection->host().empty())
+        if(connection)
         {
-          SendResult result;
-          result.sent_success = false;
-          result.dropped = false;
-          if(connection->can_send(size_data.sent_size, wrapped_packets.front().timestamp.toSec()))
-          {
-            result.sent_success = true;
-            for(auto packet: wrapped_packets)
-            {
-              connection->sentPackets()[packet.packet_number] = WrappedPacket(packet, name_, connection->id());
-              if(send(connection->sentPackets()[packet.packet_number].packet, connection->socket_address()) != packet.packet_size)
-                result.sent_success = false;
-            }
-          }
-          else
-            result.dropped = true;
+          auto result = connection->send(wrapped_packets, m_socket, name_, is_overhead);
           size_data.send_results[remote.first][connection->id()]=result;
         }
       
@@ -716,64 +710,8 @@ void UDPBridge::cleanupSentPackets()
       if(remote.second)
         for(auto connection: remote.second->connections())
           if(connection)
-          {
-            std::vector<uint64_t> expired;
-            for(auto sp: connection->sentPackets())
-              if(sp.second.timestamp < old_enough)
-                expired.push_back(sp.first);
-            for(auto e: expired)
-              connection->sentPackets().erase(e);
-          }
+            connection->cleanup_sent_packets(old_enough);
   }
-}
-
-int UDPBridge::send(const std::vector<uint8_t> &data, const sockaddr_in* address)
-{
-  int bytes_sent = 0;
-  try
-  {
-    int tries = 0;
-    while (true)
-    {
-      pollfd p;
-      p.fd = m_socket;
-      p.events = POLLOUT;
-      int ret = poll(&p, 1, 10);
-      if(ret > 0 && p.revents & POLLOUT)
-      {
-        bytes_sent = sendto(m_socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(address), sizeof(*address));
-        if(bytes_sent == -1)
-          switch(errno)
-          {
-            case EAGAIN:
-              tries+=1;
-              break;
-            case ECONNREFUSED:
-              return bytes_sent;
-            default:
-              throw(ConnectionException(strerror(errno)));
-          }
-        if(bytes_sent < data.size())
-          throw(ConnectionException("only "+std::to_string(bytes_sent) +" of " +std::to_string(data.size()) + " sent"));
-        else
-          break;
-      }
-      else
-        tries+=1;
-
-      if(tries >= 20)
-        if(ret == 0)
-          throw(ConnectionException("Timeout"));
-        else
-          throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
-    }
-    return bytes_sent;
-  }
-  catch(const ConnectionException& e)
-  {
-      ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
-  }
-  return bytes_sent;
 }
 
 
@@ -788,9 +726,8 @@ bool UDPBridge::remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bri
   remote_request.period = request.period;
   remote_request.connection_id = request.connection_id;
 
-  auto ret = send(remote_request, request.remote);
-  overhead_statistics_.add(ret);
-  return ret.send_results[request.remote][request.connection_id].sent_success;
+  auto ret = send(remote_request, request.remote, true);
+  return ret.send_results[request.remote][request.connection_id] == SendResult::success;
 }
 
 bool UDPBridge::remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response)
@@ -824,15 +761,9 @@ void UDPBridge::statsReportCallback(ros::TimerEvent const &event)
     }
   }
 
-  for(auto ts: overhead_statistics_.get())
-  {
-    ts.source_node = name_;
-    tsa.topics.push_back(ts);
-  }
-
   m_topicStatisticsPublisher.publish(tsa);
 
-  overhead_statistics_.add(send(tsa, allRemotes()));
+  send(tsa, allRemotes(), true);
 }
 
 std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t>& data)
@@ -926,6 +857,9 @@ void UDPBridge::sendBridgeInfo()
           auto receive_rates = connection->data_receive_rate(bi.stamp.toSec());
           rc.received_bytes_per_second = receive_rates.first + receive_rates.second;
           rc.duplicate_bytes_per_second = receive_rates.second;
+          rc.message = connection->data_sent_rate(bi.stamp, PacketSendCategory::message);
+          rc.overhead = connection->data_sent_rate(bi.stamp, PacketSendCategory::overhead);
+          rc.resend = connection->data_sent_rate(bi.stamp, PacketSendCategory::resend);
           remote.connections.push_back(rc);
         }
       bi.remotes.push_back(remote);
@@ -938,7 +872,7 @@ void UDPBridge::sendBridgeInfo()
 
   m_bridge_info_publisher.publish(bi);
 
-  overhead_statistics_.add(send(bi, allRemotes()));
+  send(bi, allRemotes(), true);
 }
 
 void UDPBridge::sendConnectionRequests()
@@ -947,7 +881,7 @@ void UDPBridge::sendConnectionRequests()
   {
     RemoteConnectionsList rcl;
     rcl[""].push_back(std::to_string(pending_connection.first));
-    send(pending_connection.second.message, rcl);
+    send(pending_connection.second.message, rcl, true);
   }
 }
 
@@ -957,7 +891,39 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
   if(connection_id.empty())
     connection_id = "default";
 
-  if(request.name.empty()) // we don't know the remote name, so send a connection request
+  if(!request.name.empty())
+  {
+    auto remote = remote_nodes_[request.name];
+    if(!remote)
+    {
+      remote = std::make_shared<RemoteNode>(request.name, name_);
+      remote_nodes_[request.name] = remote;
+    }
+
+    uint16_t port = 4200;
+    if (request.port != 0)
+      port = request.port;
+
+    auto connection = remote->connection(connection_id);
+    if(!request.address.empty())
+    {
+      if(!connection)
+      {
+        connection = remote->newConnection(connection_id, request.address, port);
+        remote->connections().push_back(connection);
+      }
+      else
+        connection->setHostAndPort(request.address, port);
+    }
+    if(connection)
+    {
+      connection->setReturnHostAndPort(request.return_address, request.return_port);
+      connection->setRateLimit(request.maximum_bytes_per_second);
+      sendBridgeInfo();
+    }
+  }
+
+  if(request.name.empty() || request.return_maximum_bytes_per_second > 0) // we don't know the remote name, so send a connection request
   {
     auto sequence_number = next_connection_internal_message_sequence_number_++;
     auto& connection_internal = pending_connections_[sequence_number];
@@ -966,41 +932,26 @@ bool UDPBridge::addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::A
     connection_internal.message.operation = ConnectionInternal::OPERATION_CONNECT;
     connection_internal.message.return_host = request.return_address;
     connection_internal.message.return_port = request.return_port;
-    connection_internal.connection = std::make_shared<Connection>(connection_id, request.address, request.port);
+    connection_internal.message.return_maximum_bytes_per_second = request.return_maximum_bytes_per_second;
+    if(!request.address.empty())
+    {
+      connection_internal.connection = std::make_shared<Connection>(connection_id, request.address, request.port);
+      connection_internal.connection->setRateLimit(request.maximum_bytes_per_second);
+    }
     RemoteConnectionsList rcl;
-    rcl[""].push_back(std::to_string(sequence_number));
-    overhead_statistics_.add(send(connection_internal.message, rcl));
-    return true;
+    if(request.name.empty())
+      rcl[""].push_back(std::to_string(sequence_number));
+    else
+      rcl[request.name].push_back(connection_id);
+    send(connection_internal.message, rcl, true);
   }
 
-  auto remote = remote_nodes_[request.name];
-  if(!remote)
-  {
-    remote = std::make_shared<RemoteNode>(request.name, name_);
-    remote_nodes_[request.name] = remote;
-  }
-
-  uint16_t port = 4200;
-  if (request.port != 0)
-    port = request.port;
-
-  auto connection = remote->connection(connection_id);
-  if(!connection)
-  {
-    connection = remote->newConnection(connection_id, request.address, port);
-    remote->connections().push_back(connection);
-  }
-  else
-    connection->setHostAndPort(request.address, port);
-  connection->setReturnHostAndPort(request.return_address, request.return_port);
-  connection->setRateLimit(request.maximum_bytes_per_second);
-
-  sendBridgeInfo();
   return true;
 }
 
 bool UDPBridge::listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridge::ListRemotes::Response &response)
 {
+  auto now = ros::Time::now();
   for(auto remote: remote_nodes_)
     if(remote.second)
     {
@@ -1020,10 +971,12 @@ bool UDPBridge::listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridg
           rc.source_ip_address = connection->sourceIPAddress();
           rc.source_port = connection->sourcePort();
           rc.maximum_bytes_per_second = connection->rateLimit();
-          auto receive_rates = connection->data_receive_rate(ros::Time::now().toSec());
+          auto receive_rates = connection->data_receive_rate(now.toSec());
           rc.received_bytes_per_second = receive_rates.first + receive_rates.second;
           rc.duplicate_bytes_per_second = receive_rates.second;
-
+          rc.message = connection->data_sent_rate(now, PacketSendCategory::message);
+          rc.overhead = connection->data_sent_rate(now, PacketSendCategory::overhead);
+          rc.resend = connection->data_sent_rate(now, PacketSendCategory::resend);
           r.connections.push_back(rc);
         }
       response.remotes.push_back(r);

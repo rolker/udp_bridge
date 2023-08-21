@@ -98,16 +98,16 @@ private:
   using RemoteConnectionsList = std::map<std::string, std::vector<std::string> >;
 
   /// Convert a message to a packet and send it to remotes.
-  template <typename MessageType> SizeData send(MessageType const &message, const RemoteConnectionsList& remotes);
+  template <typename MessageType> MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead);
 
   /// Convert a message to a packet and send it to remote using all connections.
-  template <typename MessageType> SizeData send(MessageType const &message, const std::string& remote);
+  template <typename MessageType> MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead);
 
   /// Return a list of all remotes.
   RemoteConnectionsList allRemotes() const;
 
-  /// Sends the raw data to the connection. Returns number of bytes sent.
-  int send(const std::vector<uint8_t>& data, const sockaddr_in* address);
+  // /// Sends the raw data to the connection. Returns number of bytes sent.
+  // int send(const std::vector<uint8_t>& data, const sockaddr_in* address);
 
   /// Timer callback where data rate stats are reported
   void statsReportCallback(const ros::TimerEvent&);
@@ -170,10 +170,8 @@ private:
     std::shared_ptr<Connection> connection;
   };
 
+  /// Map pending remote connections to their message sequence_number.
   std::map<uint64_t, PendingConnection> pending_connections_;
-
-  Statistics overhead_statistics_;
-  Statistics resend_statistics_;
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
 };

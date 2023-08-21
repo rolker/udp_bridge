@@ -27,7 +27,7 @@ struct SubscriberDetails
 {
   ros::Subscriber subscriber;
   std::map<std::string, RemoteDetails> remote_details;
-  Statistics statistics;
+  MessageStatistics statistics;
 };
 
 // Name and address/port from which a message was received

@@ -1,4 +1,4 @@
-# This is an internal message is used to manage
+# This is an internal message used to manage
 # connections between nodes
 
 # ID of the connection
@@ -23,3 +23,6 @@ string  return_host
 
 # optional port remote should use to reach us
 uint16  return_port
+
+# optional data rate limit for the return connection
+uint32 return_maximum_bytes_per_second

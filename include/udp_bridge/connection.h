@@ -12,6 +12,7 @@
 #include <udp_bridge/packet.h>
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
+#include "udp_bridge/DataRates.h"
 
 namespace udp_bridge
 {
@@ -62,7 +63,13 @@ public:
   const double& last_receive_time() const;
   void update_last_receive_time(double t, int data_size, bool duplicate);
 
-  bool can_send(uint32_t byte_count, double time);
+  void resend_packets(const std::vector<uint64_t> &missing_packets, int socket);
+
+  SendResult send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead);
+
+  PacketSizeData send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category);
+
+  //bool can_send(uint32_t byte_count, double time);
 
   /// Returns the average received data rate at the specified time.
   /// The first element of the returned pair is for unique bytes/second and the second
@@ -70,7 +77,11 @@ public:
   /// that had already been received on another connection.
   std::pair<double, double>  data_receive_rate(double time);
 
-  std::map<uint64_t, WrappedPacket>& sentPackets();
+  /// Returns the average data rate.
+  DataRates data_sent_rate(ros::Time time, PacketSendCategory category);
+
+  /// Remove saved sent packets older than cutoff_time.
+  void cleanup_sent_packets(ros::Time cutoff_time);
 
 private:
   void resolveHost();
@@ -99,8 +110,6 @@ private:
   /// Maximum bytes per second to send.
   uint32_t data_rate_limit_ = default_rate_limit;
 
-  std::map<double, uint32_t> data_size_sent_history_;
-
   /// Info about a received packet useful for data rate statistics.
   struct ReceivedSize
   {
@@ -118,6 +127,8 @@ private:
   /// The same data packets are replicated for each connection to account for 
   /// different source_node or connection_id.
   std::map<uint64_t, WrappedPacket> sent_packets_;
+
+  PacketSendStatistics sent_packet_statistics_;
 };
 
 

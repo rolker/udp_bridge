@@ -5,4 +5,5 @@ uint16 port
 string return_address
 uint16 return_port
 uint32 maximum_bytes_per_second
+uint32 return_maximum_bytes_per_second
 ---

@@ -10,7 +10,4 @@ float32 message_bytes_per_second
 
 float32 average_fragment_count
 
-float32 packet_bytes_per_second
-float32 ok_sent_bytes_per_second
-float32 failed_sent_bytes_per_second
-float32 dropped_bytes_per_second
+DataRates send

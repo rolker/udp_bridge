@@ -36,3 +36,13 @@ float32 received_bytes_per_second
 
 # rate of data received that was already received on another connection
 float32 duplicate_bytes_per_second
+
+# data rates for message packets
+DataRates message
+
+# data rates for overhead messages
+DataRates overhead
+
+# data rates for resent packets
+DataRates resend
+
