@@ -12,6 +12,7 @@
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
 #include "udp_bridge/ConnectionInternal.h"
+#include <std_msgs/Int32.h>
 
 namespace udp_bridge
 {
@@ -134,6 +135,8 @@ private:
 
   void addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::string remote_node, std::string connection_id);
 
+  void maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg);
+
   /// Name used to identify this node to other udp_bridge nodes
   std::string name_;
 
@@ -151,6 +154,8 @@ private:
 
   ros::Publisher m_topicStatisticsPublisher;
   ros::Publisher m_bridge_info_publisher;
+
+  ros::Subscriber maximum_packet_size_subscriber_;
     
   std::map<std::string, SubscriberDetails> m_subscribers;
 

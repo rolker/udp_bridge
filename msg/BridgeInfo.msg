@@ -14,3 +14,6 @@ Remote[]    remotes
 
 int64       next_packet_number
 time        last_packet_time
+
+uint16      local_port
+int32       maximum_packet_size

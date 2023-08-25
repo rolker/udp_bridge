@@ -33,7 +33,9 @@ UDPBridge::UDPBridge()
   ROS_INFO_STREAM("port: " << m_port); 
 
   m_max_packet_size = ros::param::param("~maxPacketSize", m_max_packet_size);
-  ROS_INFO_STREAM("maxPacketSize: " << m_max_packet_size); 
+  ROS_INFO_STREAM("maxPacketSize: " << m_max_packet_size);
+
+  maximum_packet_size_subscriber_ = m_nodeHandle.subscribe("~maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
 
   m_socket = socket(AF_INET, SOCK_DGRAM, 0);
   if(m_socket < 0)
@@ -867,6 +869,8 @@ void UDPBridge::sendBridgeInfo()
 
   bi.next_packet_number = next_packet_number_;
   bi.last_packet_time = last_packet_number_assign_time_;
+  bi.local_port = m_port;
+  bi.maximum_packet_size = m_max_packet_size;
 
   ROS_DEBUG_STREAM_NAMED("bridge_info","Publishing and sending BridgeInfo");
 
@@ -991,6 +995,11 @@ UDPBridge::RemoteConnectionsList UDPBridge::allRemotes() const
     if(remote.second)
       ret[remote.first];
   return ret;
+}
+
+void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)
+{
+  m_max_packet_size = msg->data;
 }
 
 
