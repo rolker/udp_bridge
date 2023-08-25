@@ -35,7 +35,7 @@ UDPBridge::UDPBridge()
   m_max_packet_size = ros::param::param("~maxPacketSize", m_max_packet_size);
   ROS_INFO_STREAM("maxPacketSize: " << m_max_packet_size);
 
-  maximum_packet_size_subscriber_ = m_nodeHandle.subscribe("~maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
+  maximum_packet_size_subscriber_ = ros::NodeHandle("~").subscribe("maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
 
   m_socket = socket(AF_INET, SOCK_DGRAM, 0);
   if(m_socket < 0)
