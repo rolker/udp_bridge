@@ -138,12 +138,14 @@ UDPBridge::UDPBridge()
                   period = topic.second["period"];
                 std::string source = topic.first;
                 if (topic.second.hasMember("source"))
+                {
                   source = std::string(topic.second["source"]);
-                source = ros::names::resolve(source);
-                std::string destination = source;
-                if (topic.second.hasMember("destination"))
-                  destination = std::string(topic.second["destination"]);
-                addSubscriberConnection(source, destination, 1, period, remote_info.name, connection.connection_id);
+                  source = ros::names::resolve(source);
+                  std::string destination = source;
+                  if (topic.second.hasMember("destination"))
+                    destination = std::string(topic.second["destination"]);
+                  addSubscriberConnection(source, destination, 1, period, remote_info.name, connection.connection_id);
+                }
               }
           }
       }
