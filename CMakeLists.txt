@@ -77,3 +77,15 @@ if(CATKIN_ENABLE_TESTING)
     catkin_add_gtest(utest test/utest.cpp ${UDP_BRIDGE_SOURCES})
     target_link_libraries(utest ${catkin_LIBRARIES} ${ZLIB_LIBRARIES})
 endif()
+
+
+# Mark executables and/or libraries for installation
+install(TARGETS 
+      udp_bridge_node
+      udp_bridge_ui
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY launch DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
