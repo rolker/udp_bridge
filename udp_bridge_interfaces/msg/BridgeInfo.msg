@@ -4,7 +4,7 @@
 string      name
 
 # Time this info was collected/valid
-time        stamp
+builtin_interfaces/Time        stamp
 
 # Local topics available
 TopicInfo[] topics
@@ -13,7 +13,7 @@ TopicInfo[] topics
 Remote[]    remotes
 
 int64       next_packet_number
-time        last_packet_time
+builtin_interfaces/Time        last_packet_time
 
 uint16      local_port
 int32       maximum_packet_size

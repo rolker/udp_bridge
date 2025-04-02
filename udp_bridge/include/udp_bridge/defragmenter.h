@@ -1,8 +1,9 @@
 #ifndef UDP_BRIDGE_DEFRAGMENTER_H
 #define UDP_BRIDGE_DEFRAGMENTER_H
 
-#include <ros/ros.h>
+#include "rclcpp/rclcpp.hpp"
 #include "packet.h"
+#include <map>
 
 namespace udp_bridge
 {
@@ -14,19 +15,19 @@ class Defragmenter
   struct Fragments
   {
     uint16_t fragment_count;
-    ros::Time first_arrival_time;
+    rclcpp::Time first_arrival_time;
     std::map<uint16_t, std::vector<uint8_t> > fragment_map;
   };
 public:
   /// returns true if supplied fragment completed a packet
-  bool addFragment(std::vector<uint8_t> fragment);
+  bool addFragment(std::vector<uint8_t> fragment, rclcpp::Time now);
 
   /// returns a list of complete packets
   std::vector<std::vector<uint8_t> > getPackets();
 
   /// Discard incomplete packets older than maxAge and
   /// returns number of discarded packets.
-  int cleanup(ros::Duration maxAge);
+  int cleanup(rclcpp::Time discard_time);
 private:
   /// map of packet id
   std::map<uint32_t, Fragments> fragment_map_;

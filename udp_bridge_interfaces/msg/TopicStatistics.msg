@@ -1,4 +1,4 @@
-time stamp
+builtin_interfaces/Time stamp
 string source_node
 string destination_node
 string connection_id

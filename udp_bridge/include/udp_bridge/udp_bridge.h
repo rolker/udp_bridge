@@ -1,18 +1,24 @@
 #ifndef UDP_BRIDGE_UDP_BRIDGE_H
 #define UDP_BRIDGE_UDP_BRIDGE_H
 
-#include <topic_tools/shape_shifter.h>
-#include "udp_bridge/Subscribe.h"
-#include "udp_bridge/AddRemote.h"
-#include "udp_bridge/ListRemotes.h"
+#include "rclcpp_lifecycle/lifecycle_node.hpp"
+#include "rclcpp/generic_publisher.hpp"
+#include "rclcpp/generic_subscription.hpp"
+
+#include "udp_bridge_interfaces/srv/subscribe.hpp"
+#include "udp_bridge_interfaces/srv/add_remote.hpp"
+#include "udp_bridge_interfaces/srv/list_remotes.hpp"
+
 #include <netinet/in.h>
 #include "connection.h"
 #include "packet.h"
 #include "defragmenter.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
-#include "udp_bridge/ConnectionInternal.h"
-#include <std_msgs/Int32.h>
+#include "udp_bridge_interfaces/msg/connection_internal.hpp"
+#include "udp_bridge_interfaces/msg/bridge_info.hpp"
+#include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
+//#include "std_msgs/msg/int32.hpp"
 
 namespace udp_bridge
 {
@@ -31,15 +37,28 @@ class RemoteNode;
 /// Additional timer callbacks are used to locally publish and send to remotes
 /// information about the local bridge (udp_bridge::UDPBridge::bridgeInfoCallback) and
 /// data statistics (udp_bridge::UDPBridge::statsReportCallback).
-class UDPBridge
+class UDPBridge: public rclcpp_lifecycle::LifecycleNode
 {
 public:
-  UDPBridge();
+  using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
+  UDPBridge(const std::string &node_name = "udp_bridge");
+
+
+  CallbackReturn on_configure(const rclcpp_lifecycle::State &);
+
+  CallbackReturn on_activate(const rclcpp_lifecycle::State & state);
+
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State & state);
+
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State &);
+
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State & state);
 
   /// Listens in a loop for incoming UDP packets and decodes them.
   /// The decode(std::vector<uint8_t> const &message, const SourceInfo& source_info) is
   /// called when a packet is received. 
-  void spin();
+  void spin_once();
     
 private:
   /// Sets the node name as seen by other udp_bridge nodes
@@ -48,7 +67,8 @@ private:
 
   /// Callback method for locally subscribed topics.
   /// ShapeShifter is used to be agnostic of message type at compile time.
-  void callback(const ros::MessageEvent<topic_tools::ShapeShifter>& event);
+  void callback(std::string topic_name, std::string topic_type, std::shared_ptr<rclcpp::SerializedMessage> message);
+
 
   /// Decodes outer layer of packets received over the UDP link and calls appropriate
   /// handlers based on packet type.
@@ -58,6 +78,21 @@ private:
   /// The main packet sorting method. More specific packet decoding routines get 
   /// selected based on Packet::type.
   void decode(std::vector<uint8_t> const &message, const SourceInfo& source_info);
+
+  template <typename MessageType>
+  MessageType deserialize(std::vector<uint8_t> const &message)
+  {
+    const Packet* packet = reinterpret_cast<const Packet*>(message.data());
+    auto data_size = message.size()-sizeof(PacketHeader);
+    rclcpp::SerializedMessage serialized_message;
+    serialized_message.reserve(data_size);
+    memcpy(serialized_message.get_rcl_serialized_message().buffer, packet->data, data_size);
+    serialized_message.get_rcl_serialized_message().buffer_length = data_size;
+    MessageType deserialized_message;
+    rclcpp::Serialization<MessageType> serializer;
+    serializer.deserialize_message(&serialized_message, &deserialized_message);
+    return deserialized_message;
+  }
     
   /// Decodes data from a remote subscription received over the UDP link.
   /// @param message bytes representing a serialized MessageInternal message
@@ -83,16 +118,24 @@ private:
   void decodeConnection(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
   /// Service handler for local request to subscribe to a remote topic.
-  bool remoteSubscribe(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response);
+  void remoteSubscribe(
+    const std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Request> request,
+    std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Response> response);
 
   /// Service handler to advertise on a remote node a local topic.
-  bool remoteAdvertise(udp_bridge::Subscribe::Request &request, udp_bridge::Subscribe::Response &response);
+  void remoteAdvertise(
+    const std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Request> request,
+    std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Response> response);
 
   /// Service handler to add a named remote
-  bool addRemote(udp_bridge::AddRemote::Request &request, udp_bridge::AddRemote::Response &response);
+  void addRemote(
+    const std::shared_ptr<udp_bridge_interfaces::srv::AddRemote::Request> request,
+    std::shared_ptr<udp_bridge_interfaces::srv::AddRemote::Response> response);
 
   /// Service handler to list named remotes
-  bool listRemotes(udp_bridge::ListRemotes::Request &request, udp_bridge::ListRemotes::Response &response);
+  void listRemotes(
+    const std::shared_ptr<udp_bridge_interfaces::srv::ListRemotes::Request> request,
+    std::shared_ptr<udp_bridge_interfaces::srv::ListRemotes::Response> response);
 
 
   /// Map of remotes and connections
@@ -111,10 +154,10 @@ private:
   // int send(const std::vector<uint8_t>& data, const sockaddr_in* address);
 
   /// Timer callback where data rate stats are reported
-  void statsReportCallback(const ros::TimerEvent&);
+  void statsReportCallback();
 
   /// Timer callback where info on available topics are periodically reported
-  void bridgeInfoCallback(const ros::TimerEvent&);
+  void bridgeInfoCallback();
 
 
   /// Send topics and remotes info to remotes and publishes locally
@@ -135,7 +178,7 @@ private:
 
   void addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::string remote_node, std::string connection_id);
 
-  void maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg);
+  //void maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg);
 
   /// Name used to identify this node to other udp_bridge nodes
   std::string name_;
@@ -145,33 +188,32 @@ private:
   int m_max_packet_size {65500};
   uint32_t next_fragmented_packet_id_ {0};
 
-  ros::NodeHandle m_nodeHandle;
+  rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr subscribe_service_;
+  rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr advertise_service_;
+  rclcpp::Service<udp_bridge_interfaces::srv::AddRemote>::SharedPtr add_remote_service_;
+  rclcpp::Service<udp_bridge_interfaces::srv::ListRemotes>::SharedPtr list_remotes_service_;
 
-  ros::ServiceServer subscribe_service_;
-  ros::ServiceServer advertise_service_;
-  ros::ServiceServer add_remote_service_;
-  ros::ServiceServer list_remotes_service_;
+  rclcpp_lifecycle::LifecyclePublisher<udp_bridge_interfaces::msg::TopicStatisticsArray>::SharedPtr topic_statistics_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<udp_bridge_interfaces::msg::BridgeInfo>::SharedPtr bridge_info_publisher_;
 
-  ros::Publisher m_topicStatisticsPublisher;
-  ros::Publisher m_bridge_info_publisher;
-
-  ros::Subscriber maximum_packet_size_subscriber_;
+  //rclcpp::Subscriber  maximum_packet_size_subscriber_;
     
   std::map<std::string, SubscriberDetails> m_subscribers;
 
-  std::map<std::string, ros::Publisher> m_publishers;
+  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> m_publishers;
 
-  ros::Timer stats_report_timer_;
-  ros::Timer bridge_info_timer_;
+  rclcpp::TimerBase::SharedPtr stats_report_timer_;
+  rclcpp::TimerBase::SharedPtr bridge_info_timer_;
+  rclcpp::TimerBase::SharedPtr spin_timer_;
 
   uint64_t next_packet_number_ = 0;
-  ros::Time last_packet_number_assign_time_;
+  rclcpp::Time last_packet_number_assign_time_;
 
   uint64_t next_connection_internal_message_sequence_number_ = 0;
 
   struct PendingConnection
   {
-    ConnectionInternal message;
+    udp_bridge_interfaces::msg::ConnectionInternal message;
     std::shared_ptr<Connection> connection;
   };
 

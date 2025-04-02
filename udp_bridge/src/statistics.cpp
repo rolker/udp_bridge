@@ -5,21 +5,21 @@ namespace udp_bridge
 
 void MessageStatistics::add(const MessageSizeData& data)
 {
-  ROS_DEBUG_STREAM_NAMED("statistics", "msg size: " << data.message_size << " sent size: " << data.sent_size);
+  //ROS_DEBUG_STREAM_NAMED("statistics", "msg size: " << data.message_size << " sent size: " << data.sent_size);
   for(auto result: data.send_results)
   {
-    ROS_DEBUG_STREAM_NAMED("statistics", "  remote: " << result.first);
+    //ROS_DEBUG_STREAM_NAMED("statistics", "  remote: " << result.first);
     for(auto connection: result.second)
       switch (connection.second)
       {
       case SendResult::success:
-        ROS_DEBUG_STREAM_NAMED("statistics", "    " << connection.first << " send result: success");
+        //ROS_DEBUG_STREAM_NAMED("statistics", "    " << connection.first << " send result: success");
         break;
       case SendResult::failed:
-        ROS_DEBUG_STREAM_NAMED("statistics", "    " << connection.first << " send result: failed");
+        //ROS_DEBUG_STREAM_NAMED("statistics", "    " << connection.first << " send result: failed");
         break;
       case SendResult::dropped:
-        ROS_DEBUG_STREAM_NAMED("statistics", "    " << connection.first << " send result: dropped");
+        //ROS_DEBUG_STREAM_NAMED("statistics", "    " << connection.first << " send result: dropped");
         break;
       }
   }
@@ -27,7 +27,7 @@ void MessageStatistics::add(const MessageSizeData& data)
   Statistics<MessageSizeData>::add(data);
 }
 
-std::vector<TopicStatistics> MessageStatistics::get()
+std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get()
 {
   struct Totals
   {
@@ -37,8 +37,8 @@ std::vector<TopicStatistics> MessageStatistics::get()
     int total_failed_sent_bytes = 0;
     uint32_t total_dropped_bytes = 0;
     int total_data_point_count = 0;
-    ros::Time earliest;
-    ros::Time latest;
+    rclcpp::Time earliest;
+    rclcpp::Time latest;
   };
 
   std::map<std::pair<std::string, std::string>, Totals> totals_by_connection;
@@ -65,15 +65,15 @@ std::vector<TopicStatistics> MessageStatistics::get()
         totals.total_data_point_count++;
         if(data_point.timestamp > totals.latest)
           totals.latest = data_point.timestamp;
-        if(totals.earliest.isZero() || data_point.timestamp < totals.earliest)
+        if(totals.earliest == rclcpp::Time() || data_point.timestamp < totals.earliest)
           totals.earliest = data_point.timestamp;
       }
 
-  std::vector<TopicStatistics> ret;
+  std::vector<udp_bridge_interfaces::msg::TopicStatistics> ret;
 
   for(auto totals: totals_by_connection)
   {
-    TopicStatistics ts;
+    udp_bridge_interfaces::msg::TopicStatistics ts;
     ts.destination_node = totals.first.first;
     ts.connection_id = totals.first.second;
     auto& data = totals.second;
@@ -83,7 +83,7 @@ std::vector<TopicStatistics> MessageStatistics::get()
 
     if(data.latest > data.earliest)
     {
-      double time_span = (data.latest-data.earliest).toSec();
+      double time_span = (data.latest-data.earliest).seconds();
 
       // account for the time until the next sample
       time_span *= (count+1)/count;
@@ -102,21 +102,21 @@ std::vector<TopicStatistics> MessageStatistics::get()
   return ret;
 }
 
-DataRates PacketSendStatistics::get() const
+udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get() const
 {
   return get(nullptr);
 }
 
-DataRates PacketSendStatistics::get(PacketSendCategory category) const
+udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get(PacketSendCategory category) const
 {
   return get(&category);
 }
 
-DataRates PacketSendStatistics::get(PacketSendCategory* category) const
+udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get(PacketSendCategory* category) const
 {
-  DataRates ret;
-  ros::Time earliest;
-  ros::Time latest;
+  udp_bridge_interfaces::msg::DataRates ret;
+  rclcpp::Time earliest;
+  rclcpp::Time latest;
 
   for(auto data_point: data_)
     if(category==nullptr || data_point.category == *category)
@@ -135,7 +135,7 @@ DataRates PacketSendStatistics::get(PacketSendCategory* category) const
       }
       if(data_point.timestamp > latest)
         latest = data_point.timestamp;
-      if(earliest.isZero() || data_point.timestamp < earliest)
+      if(earliest == rclcpp::Time() || data_point.timestamp < earliest)
         earliest = data_point.timestamp;
     }
 
@@ -143,7 +143,7 @@ DataRates PacketSendStatistics::get(PacketSendCategory* category) const
   // to avoid data rate spikes at the start of sampling
   if(latest > earliest)
   {
-    double time_span = (latest-earliest).toSec();
+    double time_span = (latest-earliest).seconds();
     if(time_span > 1.0)
     {
       ret.success_bytes_per_second /= time_span;
@@ -154,9 +154,9 @@ DataRates PacketSendStatistics::get(PacketSendCategory* category) const
   return ret;
 }
 
-bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t bytes_per_second_limit, ros::Time time) const
+bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t bytes_per_second_limit, rclcpp::Time time) const
 {
-  auto one_second_ago = time - ros::Duration(1.0);
+  auto one_second_ago = time - rclcpp::Duration::from_seconds(1.0);
   auto start = data_.begin();
   while(start != data_.end() && start->timestamp < one_second_ago)
     start++;

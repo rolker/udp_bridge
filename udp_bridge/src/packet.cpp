@@ -2,15 +2,17 @@
 #include <zlib.h>
 #include <iostream>
 
-#include <udp_bridge/MessageInternal.h>
-#include <udp_bridge/RemoteSubscribeInternal.h>
-#include <udp_bridge/BridgeInfo.h>
-#include <udp_bridge/TopicStatisticsArray.h>
-#include <udp_bridge/ResendRequest.h>
-#include <udp_bridge/ConnectionInternal.h>
+#include "udp_bridge_interfaces/msg/message_internal.hpp"
+#include "udp_bridge_interfaces/msg/remote_subscribe_internal.hpp"
+#include "udp_bridge_interfaces/msg/bridge_info.hpp"
+#include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
+#include "udp_bridge_interfaces/msg/resend_request.hpp"
+#include "udp_bridge_interfaces/msg/connection_internal.hpp"
 
 namespace udp_bridge
 {
+
+using namespace udp_bridge_interfaces::msg;
 
 template<> PacketType packetTypeOf(const MessageInternal&) { return PacketType::Data;}
 template<> PacketType packetTypeOf(const RemoteSubscribeInternal&) { return PacketType::SubscribeRequest;}

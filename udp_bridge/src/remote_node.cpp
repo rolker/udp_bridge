@@ -1,19 +1,25 @@
 #include "udp_bridge/remote_node.h"
-#include "udp_bridge/BridgeInfo.h"
+#include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge/connection.h"
 #include "udp_bridge/utilities.h"
+#include "rmw/qos_profiles.h"
 
 namespace udp_bridge
 {
 
-RemoteNode::RemoteNode(std::string remote_name, std::string local_name): name_(remote_name), local_name_(local_name)
+using namespace udp_bridge_interfaces::msg;
+
+RemoteNode::RemoteNode(std::string remote_name, std::string local_name, NodeInterfaces node): name_(remote_name), local_name_(local_name), logger_(node.get_node_logging_interface()->get_logger()),clock_(node.get_node_clock_interface()->get_clock())
 {
   assert(remote_name != local_name);
-  ros::NodeHandle private_nodeHandle("~");
 
-  bridge_info_publisher_ = private_nodeHandle.advertise<BridgeInfo>("remotes/"+topicName()+"/bridge_info",1,true);
+  rclcpp::QoS latched_qos(1);
+  latched_qos.transient_local();
+  latched_qos.keep_last(1);
 
-  topic_statistics_publisher_ = private_nodeHandle.advertise<TopicStatisticsArray>("remotes/"+topicName()+"/topic_statistics",1,true);
+  bridge_info_publisher_ = rclcpp::create_publisher<BridgeInfo>(node, "remotes/"+topicName()+"/bridge_info", latched_qos);
+
+  topic_statistics_publisher_ = rclcpp::create_publisher<TopicStatisticsArray>(node, "remotes/"+topicName()+"/topic_statistics", latched_qos);
 }
 
 void RemoteNode::update(const Remote& remote_message)
@@ -31,7 +37,7 @@ void RemoteNode::update(const Remote& remote_message)
 
 void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_info)
 {
-  bridge_info_publisher_.publish(bridge_info);
+  bridge_info_publisher_->publish(bridge_info);
   for(auto remote: bridge_info.remotes)
     if(remote.name == local_name_)
     {
@@ -55,13 +61,13 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
       }
       if(bridge_info.next_packet_number < next_packet_number_)
       {
-        ROS_WARN_STREAM("Received next packet number that is less than previous one: " << bridge_info.next_packet_number << " time: " << bridge_info.last_packet_time << " (previous: " << next_packet_number_ << " time: " << last_packet_time_ << ")");
-        if(bridge_info.next_packet_number == 0 || bridge_info.last_packet_time > last_packet_time_)
+        RCLCPP_WARN_STREAM(logger_, "Received next packet number that is less than previous one: " << bridge_info.next_packet_number << " time: " << rclcpp::Time(bridge_info.last_packet_time).seconds() << " (previous: " << next_packet_number_ << " time: " << rclcpp::Time(last_packet_time_).seconds() << ")");
+        if(bridge_info.next_packet_number == 0 || rclcpp::Time(bridge_info.last_packet_time) > last_packet_time_)
         {
           // Try to detect remote restart of udp_bridge. Assume a reset if next packet number is zero
           // or if a timestamp for a lower numbered packet is greater than what we last saw for a larger
           // packet number.
-          ROS_WARN_STREAM("Assuming remote udp_bridge restart");
+          RCLCPP_WARN_STREAM(logger_, "Assuming remote udp_bridge restart");
           received_packet_times_.clear();
           resend_request_times_.clear();
         }
@@ -104,9 +110,9 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
 {
   if(message.size() < sizeof(SequencedPacketHeader) || reinterpret_cast<const SequencedPacketHeader*>(message.data())->packet_size != message.size())
   {
-    ROS_ERROR_STREAM("Can't unwrap packet of size " << message.size());
+    RCLCPP_ERROR_STREAM(logger_, "Can't unwrap packet of size " << message.size());
     if(message.size() >= sizeof(SequencedPacketHeader))
-      ROS_ERROR_STREAM("Packet reports size: " << reinterpret_cast<const SequencedPacketHeader*>(message.data())->packet_size);
+      RCLCPP_ERROR_STREAM(logger_, "Packet reports size: " << reinterpret_cast<const SequencedPacketHeader*>(message.data())->packet_size);
   }
   else
   {
@@ -115,17 +121,18 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
     auto c = connection(packet->connection_id);
     if(!c)
       c = newConnection(packet->connection_id, source_info.host, source_info.port);
-    c->update_last_receive_time(ros::Time::now().toSec(), message.size(), duplicate);
+    auto now = clock_->now();
+    c->update_last_receive_time(now.seconds(), message.size(), duplicate);
     if(!duplicate)
     {
-      received_packet_times_[packet->packet_number] = ros::Time::now();
+      received_packet_times_[packet->packet_number] = now;
       try
       {
         return std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end());
       }
       catch(const std::exception& e)
       {
-        ROS_ERROR_STREAM("problem decoding packet: " << e.what());
+        RCLCPP_ERROR_STREAM(logger_, "problem decoding packet: " << e.what());
       }
     }
   }  
@@ -139,10 +146,10 @@ Defragmenter& RemoteNode::defragmenter()
 
 void RemoteNode::publishTopicStatistics(const TopicStatisticsArray& statistics)
 {
-  topic_statistics_publisher_.publish(statistics);
+  topic_statistics_publisher_->publish(statistics);
 }
 
-void RemoteNode::clearReceivedPacketTimesBefore(ros::Time time)
+void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
 {
   std::vector<uint64_t> expired;
   for(auto pt: received_packet_times_)
@@ -161,12 +168,12 @@ void RemoteNode::clearReceivedPacketTimesBefore(ros::Time time)
 
 ResendRequest RemoteNode::getMissingPackets()
 {
-  ros::Time now = ros::Time::now();
-  if(now.isValid() && !now.isZero())
+  auto now = clock_->now();
+  if(now != rclcpp::Time())
   {
-    ros::Time too_old = now - ros::Duration(5.0);
+    auto too_old = now - rclcpp::Duration::from_seconds(5.0);
     clearReceivedPacketTimesBefore(too_old);
-    ros::Time can_resend_time = now - ros::Duration(0.2);
+    auto can_resend_time = now - rclcpp::Duration::from_seconds(0.2);
 
     std::vector<uint64_t> missing;
     if(!received_packet_times_.empty())

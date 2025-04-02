@@ -1,7 +1,7 @@
 #ifndef UDP_BRIDGE_CONNECTION_H
 #define UDP_BRIDGE_CONNECTION_H
 
-#include <ros/ros.h>
+//#include <ros/ros.h>
 #include <vector>
 #include <cstdint>
 #include <string>
@@ -12,7 +12,7 @@
 #include <udp_bridge/packet.h>
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
-#include "udp_bridge/DataRates.h"
+#include "udp_bridge_interfaces/msg/data_rates.hpp"
 
 namespace udp_bridge
 {
@@ -63,11 +63,11 @@ public:
   const double& last_receive_time() const;
   void update_last_receive_time(double t, int data_size, bool duplicate);
 
-  void resend_packets(const std::vector<uint64_t> &missing_packets, int socket);
+  void resend_packets(const std::vector<uint64_t> &missing_packets, int socket, rclcpp::Time now);
 
-  SendResult send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead);
+  SendResult send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead, rclcpp::Time now);
 
-  PacketSizeData send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category);
+  PacketSizeData send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category, rclcpp::Time now);
 
   //bool can_send(uint32_t byte_count, double time);
 
@@ -78,10 +78,10 @@ public:
   std::pair<double, double>  data_receive_rate(double time);
 
   /// Returns the average data rate.
-  DataRates data_sent_rate(ros::Time time, PacketSendCategory category);
+  udp_bridge_interfaces::msg::DataRates data_sent_rate(rclcpp::Time time, PacketSendCategory category);
 
   /// Remove saved sent packets older than cutoff_time.
-  void cleanup_sent_packets(ros::Time cutoff_time);
+  void cleanup_sent_packets(rclcpp::Time cutoff_time);
 
 private:
   void resolveHost();

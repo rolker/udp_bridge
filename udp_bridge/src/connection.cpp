@@ -11,6 +11,8 @@
 namespace udp_bridge
 {
 
+using namespace udp_bridge_interfaces::msg;
+
 Connection::Connection(std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
   id_(id), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
 {
@@ -154,13 +156,12 @@ void Connection::update_last_receive_time(double t, int data_size, bool duplicat
 }
 
 
-SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead)
+SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead, rclcpp::Time now)
 {
   uint32_t total_size = 0;
   for(const auto& p: packets)
     total_size += p.packet_size;
 
-  auto now = ros::Time::now();
   if(!sent_packet_statistics_.can_send(total_size, data_rate_limit_, now))
   {
     for(const auto& p: packets)
@@ -187,7 +188,7 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     PacketSendCategory category = PacketSendCategory::message;
     if(is_overhead)
       category = PacketSendCategory::overhead;
-    auto send_ret = send(packet.packet, socket, category);
+    auto send_ret = send(packet.packet, socket, category, now);
     if(send_ret.send_result != SendResult::success)
       ret = send_ret.send_result;
   }
@@ -195,10 +196,10 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
 }
 
 
-PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category)
+PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category, rclcpp::Time now)
 {
   PacketSizeData ret;
-  ret.timestamp = ros::Time::now();
+  ret.timestamp = now;
   ret.size = data.size();
   ret.category = category;
   ret.send_result = SendResult::failed;
@@ -216,7 +217,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   }
 
   int bytes_sent = 0;
-  try
+  //try
   {
     int tries = 0;
     while (true)
@@ -259,10 +260,10 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
           throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
     }
   }
-  catch(const ConnectionException& e)
-  {
-      ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
-  }
+  // catch(const ConnectionException& e)
+  // {
+  //     ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
+  // }
   sent_packet_statistics_.add(ret);
   return ret;
 }
@@ -291,23 +292,23 @@ std::pair<double, double> Connection::data_receive_rate(double time)
   return std::make_pair<double, double>(unique_sum/dt, duplicate_sum/dt);
 }
 
-DataRates Connection::data_sent_rate(ros::Time time, PacketSendCategory category)
+DataRates Connection::data_sent_rate(rclcpp::Time time, PacketSendCategory category)
 {
   return sent_packet_statistics_.get(category);
 }
 
 
-void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, int socket)
+void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, int socket, rclcpp::Time now)
 {
   for(auto packet_number: missing_packets)
   {
     auto packet_to_resend = sent_packets_.find(packet_number);
     if(packet_to_resend != sent_packets_.end())
-      send(packet_to_resend->second.packet, socket, PacketSendCategory::resend);
+      send(packet_to_resend->second.packet, socket, PacketSendCategory::resend, now);
   }
 }
 
-void Connection::cleanup_sent_packets(ros::Time cutoff_time)
+void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
 {
   std::vector<uint64_t> expired;
   for(auto sp: sent_packets_)
@@ -316,7 +317,6 @@ void Connection::cleanup_sent_packets(ros::Time cutoff_time)
   for(auto e: expired)
     sent_packets_.erase(e);
 }
-
 
 
 

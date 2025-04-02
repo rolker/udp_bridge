@@ -1,14 +1,16 @@
 #include "udp_bridge/wrapped_packet.h"
+#include <cstring>
 
 namespace udp_bridge
 {
 
-WrappedPacket::WrappedPacket(uint64_t packet_num, const std::vector<uint8_t>& data)
+
+WrappedPacket::WrappedPacket(uint64_t packet_num, const std::vector<uint8_t>& data, rclcpp::Time now)
 {
   memset(this, 0, sizeof(SequencedPacketHeader));
   packet_number = packet_num;
   packet_size = sizeof(SequencedPacketHeader)+data.size();
-  timestamp = ros::Time::now();
+  timestamp = now;
   type = PacketType::WrappedPacket;
   packet.resize(packet_size);
   memcpy(packet.data(), this, sizeof(SequencedPacketHeader));

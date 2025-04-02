@@ -2,6 +2,7 @@
 #define UDP_BRIDGE_TYPES_H
 
 #include "udp_bridge/statistics.h"
+#include "rclcpp/generic_subscription.hpp"
 
 namespace udp_bridge
 {
@@ -9,7 +10,7 @@ namespace udp_bridge
 struct ConnectionRateInfo
 {
   float period;
-  ros::Time last_sent_time;
+  rclcpp::Time last_sent_time;
 };
 
 struct RemoteDetails
@@ -25,7 +26,7 @@ struct RemoteDetails
     
 struct SubscriberDetails
 {
-  ros::Subscriber subscriber;
+  rclcpp::GenericSubscription::SharedPtr subscription;
   std::map<std::string, RemoteDetails> remote_details;
   MessageStatistics statistics;
 };
