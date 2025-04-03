@@ -120,8 +120,10 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     remote_nodes_[remote_info.name] = std::make_shared<RemoteNode>(remote_info.name, name_, *this);
     remote_nodes_[remote_info.name]->update(remote_info);
 
-    declare_parameter(remote_name+".connections_list", std::vector<std::string>());
-    auto connections_list = get_parameter(remote_name + ".connections_list").as_string_array();
+
+    std::string connections_list_param = "remotes."+remote_name+".connections_list";
+    declare_parameter(connections_list_param, std::vector<std::string>());
+    auto connections_list = get_parameter(connections_list_param).as_string_array();
     for(auto connection_name: connections_list)
     {
       RemoteConnection connection;

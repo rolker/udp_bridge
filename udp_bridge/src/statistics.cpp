@@ -63,7 +63,7 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
           break;
         }
         totals.total_data_point_count++;
-        if(data_point.timestamp > totals.latest)
+        if(totals.latest.nanoseconds() == 0 || data_point.timestamp > totals.latest)
           totals.latest = data_point.timestamp;
         if(totals.earliest.nanoseconds() == 0 || data_point.timestamp < totals.earliest)
           totals.earliest = data_point.timestamp;
