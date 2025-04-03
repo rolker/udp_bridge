@@ -46,7 +46,7 @@ struct PacketHeader
 /// \ingroup packet
 struct Packet: public PacketHeader
 {
-  uint8_t* data;
+  uint8_t data[];
 };
 
 struct CompressedPacketHeader: public PacketHeader
@@ -59,7 +59,7 @@ struct CompressedPacketHeader: public PacketHeader
 /// \ingroup packet
 struct CompressedPacket: public CompressedPacketHeader
 {
-  uint8_t* compressed_data;
+  uint8_t compressed_data[];
 };
 
 struct FragmentHeader: public PacketHeader
@@ -73,7 +73,7 @@ struct FragmentHeader: public PacketHeader
 /// \ingroup packet
 struct Fragment: public FragmentHeader
 {
-  uint8_t* fragment_data;
+  uint8_t fragment_data[];
 };
 
 struct SequencedPacketHeader: public PacketHeader
@@ -88,7 +88,7 @@ struct SequencedPacketHeader: public PacketHeader
 /// \ingroup packet
 struct SequencedPacket: public SequencedPacketHeader
 {
-  uint8_t* packet;
+  uint8_t packet[];
 };
 
 #pragma pack(pop)

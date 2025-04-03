@@ -17,9 +17,10 @@ RemoteNode::RemoteNode(std::string remote_name, std::string local_name, NodeInte
   latched_qos.transient_local();
   latched_qos.keep_last(1);
 
-  bridge_info_publisher_ = rclcpp::create_publisher<BridgeInfo>(node, "remotes/"+topicName()+"/bridge_info", latched_qos);
+  std::string node_name = node.get_node_base_interface()->get_name();
+  bridge_info_publisher_ = rclcpp::create_publisher<BridgeInfo>(node, node_name+"/remotes/"+topicName()+"/bridge_info", latched_qos);
 
-  topic_statistics_publisher_ = rclcpp::create_publisher<TopicStatisticsArray>(node, "remotes/"+topicName()+"/topic_statistics", latched_qos);
+  topic_statistics_publisher_ = rclcpp::create_publisher<TopicStatisticsArray>(node, node_name+"/remotes/"+topicName()+"/topic_statistics", latched_qos);
 }
 
 void RemoteNode::update(const Remote& remote_message)
@@ -169,7 +170,7 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
 ResendRequest RemoteNode::getMissingPackets()
 {
   auto now = clock_->now();
-  if(now != rclcpp::Time())
+  if(now.nanoseconds() != 0)
   {
     auto too_old = now - rclcpp::Duration::from_seconds(5.0);
     clearReceivedPacketTimesBefore(too_old);

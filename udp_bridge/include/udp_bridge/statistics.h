@@ -54,7 +54,7 @@ template<typename T> class Statistics
 public:
   void add(const T& data)
   {
-    if(data.timestamp != rclcpp::Time())
+    if(data.timestamp.nanoseconds() != 0)
       data_.push_back(data);
 
     // only keep 10 seconds of data

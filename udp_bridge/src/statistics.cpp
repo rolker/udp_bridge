@@ -65,7 +65,7 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
         totals.total_data_point_count++;
         if(data_point.timestamp > totals.latest)
           totals.latest = data_point.timestamp;
-        if(totals.earliest == rclcpp::Time() || data_point.timestamp < totals.earliest)
+        if(totals.earliest.nanoseconds() == 0 || data_point.timestamp < totals.earliest)
           totals.earliest = data_point.timestamp;
       }
 
@@ -133,9 +133,9 @@ udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get(PacketSendCatego
         ret.dropped_bytes_per_second += data_point.size;
         break;
       }
-      if(data_point.timestamp > latest)
+      if(latest.nanoseconds() == 0 || data_point.timestamp > latest)
         latest = data_point.timestamp;
-      if(earliest == rclcpp::Time() || data_point.timestamp < earliest)
+      if(earliest.nanoseconds() == 0 || data_point.timestamp < earliest)
         earliest = data_point.timestamp;
     }
 

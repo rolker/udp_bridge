@@ -16,6 +16,7 @@
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/utilities.h"
+#include "lifecycle_msgs/msg/state.hpp"
 
 namespace udp_bridge
 {
@@ -32,11 +33,13 @@ UDPBridge::UDPBridge(const std::string &node_name)
 
 UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State &)
 {
+  // start with the ROS2 node name
   std::string name = get_name();
   auto last_slash = name.rfind('/');
   if(last_slash != std::string::npos)
     name = name.substr(last_slash+1);
   declare_parameter( "name", name);
+  // This is the name of the UDPBridge node, not the ROS2 node name
   setName(get_parameter("name").as_string());
 
 
@@ -93,19 +96,20 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&buffer_size, &s);
   RCLCPP_INFO_STREAM(get_logger(), "send buffer size set to:" << buffer_size);
 
-  subscribe_service_ = create_service<Subscribe>(name_+"/remote_subscribe", std::bind(&UDPBridge::remoteSubscribe, this, _1, _2));
-  advertise_service_ = create_service<Subscribe>(name_+"/remote_advertise", std::bind(&UDPBridge::remoteAdvertise, this, _1, _2));
+  std::string node_name = get_name();
+  subscribe_service_ = create_service<Subscribe>(node_name+"/remote_subscribe", std::bind(&UDPBridge::remoteSubscribe, this, _1, _2));
+  advertise_service_ = create_service<Subscribe>(node_name+"/remote_advertise", std::bind(&UDPBridge::remoteAdvertise, this, _1, _2));
 
-  add_remote_service_ = create_service<AddRemote>(name_+"/add_remote", std::bind(&UDPBridge::addRemote, this, _1, _2));
-  list_remotes_service_ = create_service<ListRemotes>(name_+"/list_remotes", std::bind(&UDPBridge::listRemotes, this, _1, _2));
+  add_remote_service_ = create_service<AddRemote>(node_name+"/add_remote", std::bind(&UDPBridge::addRemote, this, _1, _2));
+  list_remotes_service_ = create_service<ListRemotes>(node_name+"/list_remotes", std::bind(&UDPBridge::listRemotes, this, _1, _2));
   
-  topic_statistics_publisher_ = create_publisher<TopicStatisticsArray>(name_+"/topic_statistics",10);
+  topic_statistics_publisher_ = create_publisher<TopicStatisticsArray>(node_name+"/topic_statistics",10);
 
   rclcpp::QoS latching_qos(1);
   latching_qos.transient_local();
   latching_qos.keep_last(1);
 
-  bridge_info_publisher_ = create_publisher<BridgeInfo>(name_+"/bridge_info", latching_qos);
+  bridge_info_publisher_ = create_publisher<BridgeInfo>(node_name+"/bridge_info", latching_qos);
 
   declare_parameter("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
@@ -216,6 +220,14 @@ void UDPBridge::setName(const std::string &name)
 
 void UDPBridge::spin_once()
 {
+  if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+  {
+    // If the node is not active, we don't need to process incoming packets.
+    // This is important for the lifecycle node to avoid processing packets
+    // when the node is not in the active state.
+    return;
+  }
+
   sockaddr_in remote_address;
   socklen_t remote_address_length = sizeof(remote_address);
   while(true)
@@ -262,6 +274,11 @@ void UDPBridge::spin_once()
 
 void UDPBridge::callback(std::string topic_name, std::string topic_type, std::shared_ptr<rclcpp::SerializedMessage> message)
 {
+  if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+  {
+    return;
+  }
+
   rclcpp::Time now = get_clock()->now();
 
   RemoteConnectionsList destinations;
@@ -597,7 +614,7 @@ template <typename MessageType> MessageSizeData UDPBridge::send(MessageType cons
     
   std::vector<uint8_t> packet_data(sizeof(PacketHeader)+serial_size);
   Packet * packet = reinterpret_cast<Packet *>(packet_data.data());
-  memcpy(packet->data, serialized_message.get_rcl_serialized_message().buffer, serial_size);
+  memcpy(&packet->data, serialized_message.get_rcl_serialized_message().buffer, serial_size);
   packet->type = packetTypeOf(message);
 
   packet_data = compress(packet_data);
@@ -677,7 +694,7 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
 void UDPBridge::cleanupSentPackets()
 {
   auto now = get_clock()->now();
-  if(now != rclcpp::Time())
+  if(now.nanoseconds() != 0)
   {
     auto old_enough = now - rclcpp::Duration::from_seconds(3.0);
     for(auto remote: remote_nodes_)
@@ -723,6 +740,11 @@ void UDPBridge::remoteAdvertise(
 
 void UDPBridge::statsReportCallback()
 {
+  if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+  {
+    return;
+  }
+
   rclcpp::Time now = get_clock()->now();
   TopicStatisticsArray tsa;
   for(auto &subscriber: m_subscribers)
@@ -776,6 +798,11 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
 
 void UDPBridge::bridgeInfoCallback()
 {
+  if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+  {
+    return;
+  }
+
   sendBridgeInfo();
   sendConnectionRequests();
 }

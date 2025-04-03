@@ -27,7 +27,8 @@ class RemoteNode
   using NodeInterfaces = rclcpp::node_interfaces::NodeInterfaces<
     rclcpp::node_interfaces::NodeTopicsInterface,
     rclcpp::node_interfaces::NodeLoggingInterface,
-    rclcpp::node_interfaces::NodeClockInterface
+    rclcpp::node_interfaces::NodeClockInterface,
+    rclcpp::node_interfaces::NodeBaseInterface
   >;
   
 
