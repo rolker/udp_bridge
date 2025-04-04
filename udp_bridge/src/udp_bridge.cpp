@@ -249,6 +249,7 @@ void UDPBridge::spin_once()
       getsockopt(m_socket,SOL_SOCKET,SO_RCVBUF,&buffer_size,&buffer_size_size);
       buffer.resize(buffer_size);
       receive_length = recvfrom(m_socket, &buffer.front(), buffer_size, 0, (sockaddr*)&remote_address, &remote_address_length);
+      RCLCPP_DEBUG_STREAM(get_logger(), "received " << receive_length << " bytes");
       if(receive_length > 0)
       {
         SourceInfo source_info;
@@ -290,7 +291,7 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     std::unordered_set<float> periods; // group the sending to connections with same period
     for(auto& connection_rate: remote_details.second.connection_rates)
       if(connection_rate.second.period >= 0)
-        if(connection_rate.second.period == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
+        if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
         {
           destinations[remote_details.first].push_back(connection_rate.first);
           connection_rate.second.last_sent_time = now;
