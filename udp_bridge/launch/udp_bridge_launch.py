@@ -10,6 +10,7 @@ from lifecycle_msgs.msg import Transition
 def generate_launch_description():
 
     return LaunchDescription([
+        DeclareLaunchArgument(name='log_level', default_value='info'),
         LifecycleNode(
             package='udp_bridge',
             executable='udp_bridge_node',
@@ -17,6 +18,7 @@ def generate_launch_description():
             namespace='',
             respawn=True,
             respawn_delay=2,
+            arguments=['--ros-args', '--log-level', ['operator.udp_bridge:=', LaunchConfiguration('log_level')]]
         ),
         LifecycleTransition(
             lifecycle_node_names=(

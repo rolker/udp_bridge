@@ -184,7 +184,7 @@ ResendRequest RemoteNode::getMissingPackets()
     ResendRequest rr;
     for(auto m: missing)
     {
-      if(resend_request_times_[m] < can_resend_time)
+      if(resend_request_times_[m].nanoseconds() == 0 || resend_request_times_[m] < can_resend_time)
       {
         rr.missing_packets.push_back(m);
         resend_request_times_[m] = now;
