@@ -27,11 +27,11 @@ using namespace std::placeholders;
 using namespace std::chrono_literals;
 
 UDPBridge::UDPBridge(const std::string &node_name)
-: rclcpp_lifecycle::LifecycleNode(node_name)
+: rclcpp_lifecycle::LifecycleNode(node_name, rclcpp::NodeOptions().enable_logger_service(true))
 {
 }
 
-UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State &)
+UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State & state)
 {
   // start with the ROS2 node name
   std::string name = get_name();
@@ -186,7 +186,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   bridge_info_timer_ = create_wall_timer(2s, std::bind(&UDPBridge::bridgeInfoCallback, this));
   spin_timer_ = create_wall_timer(10ms, std::bind(&UDPBridge::spin_once, this));
 
-  return CallbackReturn::SUCCESS;
+  return LifecycleNode::on_configure(state);
 }
 
 UDPBridge::CallbackReturn UDPBridge::on_activate(const rclcpp_lifecycle::State & state)
