@@ -185,6 +185,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   stats_report_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::statsReportCallback, this));
   bridge_info_timer_ = create_wall_timer(2s, std::bind(&UDPBridge::bridgeInfoCallback, this));
   spin_timer_ = create_wall_timer(10ms, std::bind(&UDPBridge::spin_once, this));
+  subscription_update_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::updateLocalSubscriptions, this));
 
   return LifecycleNode::on_configure(state);
 }
@@ -449,31 +450,62 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic, std::st
 {
   if(!remote_node.empty())
   {
-    if(m_subscribers.find(source_topic) == m_subscribers.end())
+    // if(m_subscribers.find(source_topic) == m_subscribers.end())
+    // {
+    //   queue_size = std::max(queue_size, uint32_t(1));
+
+    //   rclcpp::QoS qos(queue_size);
+    //   qos.best_effort();
+
+    //   auto info = get_publishers_info_by_topic(source_topic);
+    //   if(!info.empty())
+    //   {
+    //     std::string topic_type = info.front().topic_type();
+
+    //     auto cb = [this, source_topic, topic_type](std::shared_ptr<rclcpp::SerializedMessage> message)
+    //     {
+    //       this->callback(source_topic, topic_type, message);
+    //     };
+    //     rclcpp::SubscriptionOptions options;
+    //     options.ignore_local_publications = true;
+    //     m_subscribers[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
+
+    //   }
+    // }
+    m_subscribers[source_topic].queue_size = std::max(queue_size, uint32_t(1));
+    m_subscribers[source_topic].remote_details[remote_node].destination_topic = destination_topic;
+    m_subscribers[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
+    sendBridgeInfo();
+  }
+}
+
+void UDPBridge::updateLocalSubscriptions()
+{
+  for (auto& subscriber: m_subscribers)
+  {
+    if(!subscriber.second.subscription)
     {
-      queue_size = std::max(queue_size, uint32_t(1));
-
-      rclcpp::QoS qos(queue_size);
-      qos.best_effort();
-
+      const auto& source_topic = subscriber.first;
       auto info = get_publishers_info_by_topic(source_topic);
       if(!info.empty())
       {
         std::string topic_type = info.front().topic_type();
 
-        auto cb = [this, source_topic, topic_type](std::shared_ptr<rclcpp::SerializedMessage> message){
+        auto cb = [this, source_topic, topic_type](std::shared_ptr<rclcpp::SerializedMessage> message)
+        {
           this->callback(source_topic, topic_type, message);
         };
+
+        rclcpp::QoS qos(subscriber.second.queue_size);
+        qos.best_effort();
+  
         rclcpp::SubscriptionOptions options;
         options.ignore_local_publications = true;
         m_subscribers[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
 
       }
     }
-    m_subscribers[source_topic].remote_details[remote_node].destination_topic = destination_topic;
-    m_subscribers[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
-    sendBridgeInfo();
-  }
+  } 
 }
 
 void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, const SourceInfo& source_info)

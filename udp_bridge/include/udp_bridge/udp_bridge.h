@@ -142,16 +142,15 @@ private:
   using RemoteConnectionsList = std::map<std::string, std::vector<std::string> >;
 
   /// Convert a message to a packet and send it to remotes.
-  template <typename MessageType> MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead);
+  template <typename MessageType>
+  MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead);
 
   /// Convert a message to a packet and send it to remote using all connections.
-  template <typename MessageType> MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead);
+  template <typename MessageType>
+  MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead);
 
   /// Return a list of all remotes.
   RemoteConnectionsList allRemotes() const;
-
-  // /// Sends the raw data to the connection. Returns number of bytes sent.
-  // int send(const std::vector<uint8_t>& data, const sockaddr_in* address);
 
   /// Timer callback where data rate stats are reported
   void statsReportCallback();
@@ -176,7 +175,19 @@ private:
   /// Find missing packet and request resend
   void resendMissingPackets();
 
+  /// @brief Adds a local subscription.
+  /// @param source_topic Local message topic
+  /// @param destination_topic Message topic to publish at remote
+  /// @param queue_size local queue size
+  /// @param period Minimum delay between messages sent in seconds
+  /// @param remote_node destination udp_bridge
+  /// @param connection_id  connection to remote to use
   void addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::string remote_node, std::string connection_id);
+
+  /// @brief Checks configured local topics and attempts to subscribe
+  void updateLocalSubscriptions();  
+
+
 
   //void maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg);
 
@@ -205,6 +216,7 @@ private:
   rclcpp::TimerBase::SharedPtr stats_report_timer_;
   rclcpp::TimerBase::SharedPtr bridge_info_timer_;
   rclcpp::TimerBase::SharedPtr spin_timer_;
+  rclcpp::TimerBase::SharedPtr subscription_update_timer_;
 
   uint64_t next_packet_number_ = 0;
   rclcpp::Time last_packet_number_assign_time_;

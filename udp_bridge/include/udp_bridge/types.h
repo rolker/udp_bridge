@@ -27,6 +27,7 @@ struct RemoteDetails
 struct SubscriberDetails
 {
   rclcpp::GenericSubscription::SharedPtr subscription;
+  uint32_t queue_size;
   std::map<std::string, RemoteDetails> remote_details;
   MessageStatistics statistics;
 };
