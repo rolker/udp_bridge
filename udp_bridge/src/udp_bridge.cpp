@@ -160,7 +160,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       for(auto topic: topics_list)
       {
         std::string queue_size_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".queue_size";
-        declare_parameter(queue_size_param, 1);
+        declare_parameter(queue_size_param, 10);
         int queue_size = get_parameter(queue_size_param).as_int();
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
