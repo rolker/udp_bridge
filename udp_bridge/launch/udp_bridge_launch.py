@@ -17,6 +17,7 @@ def generate_launch_description():
             namespace='',
             respawn=True,
             respawn_delay=2,
+            emulate_tty=True
         ),
         LifecycleTransition(
             lifecycle_node_names=(
