@@ -1,10 +1,12 @@
 # udp_bridge package overview
 
-The udp_bridge package connects multiple ROS cores over an unreliable network using UDP datagrams. The main design goal is to resume the transmission of select ROS topics as quickly as possible once a telemetry link is re-established after a lost connection.
+The udp_bridge package connects multiple ROS environments over an unreliable network using UDP datagrams. The main design goal is to resume the transmission of select ROS topics as quickly as possible once a telemetry link is re-established after a lost connection.
 
-Initial remote nodes, connections, and transmitted topics may be specified as parameters then service calls may be used to manage romotes and transmitted topics. An rqt plugin can be used to display udp_bridge status as well as add connections and topics.
+Initial remote nodes, connections, and transmitted topics may be specified as parameters then service calls may be used to manage remotes and transmitted topics. An rqt plugin can be used to display udp_bridge status as well as add connections and topics.
 
 ## ROS API
+
+### TODO Update for ROS 2
 
 List of nodes:
 
