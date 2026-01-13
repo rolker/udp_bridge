@@ -1,0 +1,60 @@
+# Example configuration for udp_bridge_node
+# This file demonstrates the nested parameter structure required to configure remotes and connections.
+
+/**:
+  ros__parameters:
+    # Name used when communicating with remotes. Should be unique in the network.
+    # Defaults to the ROS 2 node name if not set.
+    name: "shoreside_bridge"
+    
+    # UDP port number used to listen for incoming data.
+    port: 4200
+    
+    # Maximum packet size to use when sending data.
+    maximum_packet_size: 65500
+
+    # List of initial remote nodes to connect to.
+    remotes_list: ["robot_a"]
+
+    remotes:
+      robot_a: # Label for the remote (used in remotes_list)
+        # Name of the remote node as known by the remote itself. 
+        # Defaults to the label (robot_a) if omitted.
+        name: "robot_a_bridge" 
+        
+        # List of named connections to this remote.
+        connections_list: ["telemetry"]
+        
+        connections:
+          telemetry:
+            # Host IP or hostname of the remote.
+            host: "192.168.1.101" 
+            
+            # Port the remote is listening on.
+            port: 4200
+            
+            # Optional: Host/Port for the return connection (if different from detected source)
+            # return_host: "192.168.1.100"
+            # return_port: 4200
+
+            # Data rate limit for this connection (bytes per second). 0 = default (500000).
+            maximum_bytes_per_second: 500000
+
+            # List of topics to forward over this connection.
+            topics_list: ["/robot_a/odometry", "/robot_a/battery"]
+            
+            topics:
+              /robot_a/odometry:
+                # Source topic on this machine.
+                source: "/odometry" 
+                # Destination topic on the remote machine.
+                destination: "/shoreside/robot_a/odometry"
+                # Target period (seconds) to limit update rate. 0.0 = forward all.
+                period: 0.0 
+                # Queue size for the subscriber.
+                queue_size: 10
+              
+              /robot_a/battery:
+                source: "/battery_state"
+                destination: "/shoreside/robot_a/battery_state"
+                period: 1.0 # Limit to 1Hz
