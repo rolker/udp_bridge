@@ -1,0 +1,61 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1SourceInfo" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::SourceInfo</compoundname>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1SourceInfo_1aad7e14193453b0863fc34aeee4eadaf6" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::SourceInfo::node_name</definition>
+        <argsstring></argsstring>
+        <name>node_name</name>
+        <qualifiedname>udp_bridge::SourceInfo::node_name</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="38" column="15" bodyfile="include/udp_bridge/types.h" bodystart="38" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SourceInfo_1a18c9a815f2eec72f35e220bc928675b4" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::SourceInfo::host</definition>
+        <argsstring></argsstring>
+        <name>host</name>
+        <qualifiedname>udp_bridge::SourceInfo::host</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="39" column="15" bodyfile="include/udp_bridge/types.h" bodystart="39" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SourceInfo_1af9b6a9e323f87c15894c1a5627f8a5a6" prot="public" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::SourceInfo::port</definition>
+        <argsstring></argsstring>
+        <name>port</name>
+        <qualifiedname>udp_bridge::SourceInfo::port</qualifiedname>
+        <initializer>= 0</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="40" column="12" bodyfile="include/udp_bridge/types.h" bodystart="40" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/types.h" line="36" column="1" bodyfile="include/udp_bridge/types.h" bodystart="37" bodyend="41"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1SourceInfo_1a18c9a815f2eec72f35e220bc928675b4" prot="public" virt="non-virtual"><scope>udp_bridge::SourceInfo</scope><name>host</name></member>
+      <member refid="structudp__bridge_1_1SourceInfo_1aad7e14193453b0863fc34aeee4eadaf6" prot="public" virt="non-virtual"><scope>udp_bridge::SourceInfo</scope><name>node_name</name></member>
+      <member refid="structudp__bridge_1_1SourceInfo_1af9b6a9e323f87c15894c1a5627f8a5a6" prot="public" virt="non-virtual"><scope>udp_bridge::SourceInfo</scope><name>port</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

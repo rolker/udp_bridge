@@ -1,0 +1,66 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classudp__bridge_1_1ConnectionException" kind="class" language="C++" prot="public">
+    <compoundname>udp_bridge::ConnectionException</compoundname>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classudp__bridge_1_1ConnectionException_1a0bbe4571d036111965f9312018e9bb71" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::ConnectionException::msg_</definition>
+        <argsstring></argsstring>
+        <name>msg_</name>
+        <qualifiedname>udp_bridge::ConnectionException::msg_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="26" column="17" bodyfile="include/udp_bridge/connection.h" bodystart="26" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classudp__bridge_1_1ConnectionException_1a8274f1e5bec7950ad190c24809bdaef5" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::ConnectionException::ConnectionException</definition>
+        <argsstring>(const std::string &amp;msg)</argsstring>
+        <name>ConnectionException</name>
+        <qualifiedname>udp_bridge::ConnectionException::ConnectionException</qualifiedname>
+        <param>
+          <type>const std::string &amp;</type>
+          <declname>msg</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="23" column="5" bodyfile="include/udp_bridge/connection.h" bodystart="23" bodyend="23"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1ConnectionException_1a250b8dc03a8e610e7f395e1a810f9719" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::ConnectionException::getMessage</definition>
+        <argsstring>() const</argsstring>
+        <name>getMessage</name>
+        <qualifiedname>udp_bridge::ConnectionException::getMessage</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="24" column="24" bodyfile="include/udp_bridge/connection.h" bodystart="24" bodyend="24"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/connection.h" line="20" column="1" bodyfile="include/udp_bridge/connection.h" bodystart="21" bodyend="27"/>
+    <listofallmembers>
+      <member refid="classudp__bridge_1_1ConnectionException_1a8274f1e5bec7950ad190c24809bdaef5" prot="public" virt="non-virtual"><scope>udp_bridge::ConnectionException</scope><name>ConnectionException</name></member>
+      <member refid="classudp__bridge_1_1ConnectionException_1a250b8dc03a8e610e7f395e1a810f9719" prot="public" virt="non-virtual"><scope>udp_bridge::ConnectionException</scope><name>getMessage</name></member>
+      <member refid="classudp__bridge_1_1ConnectionException_1a0bbe4571d036111965f9312018e9bb71" prot="private" virt="non-virtual"><scope>udp_bridge::ConnectionException</scope><name>msg_</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

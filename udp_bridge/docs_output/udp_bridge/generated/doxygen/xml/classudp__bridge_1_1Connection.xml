@@ -1,0 +1,781 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classudp__bridge_1_1Connection" kind="class" language="C++" prot="public">
+    <compoundname>udp_bridge::Connection</compoundname>
+    <includes refid="connection_8h" local="no">connection.h</includes>
+    <innerclass refid="structudp__bridge_1_1Connection_1_1ReceivedSize" prot="private">udp_bridge::Connection::ReceivedSize</innerclass>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1ae7af3df3a63050fda0de7d04187ea525" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::id_</definition>
+        <argsstring></argsstring>
+        <name>id_</name>
+        <qualifiedname>udp_bridge::Connection::id_</qualifiedname>
+        <briefdescription>
+<para>connection_id of the connection </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="90" column="15" bodyfile="include/udp_bridge/connection.h" bodystart="90" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a9f6fdc454bc10fb75ba3c64dae4af087" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::host_</definition>
+        <argsstring></argsstring>
+        <name>host_</name>
+        <qualifiedname>udp_bridge::Connection::host_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="92" column="15" bodyfile="include/udp_bridge/connection.h" bodystart="92" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a8b81b652615d667953362e37ed2a9191" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::ip_address_</definition>
+        <argsstring></argsstring>
+        <name>ip_address_</name>
+        <qualifiedname>udp_bridge::Connection::ip_address_</qualifiedname>
+        <briefdescription>
+<para>resolved ip address </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="93" column="15" bodyfile="include/udp_bridge/connection.h" bodystart="93" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a6fdba45d3264e53a2eb6eca0def5817e" prot="private" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::port_</definition>
+        <argsstring></argsstring>
+        <name>port_</name>
+        <qualifiedname>udp_bridge::Connection::port_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="94" column="12" bodyfile="include/udp_bridge/connection.h" bodystart="94" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a3a2c7d1adfb9f72bbe4c2c67d8258424" prot="private" static="no" mutable="no">
+        <type>std::vector&lt; sockaddr_in &gt;</type>
+        <definition>std::vector&lt;sockaddr_in&gt; udp_bridge::Connection::addresses_</definition>
+        <argsstring></argsstring>
+        <name>addresses_</name>
+        <qualifiedname>udp_bridge::Connection::addresses_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="96" column="15" bodyfile="include/udp_bridge/connection.h" bodystart="96" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a33573f5e9d7f6c666cd87e57796d3e2b" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::return_host_</definition>
+        <argsstring></argsstring>
+        <name>return_host_</name>
+        <qualifiedname>udp_bridge::Connection::return_host_</qualifiedname>
+        <briefdescription>
+<para>Used by the remote to refer to us. Useful if they are behind a nat. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="99" column="15" bodyfile="include/udp_bridge/connection.h" bodystart="99" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a59326b423421cca8db4b8805a4d1a7cf" prot="private" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::return_port_</definition>
+        <argsstring></argsstring>
+        <name>return_port_</name>
+        <qualifiedname>udp_bridge::Connection::return_port_</qualifiedname>
+        <initializer>= 0</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="100" column="12" bodyfile="include/udp_bridge/connection.h" bodystart="100" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a6de142039e153e987749f0e17a5c833e" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::source_ip_address_</definition>
+        <argsstring></argsstring>
+        <name>source_ip_address_</name>
+        <qualifiedname>udp_bridge::Connection::source_ip_address_</qualifiedname>
+        <briefdescription>
+<para>source ip address of incoming packets from remote </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="102" column="15" bodyfile="include/udp_bridge/connection.h" bodystart="102" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1aaf098f7352c9c96ecb77041ccdd0a6cd" prot="private" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::source_port_</definition>
+        <argsstring></argsstring>
+        <name>source_port_</name>
+        <qualifiedname>udp_bridge::Connection::source_port_</qualifiedname>
+        <initializer>= 0</initializer>
+        <briefdescription>
+<para>source port of incoming packets from remote </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="103" column="12" bodyfile="include/udp_bridge/connection.h" bodystart="103" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1aed72cdea4d34a42fe4a64c1f1665d10d" prot="private" static="no" mutable="no">
+        <type>double</type>
+        <definition>double udp_bridge::Connection::last_receive_time_</definition>
+        <argsstring></argsstring>
+        <name>last_receive_time_</name>
+        <qualifiedname>udp_bridge::Connection::last_receive_time_</qualifiedname>
+        <initializer>= 0.0</initializer>
+        <briefdescription>
+<para>Time in seconds since epoch that last packet was received. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="106" column="10" bodyfile="include/udp_bridge/connection.h" bodystart="106" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1aa754a250e34046e60cf6ed7cc0f04ffb" prot="private" static="no" mutable="no">
+        <type>uint32_t</type>
+        <definition>uint32_t udp_bridge::Connection::data_rate_limit_</definition>
+        <argsstring></argsstring>
+        <name>data_rate_limit_</name>
+        <qualifiedname>udp_bridge::Connection::data_rate_limit_</qualifiedname>
+        <initializer>= default_rate_limit</initializer>
+        <briefdescription>
+<para>Maximum bytes per second to send. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="111" column="12" bodyfile="include/udp_bridge/connection.h" bodystart="111" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1a85d0688b2ccfdd2a3cf9c4a7eb01bbfc" prot="private" static="no" mutable="no">
+        <type>std::map&lt; double, std::vector&lt; ReceivedSize &gt; &gt;</type>
+        <definition>std::map&lt;double, std::vector&lt;ReceivedSize&gt; &gt; udp_bridge::Connection::data_size_received_history_</definition>
+        <argsstring></argsstring>
+        <name>data_size_received_history_</name>
+        <qualifiedname>udp_bridge::Connection::data_size_received_history_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="123" column="12" bodyfile="include/udp_bridge/connection.h" bodystart="123" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1acfed93ac3e7a7b3b34ae7ab6d4cf375e" prot="private" static="no" mutable="no">
+        <type>std::map&lt; uint64_t, <ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref> &gt;</type>
+        <definition>std::map&lt;uint64_t, WrappedPacket&gt; udp_bridge::Connection::sent_packets_</definition>
+        <argsstring></argsstring>
+        <name>sent_packets_</name>
+        <qualifiedname>udp_bridge::Connection::sent_packets_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para>History of recently sent packets. Each connection keeps a buffer of sent packets in case a resend is needed. The same data packets are replicated for each connection to account for different source_node or connection_id. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="129" column="12" bodyfile="include/udp_bridge/connection.h" bodystart="129" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1ae49b1163cb6631f660599fa50238fbe2" prot="private" static="no" mutable="no">
+        <type><ref refid="classudp__bridge_1_1PacketSendStatistics" kindref="compound">PacketSendStatistics</ref></type>
+        <definition>PacketSendStatistics udp_bridge::Connection::sent_packet_statistics_</definition>
+        <argsstring></argsstring>
+        <name>sent_packet_statistics_</name>
+        <qualifiedname>udp_bridge::Connection::sent_packet_statistics_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="131" column="24" bodyfile="include/udp_bridge/connection.h" bodystart="131" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-static-attrib">
+      <memberdef kind="variable" id="classudp__bridge_1_1Connection_1ae7ae4caca285248d802153b94e885042" prot="private" static="yes" constexpr="yes" mutable="no">
+        <type>constexpr uint32_t</type>
+        <definition>constexpr uint32_t udp_bridge::Connection::default_rate_limit</definition>
+        <argsstring></argsstring>
+        <name>default_rate_limit</name>
+        <qualifiedname>udp_bridge::Connection::default_rate_limit</qualifiedname>
+        <initializer>= 50000</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="108" column="29" bodyfile="include/udp_bridge/connection.h" bodystart="108" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a1698953ebdc71210582557509bcaede7" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::Connection::Connection</definition>
+        <argsstring>(std::string id, std::string const &amp;host, uint16_t port, std::string return_host=std::string(), uint16_t return_port=0)</argsstring>
+        <name>Connection</name>
+        <qualifiedname>udp_bridge::Connection::Connection</qualifiedname>
+        <param>
+          <type>std::string</type>
+          <declname>id</declname>
+        </param>
+        <param>
+          <type>std::string const &amp;</type>
+          <declname>host</declname>
+        </param>
+        <param>
+          <type>uint16_t</type>
+          <declname>port</declname>
+        </param>
+        <param>
+          <type>std::string</type>
+          <declname>return_host</declname>
+          <defval>std::string()</defval>
+        </param>
+        <param>
+          <type>uint16_t</type>
+          <declname>return_port</declname>
+          <defval>0</defval>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="34" column="3"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1ade6eebc320e3af32f98d1d556c835a6b" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::setHostAndPort</definition>
+        <argsstring>(const std::string &amp;host, uint16_t port)</argsstring>
+        <name>setHostAndPort</name>
+        <qualifiedname>udp_bridge::Connection::setHostAndPort</qualifiedname>
+        <param>
+          <type>const std::string &amp;</type>
+          <declname>host</declname>
+        </param>
+        <param>
+          <type>uint16_t</type>
+          <declname>port</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="36" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a049d378348ee460cd65e2bd22d0c1a0f" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::setRateLimit</definition>
+        <argsstring>(uint32_t maximum_bytes_per_second)</argsstring>
+        <name>setRateLimit</name>
+        <qualifiedname>udp_bridge::Connection::setRateLimit</qualifiedname>
+        <param>
+          <type>uint32_t</type>
+          <declname>maximum_bytes_per_second</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="37" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a5c65df017b92caac69c8eaddd22b0cdd" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>uint32_t</type>
+        <definition>uint32_t udp_bridge::Connection::rateLimit</definition>
+        <argsstring>() const</argsstring>
+        <name>rateLimit</name>
+        <qualifiedname>udp_bridge::Connection::rateLimit</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="38" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1adb9037df19b613d75d80a3c3cb41859b" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::str</definition>
+        <argsstring>() const</argsstring>
+        <name>str</name>
+        <qualifiedname>udp_bridge::Connection::str</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="40" column="15"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a01a1ea5dcc2c6318326acaaa36d85ee0" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::Connection::id</definition>
+        <argsstring>() const</argsstring>
+        <name>id</name>
+        <qualifiedname>udp_bridge::Connection::id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="42" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a9176c5ce8e449de141ab815a24394f7d" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::Connection::returnHost</definition>
+        <argsstring>() const</argsstring>
+        <name>returnHost</name>
+        <qualifiedname>udp_bridge::Connection::returnHost</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="45" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a53d83595832f9b174eb524e143ed229d" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::returnPort</definition>
+        <argsstring>() const</argsstring>
+        <name>returnPort</name>
+        <qualifiedname>udp_bridge::Connection::returnPort</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="46" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1ad620c43d44b8bf561c018872b1c297c2" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::setReturnHostAndPort</definition>
+        <argsstring>(const std::string &amp;return_host, uint16_t return_port)</argsstring>
+        <name>setReturnHostAndPort</name>
+        <qualifiedname>udp_bridge::Connection::setReturnHostAndPort</qualifiedname>
+        <param>
+          <type>const std::string &amp;</type>
+          <declname>return_host</declname>
+        </param>
+        <param>
+          <type>uint16_t</type>
+          <declname>return_port</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="47" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a0b12072523246dade399e76eb720d326" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::Connection::sourceIPAddress</definition>
+        <argsstring>() const</argsstring>
+        <name>sourceIPAddress</name>
+        <qualifiedname>udp_bridge::Connection::sourceIPAddress</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="51" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a599cb2666cb17a46d014f711d26dc8fc" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::sourcePort</definition>
+        <argsstring>() const</argsstring>
+        <name>sourcePort</name>
+        <qualifiedname>udp_bridge::Connection::sourcePort</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="52" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1ac0e54e393793ff67b4c6f8b6aee82963" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::setSourceIPAndPort</definition>
+        <argsstring>(const std::string &amp;source_ip, uint16_t source_port)</argsstring>
+        <name>setSourceIPAndPort</name>
+        <qualifiedname>udp_bridge::Connection::setSourceIPAndPort</qualifiedname>
+        <param>
+          <type>const std::string &amp;</type>
+          <declname>source_ip</declname>
+        </param>
+        <param>
+          <type>uint16_t</type>
+          <declname>source_port</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="53" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a2aa4454213f96321271dd027e3dbcfcd" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::Connection::host</definition>
+        <argsstring>() const</argsstring>
+        <name>host</name>
+        <qualifiedname>udp_bridge::Connection::host</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="56" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a42cd379711e8f18734200b51f81941ae" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::port</definition>
+        <argsstring>() const</argsstring>
+        <name>port</name>
+        <qualifiedname>udp_bridge::Connection::port</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="57" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a1159f39f8294d0890e51f73d2231d6e8" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::Connection::ip_address</definition>
+        <argsstring>() const</argsstring>
+        <name>ip_address</name>
+        <qualifiedname>udp_bridge::Connection::ip_address</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="58" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1ab0dfc2822b9499e9ae35bddc0f12e08a" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::Connection::ip_address_with_port</definition>
+        <argsstring>() const</argsstring>
+        <name>ip_address_with_port</name>
+        <qualifiedname>udp_bridge::Connection::ip_address_with_port</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="59" column="15"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1adb57fef7d0002d79bc37c0d4f60c92aa" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const sockaddr_in *</type>
+        <definition>const sockaddr_in * udp_bridge::Connection::socket_address</definition>
+        <argsstring>() const</argsstring>
+        <name>socket_address</name>
+        <qualifiedname>udp_bridge::Connection::socket_address</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="61" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a30d3a3e234f13683d3afb46ab04d6d08" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const double &amp;</type>
+        <definition>const double &amp; udp_bridge::Connection::last_receive_time</definition>
+        <argsstring>() const</argsstring>
+        <name>last_receive_time</name>
+        <qualifiedname>udp_bridge::Connection::last_receive_time</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="63" column="16"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1acea0b8d034e3897cc8b8dc6eb8828498" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::update_last_receive_time</definition>
+        <argsstring>(double t, int data_size, bool duplicate)</argsstring>
+        <name>update_last_receive_time</name>
+        <qualifiedname>udp_bridge::Connection::update_last_receive_time</qualifiedname>
+        <param>
+          <type>double</type>
+          <declname>t</declname>
+        </param>
+        <param>
+          <type>int</type>
+          <declname>data_size</declname>
+        </param>
+        <param>
+          <type>bool</type>
+          <declname>duplicate</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="64" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a603121f782cdae7d27e1e2ccb1543765" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::resend_packets</definition>
+        <argsstring>(const std::vector&lt; uint64_t &gt; &amp;missing_packets, int socket, rclcpp::Time now)</argsstring>
+        <name>resend_packets</name>
+        <qualifiedname>udp_bridge::Connection::resend_packets</qualifiedname>
+        <param>
+          <type>const std::vector&lt; uint64_t &gt; &amp;</type>
+          <declname>missing_packets</declname>
+        </param>
+        <param>
+          <type>int</type>
+          <declname>socket</declname>
+        </param>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>now</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="66" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a63482966bcf6dc5c1e6837f89d3300b8" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>SendResult</type>
+        <definition>SendResult udp_bridge::Connection::send</definition>
+        <argsstring>(const std::vector&lt; WrappedPacket &gt; &amp;packets, int socket, const std::string &amp;remote, bool is_overhead, rclcpp::Time now)</argsstring>
+        <name>send</name>
+        <qualifiedname>udp_bridge::Connection::send</qualifiedname>
+        <param>
+          <type>const std::vector&lt; <ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref> &gt; &amp;</type>
+          <declname>packets</declname>
+        </param>
+        <param>
+          <type>int</type>
+          <declname>socket</declname>
+        </param>
+        <param>
+          <type>const std::string &amp;</type>
+          <declname>remote</declname>
+        </param>
+        <param>
+          <type>bool</type>
+          <declname>is_overhead</declname>
+        </param>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>now</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="68" column="14"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1af220b367ba0830ac0bbeccb930cce84b" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="structudp__bridge_1_1PacketSizeData" kindref="compound">PacketSizeData</ref></type>
+        <definition>PacketSizeData udp_bridge::Connection::send</definition>
+        <argsstring>(const std::vector&lt; uint8_t &gt; &amp;data, int socket, PacketSendCategory category, rclcpp::Time now)</argsstring>
+        <name>send</name>
+        <qualifiedname>udp_bridge::Connection::send</qualifiedname>
+        <param>
+          <type>const std::vector&lt; uint8_t &gt; &amp;</type>
+          <declname>data</declname>
+        </param>
+        <param>
+          <type>int</type>
+          <declname>socket</declname>
+        </param>
+        <param>
+          <type>PacketSendCategory</type>
+          <declname>category</declname>
+        </param>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>now</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="70" column="18"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a6cd0bc0ea006e92d4818f33775682e1e" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::pair&lt; double, double &gt;</type>
+        <definition>std::pair&lt; double, double &gt; udp_bridge::Connection::data_receive_rate</definition>
+        <argsstring>(double time)</argsstring>
+        <name>data_receive_rate</name>
+        <qualifiedname>udp_bridge::Connection::data_receive_rate</qualifiedname>
+        <param>
+          <type>double</type>
+          <declname>time</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para>Returns the average received data rate at the specified time. The first element of the returned pair is for unique bytes/second and the second element is for duplicated bytes per second. Duplicated bytes are for packets that had already been received on another connection. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="78" column="14"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a293163149849570bc1467526322cca08" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>udp_bridge_interfaces::msg::DataRates</type>
+        <definition>udp_bridge_interfaces::msg::DataRates udp_bridge::Connection::data_sent_rate</definition>
+        <argsstring>(rclcpp::Time time, PacketSendCategory category)</argsstring>
+        <name>data_sent_rate</name>
+        <qualifiedname>udp_bridge::Connection::data_sent_rate</qualifiedname>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>time</declname>
+        </param>
+        <param>
+          <type>PacketSendCategory</type>
+          <declname>category</declname>
+        </param>
+        <briefdescription>
+<para>Returns the average data rate. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="81" column="41"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1a3e249986039936f96a7f73db5031c4c2" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::cleanup_sent_packets</definition>
+        <argsstring>(rclcpp::Time cutoff_time)</argsstring>
+        <name>cleanup_sent_packets</name>
+        <qualifiedname>udp_bridge::Connection::cleanup_sent_packets</qualifiedname>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>cutoff_time</declname>
+        </param>
+        <briefdescription>
+<para>Remove saved sent packets older than cutoff_time. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="84" column="8"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classudp__bridge_1_1Connection_1ac212e2c21f334ca688da59341f3e4c4d" prot="private" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Connection::resolveHost</definition>
+        <argsstring>()</argsstring>
+        <name>resolveHost</name>
+        <qualifiedname>udp_bridge::Connection::resolveHost</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="87" column="8"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+<para>Represents a connection to a remote node. Multiple connections to a remote node may be used for redundancy. </para>
+    </detaileddescription>
+    <location file="include/udp_bridge/connection.h" line="31" column="1" bodyfile="include/udp_bridge/connection.h" bodystart="32" bodyend="132"/>
+    <listofallmembers>
+      <member refid="classudp__bridge_1_1Connection_1a3a2c7d1adfb9f72bbe4c2c67d8258424" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>addresses_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a3e249986039936f96a7f73db5031c4c2" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>cleanup_sent_packets</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a1698953ebdc71210582557509bcaede7" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>Connection</name></member>
+      <member refid="classudp__bridge_1_1Connection_1aa754a250e34046e60cf6ed7cc0f04ffb" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>data_rate_limit_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a6cd0bc0ea006e92d4818f33775682e1e" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>data_receive_rate</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a293163149849570bc1467526322cca08" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>data_sent_rate</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a85d0688b2ccfdd2a3cf9c4a7eb01bbfc" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>data_size_received_history_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ae7ae4caca285248d802153b94e885042" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>default_rate_limit</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a2aa4454213f96321271dd027e3dbcfcd" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>host</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a9f6fdc454bc10fb75ba3c64dae4af087" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>host_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a01a1ea5dcc2c6318326acaaa36d85ee0" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>id</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ae7af3df3a63050fda0de7d04187ea525" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>id_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a1159f39f8294d0890e51f73d2231d6e8" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>ip_address</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a8b81b652615d667953362e37ed2a9191" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>ip_address_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ab0dfc2822b9499e9ae35bddc0f12e08a" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>ip_address_with_port</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a30d3a3e234f13683d3afb46ab04d6d08" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>last_receive_time</name></member>
+      <member refid="classudp__bridge_1_1Connection_1aed72cdea4d34a42fe4a64c1f1665d10d" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>last_receive_time_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a42cd379711e8f18734200b51f81941ae" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>port</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a6fdba45d3264e53a2eb6eca0def5817e" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>port_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a5c65df017b92caac69c8eaddd22b0cdd" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>rateLimit</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a603121f782cdae7d27e1e2ccb1543765" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>resend_packets</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ac212e2c21f334ca688da59341f3e4c4d" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>resolveHost</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a33573f5e9d7f6c666cd87e57796d3e2b" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>return_host_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a59326b423421cca8db4b8805a4d1a7cf" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>return_port_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a9176c5ce8e449de141ab815a24394f7d" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>returnHost</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a53d83595832f9b174eb524e143ed229d" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>returnPort</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a63482966bcf6dc5c1e6837f89d3300b8" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>send</name></member>
+      <member refid="classudp__bridge_1_1Connection_1af220b367ba0830ac0bbeccb930cce84b" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>send</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ae49b1163cb6631f660599fa50238fbe2" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>sent_packet_statistics_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1acfed93ac3e7a7b3b34ae7ab6d4cf375e" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>sent_packets_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ade6eebc320e3af32f98d1d556c835a6b" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>setHostAndPort</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a049d378348ee460cd65e2bd22d0c1a0f" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>setRateLimit</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ad620c43d44b8bf561c018872b1c297c2" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>setReturnHostAndPort</name></member>
+      <member refid="classudp__bridge_1_1Connection_1ac0e54e393793ff67b4c6f8b6aee82963" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>setSourceIPAndPort</name></member>
+      <member refid="classudp__bridge_1_1Connection_1adb57fef7d0002d79bc37c0d4f60c92aa" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>socket_address</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a6de142039e153e987749f0e17a5c833e" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>source_ip_address_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1aaf098f7352c9c96ecb77041ccdd0a6cd" prot="private" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>source_port_</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a0b12072523246dade399e76eb720d326" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>sourceIPAddress</name></member>
+      <member refid="classudp__bridge_1_1Connection_1a599cb2666cb17a46d014f711d26dc8fc" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>sourcePort</name></member>
+      <member refid="classudp__bridge_1_1Connection_1adb9037df19b613d75d80a3c3cb41859b" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>str</name></member>
+      <member refid="classudp__bridge_1_1Connection_1acea0b8d034e3897cc8b8dc6eb8828498" prot="public" virt="non-virtual"><scope>udp_bridge::Connection</scope><name>update_last_receive_time</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

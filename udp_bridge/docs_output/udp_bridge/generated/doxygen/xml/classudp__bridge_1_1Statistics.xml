@@ -1,0 +1,56 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classudp__bridge_1_1Statistics" kind="class" language="C++" prot="public">
+    <compoundname>udp_bridge::Statistics</compoundname>
+    <templateparamlist>
+      <param>
+        <type>typename T</type>
+      </param>
+    </templateparamlist>
+    <sectiondef kind="protected-attrib">
+      <memberdef kind="variable" id="classudp__bridge_1_1Statistics_1a40ecd97f45983b3371c9289de1e6e015" prot="protected" static="no" mutable="no">
+        <type>std::deque&lt; T &gt;</type>
+        <definition>std::deque&lt;T&gt; udp_bridge::Statistics&lt; T &gt;::data_</definition>
+        <argsstring></argsstring>
+        <name>data_</name>
+        <qualifiedname>udp_bridge::Statistics::data_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/statistics.h" line="65" column="14" bodyfile="include/udp_bridge/statistics.h" bodystart="65" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classudp__bridge_1_1Statistics_1a82e2d15cb0791c6839792997e3e99960" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::Statistics&lt; T &gt;::add</definition>
+        <argsstring>(const T &amp;data)</argsstring>
+        <name>add</name>
+        <qualifiedname>udp_bridge::Statistics::add</qualifiedname>
+        <param>
+          <type>const T &amp;</type>
+          <declname>data</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/statistics.h" line="55" column="8" bodyfile="include/udp_bridge/statistics.h" bodystart="55" bodyend="63"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/statistics.h" line="52" column="11" bodyfile="include/udp_bridge/statistics.h" bodystart="53" bodyend="66"/>
+    <listofallmembers>
+      <member refid="classudp__bridge_1_1Statistics_1a82e2d15cb0791c6839792997e3e99960" prot="public" virt="non-virtual"><scope>udp_bridge::Statistics</scope><name>add</name></member>
+      <member refid="classudp__bridge_1_1Statistics_1a40ecd97f45983b3371c9289de1e6e015" prot="protected" virt="non-virtual"><scope>udp_bridge::Statistics</scope><name>data_</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

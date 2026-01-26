@@ -1,0 +1,71 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1CompressedPacket" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::CompressedPacket</compoundname>
+    <basecompoundref refid="structudp__bridge_1_1CompressedPacketHeader" prot="public" virt="non-virtual">udp_bridge::CompressedPacketHeader</basecompoundref>
+    <includes refid="packet_8h" local="no">packet.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1CompressedPacket_1a82a3b22ff52c19d7c6ddeaadf88e9ab2" prot="public" static="no" mutable="no">
+        <type>uint8_t</type>
+        <definition>uint8_t udp_bridge::CompressedPacket::compressed_data[]</definition>
+        <argsstring>[]</argsstring>
+        <name>compressed_data</name>
+        <qualifiedname>udp_bridge::CompressedPacket::compressed_data</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="62" column="11" bodyfile="include/udp_bridge/packet.h" bodystart="62" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+<para><ref refid="structudp__bridge_1_1Packet" kindref="compound">Packet</ref> containing a compressed packet. </para>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="1">
+        <label>udp_bridge::CompressedPacket</label>
+        <link refid="structudp__bridge_1_1CompressedPacket"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>udp_bridge::CompressedPacketHeader</label>
+        <link refid="structudp__bridge_1_1CompressedPacketHeader"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="1">
+        <label>udp_bridge::CompressedPacket</label>
+        <link refid="structudp__bridge_1_1CompressedPacket"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>udp_bridge::CompressedPacketHeader</label>
+        <link refid="structudp__bridge_1_1CompressedPacketHeader"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+    </collaborationgraph>
+    <location file="include/udp_bridge/packet.h" line="60" column="1" bodyfile="include/udp_bridge/packet.h" bodystart="61" bodyend="63"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1CompressedPacket_1a82a3b22ff52c19d7c6ddeaadf88e9ab2" prot="public" virt="non-virtual"><scope>udp_bridge::CompressedPacket</scope><name>compressed_data</name></member>
+      <member refid="structudp__bridge_1_1PacketHeader_1a4d619634050ead79f601aa084d95a26a" prot="public" virt="non-virtual"><scope>udp_bridge::CompressedPacket</scope><name>type</name></member>
+      <member refid="structudp__bridge_1_1CompressedPacketHeader_1a708b9a56b83c81173b330466ec6d141c" prot="public" virt="non-virtual"><scope>udp_bridge::CompressedPacket</scope><name>uncompressed_size</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

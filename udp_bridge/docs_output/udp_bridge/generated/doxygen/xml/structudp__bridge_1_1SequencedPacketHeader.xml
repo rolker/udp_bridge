@@ -1,0 +1,115 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1SequencedPacketHeader" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::SequencedPacketHeader</compoundname>
+    <basecompoundref refid="structudp__bridge_1_1PacketHeader" prot="public" virt="non-virtual">udp_bridge::PacketHeader</basecompoundref>
+    <derivedcompoundref refid="structudp__bridge_1_1SequencedPacket" prot="public" virt="non-virtual">udp_bridge::SequencedPacket</derivedcompoundref>
+    <derivedcompoundref refid="structudp__bridge_1_1WrappedPacket" prot="public" virt="non-virtual">udp_bridge::WrappedPacket</derivedcompoundref>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1SequencedPacketHeader_1a3e9c41931c0dd7e21e2b06acd2b0dc8a" prot="public" static="no" mutable="no">
+        <type>char</type>
+        <definition>char udp_bridge::SequencedPacketHeader::source_node[maximum_node_name_size]</definition>
+        <argsstring>[maximum_node_name_size]</argsstring>
+        <name>source_node</name>
+        <qualifiedname>udp_bridge::SequencedPacketHeader::source_node</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="81" column="8" bodyfile="include/udp_bridge/packet.h" bodystart="81" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SequencedPacketHeader_1afbf66432d17628fa7ec1214263f458f1" prot="public" static="no" mutable="no">
+        <type>char</type>
+        <definition>char udp_bridge::SequencedPacketHeader::connection_id[maximum_connection_id_size]</definition>
+        <argsstring>[maximum_connection_id_size]</argsstring>
+        <name>connection_id</name>
+        <qualifiedname>udp_bridge::SequencedPacketHeader::connection_id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="82" column="8" bodyfile="include/udp_bridge/packet.h" bodystart="82" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SequencedPacketHeader_1a54aa87908947999200f7d2cd72c5d75e" prot="public" static="no" mutable="no">
+        <type>uint64_t</type>
+        <definition>uint64_t udp_bridge::SequencedPacketHeader::packet_number</definition>
+        <argsstring></argsstring>
+        <name>packet_number</name>
+        <qualifiedname>udp_bridge::SequencedPacketHeader::packet_number</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="83" column="12" bodyfile="include/udp_bridge/packet.h" bodystart="83" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SequencedPacketHeader_1ac2a334985bfe113727ef32279e0b9833" prot="public" static="no" mutable="no">
+        <type>uint32_t</type>
+        <definition>uint32_t udp_bridge::SequencedPacketHeader::packet_size</definition>
+        <argsstring></argsstring>
+        <name>packet_size</name>
+        <qualifiedname>udp_bridge::SequencedPacketHeader::packet_size</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="84" column="12" bodyfile="include/udp_bridge/packet.h" bodystart="84" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+      <node id="3">
+        <label>udp_bridge::SequencedPacket</label>
+        <link refid="structudp__bridge_1_1SequencedPacket"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>udp_bridge::SequencedPacketHeader</label>
+        <link refid="structudp__bridge_1_1SequencedPacketHeader"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="4">
+        <label>udp_bridge::WrappedPacket</label>
+        <link refid="structudp__bridge_1_1WrappedPacket"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+      <node id="1">
+        <label>udp_bridge::SequencedPacketHeader</label>
+        <link refid="structudp__bridge_1_1SequencedPacketHeader"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="include/udp_bridge/packet.h" line="79" column="1" bodyfile="include/udp_bridge/packet.h" bodystart="80" bodyend="85"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1afbf66432d17628fa7ec1214263f458f1" prot="public" virt="non-virtual"><scope>udp_bridge::SequencedPacketHeader</scope><name>connection_id</name></member>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1a54aa87908947999200f7d2cd72c5d75e" prot="public" virt="non-virtual"><scope>udp_bridge::SequencedPacketHeader</scope><name>packet_number</name></member>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1ac2a334985bfe113727ef32279e0b9833" prot="public" virt="non-virtual"><scope>udp_bridge::SequencedPacketHeader</scope><name>packet_size</name></member>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1a3e9c41931c0dd7e21e2b06acd2b0dc8a" prot="public" virt="non-virtual"><scope>udp_bridge::SequencedPacketHeader</scope><name>source_node</name></member>
+      <member refid="structudp__bridge_1_1PacketHeader_1a4d619634050ead79f601aa084d95a26a" prot="public" virt="non-virtual"><scope>udp_bridge::SequencedPacketHeader</scope><name>type</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

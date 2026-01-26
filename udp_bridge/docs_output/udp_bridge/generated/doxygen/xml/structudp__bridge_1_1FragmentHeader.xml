@@ -1,0 +1,93 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1FragmentHeader" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::FragmentHeader</compoundname>
+    <basecompoundref refid="structudp__bridge_1_1PacketHeader" prot="public" virt="non-virtual">udp_bridge::PacketHeader</basecompoundref>
+    <derivedcompoundref refid="structudp__bridge_1_1Fragment" prot="public" virt="non-virtual">udp_bridge::Fragment</derivedcompoundref>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1FragmentHeader_1a7897254ae4f63e83f811f2c432f8e7d5" prot="public" static="no" mutable="no">
+        <type>uint32_t</type>
+        <definition>uint32_t udp_bridge::FragmentHeader::packet_id</definition>
+        <argsstring></argsstring>
+        <name>packet_id</name>
+        <qualifiedname>udp_bridge::FragmentHeader::packet_id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="67" column="12" bodyfile="include/udp_bridge/packet.h" bodystart="67" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1FragmentHeader_1a082af646a7d0ab75aa92392ce440b633" prot="public" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::FragmentHeader::fragment_number</definition>
+        <argsstring></argsstring>
+        <name>fragment_number</name>
+        <qualifiedname>udp_bridge::FragmentHeader::fragment_number</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="68" column="12" bodyfile="include/udp_bridge/packet.h" bodystart="68" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1FragmentHeader_1a42f22517054405453ac376de159bfe0c" prot="public" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::FragmentHeader::fragment_count</definition>
+        <argsstring></argsstring>
+        <name>fragment_count</name>
+        <qualifiedname>udp_bridge::FragmentHeader::fragment_count</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/packet.h" line="69" column="12" bodyfile="include/udp_bridge/packet.h" bodystart="69" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="3">
+        <label>udp_bridge::Fragment</label>
+        <link refid="structudp__bridge_1_1Fragment"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>udp_bridge::FragmentHeader</label>
+        <link refid="structudp__bridge_1_1FragmentHeader"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="1">
+        <label>udp_bridge::FragmentHeader</label>
+        <link refid="structudp__bridge_1_1FragmentHeader"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+    </collaborationgraph>
+    <location file="include/udp_bridge/packet.h" line="65" column="1" bodyfile="include/udp_bridge/packet.h" bodystart="66" bodyend="70"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1FragmentHeader_1a42f22517054405453ac376de159bfe0c" prot="public" virt="non-virtual"><scope>udp_bridge::FragmentHeader</scope><name>fragment_count</name></member>
+      <member refid="structudp__bridge_1_1FragmentHeader_1a082af646a7d0ab75aa92392ce440b633" prot="public" virt="non-virtual"><scope>udp_bridge::FragmentHeader</scope><name>fragment_number</name></member>
+      <member refid="structudp__bridge_1_1FragmentHeader_1a7897254ae4f63e83f811f2c432f8e7d5" prot="public" virt="non-virtual"><scope>udp_bridge::FragmentHeader</scope><name>packet_id</name></member>
+      <member refid="structudp__bridge_1_1PacketHeader_1a4d619634050ead79f601aa084d95a26a" prot="public" virt="non-virtual"><scope>udp_bridge::FragmentHeader</scope><name>type</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

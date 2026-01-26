@@ -1,0 +1,297 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygenindex xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="index.xsd" version="1.9.8" xml:lang="en-US">
+  <compound refid="structudp__bridge_1_1CompressedPacket" kind="struct"><name>udp_bridge::CompressedPacket</name>
+    <member refid="structudp__bridge_1_1CompressedPacket_1a82a3b22ff52c19d7c6ddeaadf88e9ab2" kind="variable"><name>compressed_data</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1CompressedPacketHeader" kind="struct"><name>udp_bridge::CompressedPacketHeader</name>
+    <member refid="structudp__bridge_1_1CompressedPacketHeader_1a708b9a56b83c81173b330466ec6d141c" kind="variable"><name>uncompressed_size</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1Connection" kind="class"><name>udp_bridge::Connection</name>
+    <member refid="classudp__bridge_1_1Connection_1ae7af3df3a63050fda0de7d04187ea525" kind="variable"><name>id_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a9f6fdc454bc10fb75ba3c64dae4af087" kind="variable"><name>host_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a8b81b652615d667953362e37ed2a9191" kind="variable"><name>ip_address_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a6fdba45d3264e53a2eb6eca0def5817e" kind="variable"><name>port_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a3a2c7d1adfb9f72bbe4c2c67d8258424" kind="variable"><name>addresses_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a33573f5e9d7f6c666cd87e57796d3e2b" kind="variable"><name>return_host_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a59326b423421cca8db4b8805a4d1a7cf" kind="variable"><name>return_port_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a6de142039e153e987749f0e17a5c833e" kind="variable"><name>source_ip_address_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1aaf098f7352c9c96ecb77041ccdd0a6cd" kind="variable"><name>source_port_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1aed72cdea4d34a42fe4a64c1f1665d10d" kind="variable"><name>last_receive_time_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1aa754a250e34046e60cf6ed7cc0f04ffb" kind="variable"><name>data_rate_limit_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a85d0688b2ccfdd2a3cf9c4a7eb01bbfc" kind="variable"><name>data_size_received_history_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1acfed93ac3e7a7b3b34ae7ab6d4cf375e" kind="variable"><name>sent_packets_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ae49b1163cb6631f660599fa50238fbe2" kind="variable"><name>sent_packet_statistics_</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ae7ae4caca285248d802153b94e885042" kind="variable"><name>default_rate_limit</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a1698953ebdc71210582557509bcaede7" kind="function"><name>Connection</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ade6eebc320e3af32f98d1d556c835a6b" kind="function"><name>setHostAndPort</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a049d378348ee460cd65e2bd22d0c1a0f" kind="function"><name>setRateLimit</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a5c65df017b92caac69c8eaddd22b0cdd" kind="function"><name>rateLimit</name></member>
+    <member refid="classudp__bridge_1_1Connection_1adb9037df19b613d75d80a3c3cb41859b" kind="function"><name>str</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a01a1ea5dcc2c6318326acaaa36d85ee0" kind="function"><name>id</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a9176c5ce8e449de141ab815a24394f7d" kind="function"><name>returnHost</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a53d83595832f9b174eb524e143ed229d" kind="function"><name>returnPort</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ad620c43d44b8bf561c018872b1c297c2" kind="function"><name>setReturnHostAndPort</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a0b12072523246dade399e76eb720d326" kind="function"><name>sourceIPAddress</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a599cb2666cb17a46d014f711d26dc8fc" kind="function"><name>sourcePort</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ac0e54e393793ff67b4c6f8b6aee82963" kind="function"><name>setSourceIPAndPort</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a2aa4454213f96321271dd027e3dbcfcd" kind="function"><name>host</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a42cd379711e8f18734200b51f81941ae" kind="function"><name>port</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a1159f39f8294d0890e51f73d2231d6e8" kind="function"><name>ip_address</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ab0dfc2822b9499e9ae35bddc0f12e08a" kind="function"><name>ip_address_with_port</name></member>
+    <member refid="classudp__bridge_1_1Connection_1adb57fef7d0002d79bc37c0d4f60c92aa" kind="function"><name>socket_address</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a30d3a3e234f13683d3afb46ab04d6d08" kind="function"><name>last_receive_time</name></member>
+    <member refid="classudp__bridge_1_1Connection_1acea0b8d034e3897cc8b8dc6eb8828498" kind="function"><name>update_last_receive_time</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a603121f782cdae7d27e1e2ccb1543765" kind="function"><name>resend_packets</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a63482966bcf6dc5c1e6837f89d3300b8" kind="function"><name>send</name></member>
+    <member refid="classudp__bridge_1_1Connection_1af220b367ba0830ac0bbeccb930cce84b" kind="function"><name>send</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a6cd0bc0ea006e92d4818f33775682e1e" kind="function"><name>data_receive_rate</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a293163149849570bc1467526322cca08" kind="function"><name>data_sent_rate</name></member>
+    <member refid="classudp__bridge_1_1Connection_1a3e249986039936f96a7f73db5031c4c2" kind="function"><name>cleanup_sent_packets</name></member>
+    <member refid="classudp__bridge_1_1Connection_1ac212e2c21f334ca688da59341f3e4c4d" kind="function"><name>resolveHost</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1ConnectionException" kind="class"><name>udp_bridge::ConnectionException</name>
+    <member refid="classudp__bridge_1_1ConnectionException_1a0bbe4571d036111965f9312018e9bb71" kind="variable"><name>msg_</name></member>
+    <member refid="classudp__bridge_1_1ConnectionException_1a8274f1e5bec7950ad190c24809bdaef5" kind="function"><name>ConnectionException</name></member>
+    <member refid="classudp__bridge_1_1ConnectionException_1a250b8dc03a8e610e7f395e1a810f9719" kind="function"><name>getMessage</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1ConnectionRateInfo" kind="struct"><name>udp_bridge::ConnectionRateInfo</name>
+    <member refid="structudp__bridge_1_1ConnectionRateInfo_1a380d9e519f49cb8403a9ed4f61084a5d" kind="variable"><name>period</name></member>
+    <member refid="structudp__bridge_1_1ConnectionRateInfo_1ad0c40d989ecfd7c6e02b9f8c8e904f18" kind="variable"><name>last_sent_time</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1Defragmenter" kind="class"><name>udp_bridge::Defragmenter</name>
+    <member refid="classudp__bridge_1_1Defragmenter_1a4ab9420370ca3877566f6536615531f8" kind="variable"><name>fragment_map_</name></member>
+    <member refid="classudp__bridge_1_1Defragmenter_1a852274d070aa0373517ed7feda275e12" kind="variable"><name>complete_packets_</name></member>
+    <member refid="classudp__bridge_1_1Defragmenter_1a924c97ed9d63fa2a203386fc80670c3a" kind="function"><name>addFragment</name></member>
+    <member refid="classudp__bridge_1_1Defragmenter_1a0eacba6debf06fe576519578cc8521ff" kind="function"><name>getPackets</name></member>
+    <member refid="classudp__bridge_1_1Defragmenter_1a4e71161b7f58ca68e34945c03c453259" kind="function"><name>cleanup</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1Fragment" kind="struct"><name>udp_bridge::Fragment</name>
+    <member refid="structudp__bridge_1_1Fragment_1a5f547ac934bfd54f4c3b0ccd57ee3dc9" kind="variable"><name>fragment_data</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1FragmentHeader" kind="struct"><name>udp_bridge::FragmentHeader</name>
+    <member refid="structudp__bridge_1_1FragmentHeader_1a7897254ae4f63e83f811f2c432f8e7d5" kind="variable"><name>packet_id</name></member>
+    <member refid="structudp__bridge_1_1FragmentHeader_1a082af646a7d0ab75aa92392ce440b633" kind="variable"><name>fragment_number</name></member>
+    <member refid="structudp__bridge_1_1FragmentHeader_1a42f22517054405453ac376de159bfe0c" kind="variable"><name>fragment_count</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1Defragmenter_1_1Fragments" kind="struct"><name>udp_bridge::Defragmenter::Fragments</name>
+    <member refid="structudp__bridge_1_1Defragmenter_1_1Fragments_1a178eb5da33cde3823d4fdac66dc0a07c" kind="variable"><name>fragment_count</name></member>
+    <member refid="structudp__bridge_1_1Defragmenter_1_1Fragments_1a189921a601f675ac9deb79624fec94f2" kind="variable"><name>first_arrival_time</name></member>
+    <member refid="structudp__bridge_1_1Defragmenter_1_1Fragments_1a957a1d039fbb3ceec355f9040ee6a702" kind="variable"><name>fragment_map</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1MessageSizeData" kind="struct"><name>udp_bridge::MessageSizeData</name>
+    <member refid="structudp__bridge_1_1MessageSizeData_1ac164bb3dffe891b9e0311b4a2db76e72" kind="variable"><name>message_size</name></member>
+    <member refid="structudp__bridge_1_1MessageSizeData_1ad26325668a152cbe59203d0c46503732" kind="variable"><name>fragment_count</name></member>
+    <member refid="structudp__bridge_1_1MessageSizeData_1a821b30e25cded00c3e7621c62bb8eaf6" kind="variable"><name>sent_size</name></member>
+    <member refid="structudp__bridge_1_1MessageSizeData_1a28d9a63f01c20a194e304a5d61463237" kind="variable"><name>timestamp</name></member>
+    <member refid="structudp__bridge_1_1MessageSizeData_1aa7bb149f6d9acb6089c21d776bba4e0f" kind="variable"><name>send_results</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1MessageStatistics" kind="class"><name>udp_bridge::MessageStatistics</name>
+    <member refid="classudp__bridge_1_1MessageStatistics_1a9ff306ae47abf08ef228e1caa4fa0b0c" kind="function"><name>add</name></member>
+    <member refid="classudp__bridge_1_1MessageStatistics_1af702df73a7b5186341693d600244cfd0" kind="function"><name>get</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1Packet" kind="struct"><name>udp_bridge::Packet</name>
+    <member refid="structudp__bridge_1_1Packet_1a23bd2ece90b588c953d2dbfe83bde2a2" kind="variable"><name>data</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1PacketHeader" kind="struct"><name>udp_bridge::PacketHeader</name>
+    <member refid="structudp__bridge_1_1PacketHeader_1a4d619634050ead79f601aa084d95a26a" kind="variable"><name>type</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1PacketSendStatistics" kind="class"><name>udp_bridge::PacketSendStatistics</name>
+    <member refid="classudp__bridge_1_1PacketSendStatistics_1a977d5f5696060c55d71fdd7b23d63b46" kind="function"><name>get</name></member>
+    <member refid="classudp__bridge_1_1PacketSendStatistics_1a6dd9ae8067ef729f254e4d4a545e8ba2" kind="function"><name>get</name></member>
+    <member refid="classudp__bridge_1_1PacketSendStatistics_1a5b74bd706d054d9a5b80842197e653d7" kind="function"><name>can_send</name></member>
+    <member refid="classudp__bridge_1_1PacketSendStatistics_1a492312b0af7a7d6e7231c9a1d57cd438" kind="function"><name>get</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1PacketSizeData" kind="struct"><name>udp_bridge::PacketSizeData</name>
+    <member refid="structudp__bridge_1_1PacketSizeData_1a2a9a176df5647036de3ca84f9bd4f4b8" kind="variable"><name>timestamp</name></member>
+    <member refid="structudp__bridge_1_1PacketSizeData_1ac9f8a86909a9d56b42b2fafc2259c91e" kind="variable"><name>size</name></member>
+    <member refid="structudp__bridge_1_1PacketSizeData_1abfddfd984e77ba8e9a3a090a4e6992a1" kind="variable"><name>category</name></member>
+    <member refid="structudp__bridge_1_1PacketSizeData_1a4f9284e9d09604d852adde4648660fb0" kind="variable"><name>send_result</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1UDPBridge_1_1PendingConnection" kind="struct"><name>udp_bridge::UDPBridge::PendingConnection</name>
+    <member refid="structudp__bridge_1_1UDPBridge_1_1PendingConnection_1ae0fa6c42ebda1aea779d1f6eb0a12dfe" kind="variable"><name>message</name></member>
+    <member refid="structudp__bridge_1_1UDPBridge_1_1PendingConnection_1a9576e97c93f5e4f223636b19c6c35638" kind="variable"><name>connection</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1Connection_1_1ReceivedSize" kind="struct"><name>udp_bridge::Connection::ReceivedSize</name>
+    <member refid="structudp__bridge_1_1Connection_1_1ReceivedSize_1a66713f6898156718bfb79c32c9f4fe48" kind="variable"><name>size</name></member>
+    <member refid="structudp__bridge_1_1Connection_1_1ReceivedSize_1a54655b1219119c0fb839d9a9bf763c2a" kind="variable"><name>duplicate</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1RemoteDetails" kind="struct"><name>udp_bridge::RemoteDetails</name>
+    <member refid="structudp__bridge_1_1RemoteDetails_1a3642f84778a53e4349d968cad62d49b1" kind="variable"><name>destination_topic</name></member>
+    <member refid="structudp__bridge_1_1RemoteDetails_1a9288fda984ad1116e599dcc0a0479d56" kind="variable"><name>connection_rates</name></member>
+    <member refid="structudp__bridge_1_1RemoteDetails_1a6b514c59f3509481c048c5351aeb089f" kind="function"><name>RemoteDetails</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1RemoteNode" kind="class"><name>udp_bridge::RemoteNode</name>
+    <member refid="classudp__bridge_1_1RemoteNode_1a94efb8f0fece6c04cd52b5b10feac882" kind="typedef"><name>NodeInterfaces</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1af9b34a435fc0a11172a9c2c435b8b67d" kind="variable"><name>name_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1af55d04ebe69674950dc62f7d26bd1e5d" kind="variable"><name>local_name_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1afb901863f6f22e1f0d48731e5faa26c5" kind="variable"><name>connections_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a472f90ab232610a557bb8427abd4ea21" kind="variable"><name>defragmenter_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a1e5f07a5aa3b645ac4abb29ae3dc5542" kind="variable"><name>received_packet_times_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1af137fcea8a3ba19b8a4ba70c1a59382b" kind="variable"><name>resend_request_times_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1abefe039613916c5e3eebd958a780a77a" kind="variable"><name>bridge_info_publisher_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a22503c7dc9c8c643297d34e3d1c45890" kind="variable"><name>topic_statistics_publisher_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a92ab0d4578668659a79d93c99f52dd94" kind="variable"><name>next_packet_number_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1af90af0976e9d61ea26a8283521c9a061" kind="variable"><name>last_packet_time_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a12318c31d32e50ca1244cdde7738bd90" kind="variable"><name>logger_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1afe6dc6f1e571af0c70e5c65c8b8756bb" kind="variable"><name>clock_</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a2544f0b18d777bc6abb7f93016e8e1eb" kind="function"><name>RemoteNode</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a89e79e731a197180180b08fc98009bf3" kind="function"><name>update</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1af168a8510557e84395a10ce88ef8ff4f" kind="function"><name>update</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1ab2cb01f7726fd0afd7874727078cafe0" kind="function"><name>name</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1ac8dfaf6b066b8157a67b49eb8c369ba4" kind="function"><name>topicName</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a946ec45430904ff194f8bb752140db0a" kind="function"><name>connection</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a17e8c8dcd8d6f4e4f86f1c708c50a993" kind="function"><name>connections</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1aea4b8131a175c32203b961f365711829" kind="function"><name>newConnection</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a93e5ff60477898bc5bdd6cb1e3b4b931" kind="function"><name>unwrap</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1af9087764dd38aff6ce3368fb33694e16" kind="function"><name>getPacketsToResend</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a69e742771747de05a49690d35092f61c" kind="function"><name>defragmenter</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a5444819dc26522ccece9891ac133a974" kind="function"><name>publishTopicStatistics</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a1fd10796da42037fae02f723a1264f5a" kind="function"><name>clearReceivedPacketTimesBefore</name></member>
+    <member refid="classudp__bridge_1_1RemoteNode_1a380b19986214955e640ae099129eec69" kind="function"><name>getMissingPackets</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1SequencedPacket" kind="struct"><name>udp_bridge::SequencedPacket</name>
+    <member refid="structudp__bridge_1_1SequencedPacket_1aa14242baf809b5073857321112348519" kind="variable"><name>packet</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1SequencedPacketHeader" kind="struct"><name>udp_bridge::SequencedPacketHeader</name>
+    <member refid="structudp__bridge_1_1SequencedPacketHeader_1a3e9c41931c0dd7e21e2b06acd2b0dc8a" kind="variable"><name>source_node</name></member>
+    <member refid="structudp__bridge_1_1SequencedPacketHeader_1afbf66432d17628fa7ec1214263f458f1" kind="variable"><name>connection_id</name></member>
+    <member refid="structudp__bridge_1_1SequencedPacketHeader_1a54aa87908947999200f7d2cd72c5d75e" kind="variable"><name>packet_number</name></member>
+    <member refid="structudp__bridge_1_1SequencedPacketHeader_1ac2a334985bfe113727ef32279e0b9833" kind="variable"><name>packet_size</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1SourceInfo" kind="struct"><name>udp_bridge::SourceInfo</name>
+    <member refid="structudp__bridge_1_1SourceInfo_1aad7e14193453b0863fc34aeee4eadaf6" kind="variable"><name>node_name</name></member>
+    <member refid="structudp__bridge_1_1SourceInfo_1a18c9a815f2eec72f35e220bc928675b4" kind="variable"><name>host</name></member>
+    <member refid="structudp__bridge_1_1SourceInfo_1af9b6a9e323f87c15894c1a5627f8a5a6" kind="variable"><name>port</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1Statistics" kind="class"><name>udp_bridge::Statistics</name>
+    <member refid="classudp__bridge_1_1Statistics_1a40ecd97f45983b3371c9289de1e6e015" kind="variable"><name>data_</name></member>
+    <member refid="classudp__bridge_1_1Statistics_1a82e2d15cb0791c6839792997e3e99960" kind="function"><name>add</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1SubscriberDetails" kind="struct"><name>udp_bridge::SubscriberDetails</name>
+    <member refid="structudp__bridge_1_1SubscriberDetails_1a6c3e99a9dd081a52baa5864aeb852610" kind="variable"><name>subscription</name></member>
+    <member refid="structudp__bridge_1_1SubscriberDetails_1ac369010692bbf69d3aaa3567f9678532" kind="variable"><name>queue_size</name></member>
+    <member refid="structudp__bridge_1_1SubscriberDetails_1a2b0f44e71ae14867fd1688cacaab6354" kind="variable"><name>remote_details</name></member>
+    <member refid="structudp__bridge_1_1SubscriberDetails_1a1ba64bbb2b895c4f541de489e3e0ff6c" kind="variable"><name>statistics</name></member>
+  </compound>
+  <compound refid="classudp__bridge_1_1UDPBridge" kind="class"><name>udp_bridge::UDPBridge</name>
+    <member refid="classudp__bridge_1_1UDPBridge_1af0e0250a41fb2453a149eb78bd95dd1d" kind="typedef"><name>CallbackReturn</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1acc0eeb2b10c8c6a59c54ff9228b1d82c" kind="typedef"><name>RemoteConnectionsList</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a79fe0c40cbb9093d5e7ccfe6320a7ea0" kind="variable"><name>name_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aa6ddc3ab6be9b0baedaca4ae84f5d77f" kind="variable"><name>m_socket</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aa2cf5e973a133abe1a05a168b95885ab" kind="variable"><name>m_port</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1ae68b33d679d59e7426eccaa13918b247" kind="variable"><name>m_max_packet_size</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1adba8546baee944f52a52d2188e26746a" kind="variable"><name>next_fragmented_packet_id_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a171cdfe1579cb6d47316c0d2a28c6955" kind="variable"><name>subscribe_service_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a50f7a3c0538cd66f4c9c82c0ef4ff9a6" kind="variable"><name>advertise_service_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a0c72126a366f8ede7d1f7c4374dc8fb4" kind="variable"><name>add_remote_service_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aecec3b286c1404a0fbf788f93cfa821c" kind="variable"><name>list_remotes_service_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a3a96ba1c2d8052f38644101e255453d7" kind="variable"><name>topic_statistics_publisher_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aac493407adafde8d3d8bca09a5320abd" kind="variable"><name>bridge_info_publisher_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1adb9ce6b83733cca789ee1244882f1b67" kind="variable"><name>m_subscribers</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1ae54b5d9e14e7cbd27d03833001e3d479" kind="variable"><name>m_publishers</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1ac1eb17ad2402934fc5d7fb376002d30b" kind="variable"><name>stats_report_timer_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a82b79836337b0127d953d47d415b1a9e" kind="variable"><name>bridge_info_timer_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a7991f06f0375c80cb0488d4b3f0c9a82" kind="variable"><name>spin_timer_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a7d15128279b036c80b6ff15720416df7" kind="variable"><name>subscription_update_timer_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1acbc5bea8bc43a29578f1d65c27ea99d4" kind="variable"><name>next_packet_number_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1af188933f3d0c653373270d3efd6a2664" kind="variable"><name>last_packet_number_assign_time_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a4501d0b14c9e973f786c30d57e16586d" kind="variable"><name>next_connection_internal_message_sequence_number_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a7a7305946b811708fa293339ebf5bad6" kind="variable"><name>pending_connections_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1ae7da01a6ed0118b14dafcc875d9c5fbf" kind="variable"><name>remote_nodes_</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a412b0e7cccbe6f181f31d7913964a819" kind="function"><name>UDPBridge</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a8a00b554c80cfa6a635b90c90c3fba53" kind="function"><name>on_configure</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a8a618fef4511a5d4e968ee6b95f74dab" kind="function"><name>on_activate</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1add305e8edb16930ee8e3c9daec9589bb" kind="function"><name>on_deactivate</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1abfc51b2fa2c3e2bd1c8361ef7e73b3da" kind="function"><name>on_cleanup</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a92dbc4baf331e53323c0687f028af94c" kind="function"><name>on_shutdown</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a92143825f907e59f1568a03c789ead01" kind="function"><name>spin_once</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a8eea07dbc175bb58c552b31a513092a6" kind="function"><name>setName</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a6bcc7e37b1f68e8dada7f3385d8bb98e" kind="function"><name>callback</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a179f515bc92d4d24d83abb03ffe4b7ce" kind="function"><name>decode</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aacf2db4ca0b61c4713f91bb1e96a21ad" kind="function"><name>deserialize</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1ab576b6a169ec1ea5d0eec77693aafad1" kind="function"><name>decodeData</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a2f8107f9bc42a081c70546f5feda6eee" kind="function"><name>decodeBridgeInfo</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a1d94fa482e8e02dddee6fa0a120d44a1" kind="function"><name>decodeTopicStatistics</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a23e1c8d7ddd64d1d7d57724ed870fce4" kind="function"><name>decodeSubscribeRequest</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1abc61a956a25b4d5d740b0f36583baa9a" kind="function"><name>decodeResendRequest</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1ab95a3ba75b1bccc244a7c05265c05fb1" kind="function"><name>unwrap</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aaf7ac0a4706988e1cffc5c8fda3ad7b9" kind="function"><name>decodeConnection</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a706710f6dba4a5de49190865770c1db7" kind="function"><name>remoteSubscribe</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1acef3f67e90ac646c1bd9e8a3d979a8fb" kind="function"><name>remoteAdvertise</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a50a715cc81d4e98d87e3b64996d77777" kind="function"><name>addRemote</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a6a9e1343f38eeb4b43fe47be21e335e1" kind="function"><name>listRemotes</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a0768774ac34e11f5085d0891750d7bce" kind="function"><name>send</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a1ef366c11f9a5c4e615d9912606f7346" kind="function"><name>send</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a579a6f7fbc0a09bebf386a5b892c5ae6" kind="function"><name>allRemotes</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a05fdba6b23ee1667d663bf1098bd5dbd" kind="function"><name>statsReportCallback</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1af782e5c250068d1e3f86a9f22dbf0efe" kind="function"><name>bridgeInfoCallback</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a173a2feeab25823c62c20b0fd4edd6da" kind="function"><name>sendBridgeInfo</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a13e9ed5f8ed33b1e90ddc325a28c5f96" kind="function"><name>sendConnectionRequests</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a642ff98e33917fe45b85fc2c4f84b516" kind="function"><name>fragment</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1aeb1a16539f7a13260c3cab41605acca2" kind="function"><name>cleanupSentPackets</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a390d0f3155479fb7f299aa8872d15282" kind="function"><name>resendMissingPackets</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1a1bea2baa7071d0109313c02f81cb8084" kind="function"><name>addSubscriberConnection</name></member>
+    <member refid="classudp__bridge_1_1UDPBridge_1af1926c1b10a23677f6c2054c099b99fd" kind="function"><name>updateLocalSubscriptions</name></member>
+  </compound>
+  <compound refid="structudp__bridge_1_1WrappedPacket" kind="struct"><name>udp_bridge::WrappedPacket</name>
+    <member refid="structudp__bridge_1_1WrappedPacket_1a0b4646ca90c868866b723ad7271aa668" kind="variable"><name>packet</name></member>
+    <member refid="structudp__bridge_1_1WrappedPacket_1a1154686633273c7bea858d7b2a526e6e" kind="variable"><name>timestamp</name></member>
+    <member refid="structudp__bridge_1_1WrappedPacket_1a6e69d505ac25929615d896be56cbc486" kind="function"><name>WrappedPacket</name></member>
+    <member refid="structudp__bridge_1_1WrappedPacket_1a63bcc62008e77354fddbee0a3888900c" kind="function"><name>WrappedPacket</name></member>
+    <member refid="structudp__bridge_1_1WrappedPacket_1aef500d54937337b94ce5202c4f18d405" kind="function"><name>WrappedPacket</name></member>
+  </compound>
+  <compound refid="namespacerclcpp__lifecycle" kind="namespace"><name>rclcpp_lifecycle</name>
+  </compound>
+  <compound refid="namespaceudp__bridge" kind="namespace"><name>udp_bridge</name>
+    <member refid="group__packet_1gab63281d979cbaf5d4220f8a6ef65aa8a" kind="enum"><name>PacketType</name></member>
+    <member refid="statistics_8h_1a82d18d5a7cc56415bbe4bef02fd7873d" kind="enum"><name>SendResult</name></member>
+    <member refid="statistics_8h_1a82d18d5a7cc56415bbe4bef02fd7873da260ca9dd8a4577fc00b7bd5810298076" kind="enumvalue"><name>success</name></member>
+    <member refid="statistics_8h_1a82d18d5a7cc56415bbe4bef02fd7873da26934eb377001f66e37289a5c93fe284" kind="enumvalue"><name>failed</name></member>
+    <member refid="statistics_8h_1a82d18d5a7cc56415bbe4bef02fd7873da41d368a58ee26891a6a586ddaaa604f8" kind="enumvalue"><name>dropped</name></member>
+    <member refid="statistics_8h_1ad455ab3a176450d2bc625454b3df606e" kind="enum"><name>PacketSendCategory</name></member>
+    <member refid="statistics_8h_1ad455ab3a176450d2bc625454b3df606ea78e731027d8fd50ed642340b7c9a63b3" kind="enumvalue"><name>message</name></member>
+    <member refid="statistics_8h_1ad455ab3a176450d2bc625454b3df606ea6b472ddf248d1e24c8ca18d02dc73e90" kind="enumvalue"><name>overhead</name></member>
+    <member refid="statistics_8h_1ad455ab3a176450d2bc625454b3df606ead02eb40d2e47d182506e2a3b29b5e2c2" kind="enumvalue"><name>resend</name></member>
+    <member refid="packet_8h_1a6c494edb404f21c7723fc5447dc9ca82" kind="variable"><name>maximum_node_name_size</name></member>
+    <member refid="packet_8h_1ad0eb9664cc128859e3db58aafa38b23b" kind="variable"><name>maximum_connection_id_size</name></member>
+    <member refid="connection_8h_1a436e50a39e7b409c2d47f44d870b981a" kind="function"><name>addressToDotted</name></member>
+    <member refid="packet_8h_1a0cc66f07ffbf8d401eb6a9ea56bc6701" kind="function"><name>packetTypeOf</name></member>
+    <member refid="packet_8h_1a055de46a17e5c8e3526d0dc69b882fd1" kind="function"><name>compress</name></member>
+    <member refid="packet_8h_1a8bdf9a52de60ae53346be1803239245f" kind="function"><name>uncompress</name></member>
+    <member refid="utilities_8h_1a337369aaea00bb1c08db0ce8acc79440" kind="function"><name>topicString</name></member>
+  </compound>
+  <compound refid="connection_8h" kind="file"><name>connection.h</name>
+  </compound>
+  <compound refid="defragmenter_8h" kind="file"><name>defragmenter.h</name>
+  </compound>
+  <compound refid="packet_8h" kind="file"><name>packet.h</name>
+  </compound>
+  <compound refid="remote__node_8h" kind="file"><name>remote_node.h</name>
+  </compound>
+  <compound refid="statistics_8h" kind="file"><name>statistics.h</name>
+  </compound>
+  <compound refid="types_8h" kind="file"><name>types.h</name>
+  </compound>
+  <compound refid="udp__bridge_8h" kind="file"><name>udp_bridge.h</name>
+  </compound>
+  <compound refid="utilities_8h" kind="file"><name>utilities.h</name>
+  </compound>
+  <compound refid="wrapped__packet_8h" kind="file"><name>wrapped_packet.h</name>
+  </compound>
+  <compound refid="group__packet" kind="group"><name>packet</name>
+    <member refid="group__packet_1gab63281d979cbaf5d4220f8a6ef65aa8a" kind="enum"><name>PacketType</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aaf6068daa29dbb05a7ead1e3b5a48bbee" kind="enumvalue"><name>Data</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aa4d602abc0c0f2f7c1a5156d964517e4e" kind="enumvalue"><name>Compressed</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aaddc8ece84b3ddf895e62b85679d70e91" kind="enumvalue"><name>SubscribeRequest</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aa37d01b98065725fe3a1d30acf3a0064a" kind="enumvalue"><name>Fragment</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aac0b94d08da28fa4f82d8fd6fed87a57a" kind="enumvalue"><name>BridgeInfo</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aad2977935c88b2edd6748b608be28a161" kind="enumvalue"><name>TopicStatistics</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aaaa12765e5a91ab880f5759d38df463a3" kind="enumvalue"><name>WrappedPacket</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aabdbd0bbd72d149068331e8145635706f" kind="enumvalue"><name>ResendRequest</name></member>
+    <member refid="group__packet_1ggab63281d979cbaf5d4220f8a6ef65aa8aac2cc7082a89c1ad6631a2f66af5f00c0" kind="enumvalue"><name>Connection</name></member>
+  </compound>
+  <compound refid="dir_d44c64559bbebec7f509842c48db8b23" kind="dir"><name>include</name>
+  </compound>
+  <compound refid="dir_b362580c557bf9cfcb38485444eea338" kind="dir"><name>include/udp_bridge</name>
+  </compound>
+</doxygenindex>

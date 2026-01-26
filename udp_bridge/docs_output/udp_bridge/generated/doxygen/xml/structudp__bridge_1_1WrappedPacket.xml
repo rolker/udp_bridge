@@ -1,0 +1,160 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1WrappedPacket" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::WrappedPacket</compoundname>
+    <basecompoundref refid="structudp__bridge_1_1SequencedPacketHeader" prot="public" virt="non-virtual">udp_bridge::SequencedPacketHeader</basecompoundref>
+    <includes refid="wrapped__packet_8h" local="no">wrapped_packet.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1WrappedPacket_1a0b4646ca90c868866b723ad7271aa668" prot="public" static="no" mutable="no">
+        <type>std::vector&lt; uint8_t &gt;</type>
+        <definition>std::vector&lt;uint8_t&gt; udp_bridge::WrappedPacket::packet</definition>
+        <argsstring></argsstring>
+        <name>packet</name>
+        <qualifiedname>udp_bridge::WrappedPacket::packet</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/wrapped_packet.h" line="16" column="15" bodyfile="include/udp_bridge/wrapped_packet.h" bodystart="16" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1WrappedPacket_1a1154686633273c7bea858d7b2a526e6e" prot="public" static="no" mutable="no">
+        <type>rclcpp::Time</type>
+        <definition>rclcpp::Time udp_bridge::WrappedPacket::timestamp</definition>
+        <argsstring></argsstring>
+        <name>timestamp</name>
+        <qualifiedname>udp_bridge::WrappedPacket::timestamp</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/wrapped_packet.h" line="17" column="16" bodyfile="include/udp_bridge/wrapped_packet.h" bodystart="17" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structudp__bridge_1_1WrappedPacket_1a6e69d505ac25929615d896be56cbc486" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::WrappedPacket::WrappedPacket</definition>
+        <argsstring>()=default</argsstring>
+        <name>WrappedPacket</name>
+        <qualifiedname>udp_bridge::WrappedPacket::WrappedPacket</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/wrapped_packet.h" line="13" column="3"/>
+      </memberdef>
+      <memberdef kind="function" id="structudp__bridge_1_1WrappedPacket_1a63bcc62008e77354fddbee0a3888900c" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::WrappedPacket::WrappedPacket</definition>
+        <argsstring>(uint64_t packet_number, const std::vector&lt; uint8_t &gt; &amp;data, rclcpp::Time now)</argsstring>
+        <name>WrappedPacket</name>
+        <qualifiedname>udp_bridge::WrappedPacket::WrappedPacket</qualifiedname>
+        <param>
+          <type>uint64_t</type>
+          <declname>packet_number</declname>
+        </param>
+        <param>
+          <type>const std::vector&lt; uint8_t &gt; &amp;</type>
+          <declname>data</declname>
+        </param>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>now</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/wrapped_packet.h" line="14" column="3"/>
+      </memberdef>
+      <memberdef kind="function" id="structudp__bridge_1_1WrappedPacket_1aef500d54937337b94ce5202c4f18d405" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::WrappedPacket::WrappedPacket</definition>
+        <argsstring>(const WrappedPacket &amp;other, std::string source_node, std::string connection_id)</argsstring>
+        <name>WrappedPacket</name>
+        <qualifiedname>udp_bridge::WrappedPacket::WrappedPacket</qualifiedname>
+        <param>
+          <type>const <ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <param>
+          <type>std::string</type>
+          <declname>source_node</declname>
+        </param>
+        <param>
+          <type>std::string</type>
+          <declname>connection_id</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/wrapped_packet.h" line="15" column="3"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Generates a <ref refid="structudp__bridge_1_1SequencedPacket" kindref="compound">SequencedPacket</ref> that can be sent using UDP. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="3">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+      <node id="2">
+        <label>udp_bridge::SequencedPacketHeader</label>
+        <link refid="structudp__bridge_1_1SequencedPacketHeader"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>udp_bridge::WrappedPacket</label>
+        <link refid="structudp__bridge_1_1WrappedPacket"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="3">
+        <label>udp_bridge::PacketHeader</label>
+        <link refid="structudp__bridge_1_1PacketHeader"/>
+      </node>
+      <node id="2">
+        <label>udp_bridge::SequencedPacketHeader</label>
+        <link refid="structudp__bridge_1_1SequencedPacketHeader"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>udp_bridge::WrappedPacket</label>
+        <link refid="structudp__bridge_1_1WrappedPacket"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="include/udp_bridge/wrapped_packet.h" line="11" column="1" bodyfile="include/udp_bridge/wrapped_packet.h" bodystart="12" bodyend="18"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1afbf66432d17628fa7ec1214263f458f1" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>connection_id</name></member>
+      <member refid="structudp__bridge_1_1WrappedPacket_1a0b4646ca90c868866b723ad7271aa668" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>packet</name></member>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1a54aa87908947999200f7d2cd72c5d75e" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>packet_number</name></member>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1ac2a334985bfe113727ef32279e0b9833" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>packet_size</name></member>
+      <member refid="structudp__bridge_1_1SequencedPacketHeader_1a3e9c41931c0dd7e21e2b06acd2b0dc8a" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>source_node</name></member>
+      <member refid="structudp__bridge_1_1WrappedPacket_1a1154686633273c7bea858d7b2a526e6e" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>timestamp</name></member>
+      <member refid="structudp__bridge_1_1PacketHeader_1a4d619634050ead79f601aa084d95a26a" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>type</name></member>
+      <member refid="structudp__bridge_1_1WrappedPacket_1a6e69d505ac25929615d896be56cbc486" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>WrappedPacket</name></member>
+      <member refid="structudp__bridge_1_1WrappedPacket_1a63bcc62008e77354fddbee0a3888900c" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>WrappedPacket</name></member>
+      <member refid="structudp__bridge_1_1WrappedPacket_1aef500d54937337b94ce5202c4f18d405" prot="public" virt="non-virtual"><scope>udp_bridge::WrappedPacket</scope><name>WrappedPacket</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

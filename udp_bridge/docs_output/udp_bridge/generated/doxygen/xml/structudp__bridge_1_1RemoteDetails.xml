@@ -1,0 +1,62 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1RemoteDetails" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::RemoteDetails</compoundname>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1RemoteDetails_1a3642f84778a53e4349d968cad62d49b1" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::RemoteDetails::destination_topic</definition>
+        <argsstring></argsstring>
+        <name>destination_topic</name>
+        <qualifiedname>udp_bridge::RemoteDetails::destination_topic</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="22" column="15" bodyfile="include/udp_bridge/types.h" bodystart="22" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1RemoteDetails_1a9288fda984ad1116e599dcc0a0479d56" prot="public" static="no" mutable="no">
+        <type>std::map&lt; std::string, <ref refid="structudp__bridge_1_1ConnectionRateInfo" kindref="compound">ConnectionRateInfo</ref> &gt;</type>
+        <definition>std::map&lt;std::string, ConnectionRateInfo&gt; udp_bridge::RemoteDetails::connection_rates</definition>
+        <argsstring></argsstring>
+        <name>connection_rates</name>
+        <qualifiedname>udp_bridge::RemoteDetails::connection_rates</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="23" column="12" bodyfile="include/udp_bridge/types.h" bodystart="23" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structudp__bridge_1_1RemoteDetails_1a6b514c59f3509481c048c5351aeb089f" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::RemoteDetails::RemoteDetails</definition>
+        <argsstring>()=default</argsstring>
+        <name>RemoteDetails</name>
+        <qualifiedname>udp_bridge::RemoteDetails::RemoteDetails</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="18" column="3"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/types.h" line="16" column="1" bodyfile="include/udp_bridge/types.h" bodystart="17" bodyend="25"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1RemoteDetails_1a9288fda984ad1116e599dcc0a0479d56" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteDetails</scope><name>connection_rates</name></member>
+      <member refid="structudp__bridge_1_1RemoteDetails_1a3642f84778a53e4349d968cad62d49b1" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteDetails</scope><name>destination_topic</name></member>
+      <member refid="structudp__bridge_1_1RemoteDetails_1a6b514c59f3509481c048c5351aeb089f" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteDetails</scope><name>RemoteDetails</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

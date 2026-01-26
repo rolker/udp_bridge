@@ -1,0 +1,97 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="wrapped__packet_8h" kind="file" language="C++">
+    <compoundname>wrapped_packet.h</compoundname>
+    <includes refid="packet_8h" local="yes">udp_bridge/packet.h</includes>
+    <includes local="yes">rclcpp/time.hpp</includes>
+    <includedby refid="connection_8h" local="yes">include/udp_bridge/connection.h</includedby>
+    <includedby refid="udp__bridge_8h" local="yes">include/udp_bridge/udp_bridge.h</includedby>
+    <incdepgraph>
+      <node id="2">
+        <label>udp_bridge/packet.h</label>
+        <link refid="packet_8h"/>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>include/udp_bridge/wrapped_packet.h</label>
+        <link refid="wrapped__packet_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+      </node>
+      <node id="4">
+        <label>cstdint</label>
+      </node>
+      <node id="3">
+        <label>memory</label>
+      </node>
+      <node id="7">
+        <label>rclcpp/time.hpp</label>
+      </node>
+      <node id="6">
+        <label>string</label>
+      </node>
+      <node id="5">
+        <label>vector</label>
+      </node>
+    </incdepgraph>
+    <invincdepgraph>
+      <node id="2">
+        <label>include/udp_bridge/connection.h</label>
+        <link refid="connection_8h_source"/>
+        <childnode refid="3" relation="include">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>include/udp_bridge/udp_bridge.h</label>
+        <link refid="udp__bridge_8h_source"/>
+      </node>
+      <node id="1">
+        <label>include/udp_bridge/wrapped_packet.h</label>
+        <link refid="wrapped__packet_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+      </node>
+    </invincdepgraph>
+    <innerclass refid="structudp__bridge_1_1WrappedPacket" prot="public">udp_bridge::WrappedPacket</innerclass>
+    <innernamespace refid="namespaceudp__bridge">udp_bridge</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="preprocessor">#ifndef<sp/>UDP_BRIDGE_WRAPPED_PACKET_H</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="2"><highlight class="normal"></highlight><highlight class="preprocessor">#define<sp/>UDP_BRIDGE_WRAPPED_PACKET_H</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="3"><highlight class="normal"></highlight></codeline>
+<codeline lineno="4"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="packet_8h" kindref="compound">udp_bridge/packet.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="5"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;rclcpp/time.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="6"><highlight class="normal"></highlight></codeline>
+<codeline lineno="7"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal">udp_bridge</highlight></codeline>
+<codeline lineno="8"><highlight class="normal">{</highlight></codeline>
+<codeline lineno="9"><highlight class="normal"></highlight></codeline>
+<codeline lineno="11" refid="structudp__bridge_1_1WrappedPacket" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref>:<sp/><ref refid="structudp__bridge_1_1SequencedPacketHeader" kindref="compound">SequencedPacketHeader</ref></highlight></codeline>
+<codeline lineno="12"><highlight class="normal">{</highlight></codeline>
+<codeline lineno="13"><highlight class="normal"><sp/><sp/><ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="14"><highlight class="normal"><sp/><sp/><ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref>(uint64_t<sp/>packet_number,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::vector&lt;uint8_t&gt;&amp;<sp/>data,<sp/>rclcpp::Time<sp/>now);</highlight></codeline>
+<codeline lineno="15"><highlight class="normal"><sp/><sp/><ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1WrappedPacket" kindref="compound">WrappedPacket</ref>&amp;<sp/>other,<sp/>std::string<sp/>source_node,<sp/>std::string<sp/>connection_id);</highlight></codeline>
+<codeline lineno="16"><highlight class="normal"><sp/><sp/>std::vector&lt;uint8_t&gt;<sp/>packet;</highlight></codeline>
+<codeline lineno="17"><highlight class="normal"><sp/><sp/>rclcpp::Time<sp/>timestamp;<sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight></codeline>
+<codeline lineno="18"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal">}<sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>udp_bridge</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight><highlight class="preprocessor">#endif</highlight></codeline>
+    </programlisting>
+    <location file="include/udp_bridge/wrapped_packet.h"/>
+  </compounddef>
+</doxygen>

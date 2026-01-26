@@ -1,0 +1,94 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1SubscriberDetails" kind="struct" language="C++" prot="public">
+    <compoundname>udp_bridge::SubscriberDetails</compoundname>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1SubscriberDetails_1a6c3e99a9dd081a52baa5864aeb852610" prot="public" static="no" mutable="no">
+        <type>rclcpp::GenericSubscription::SharedPtr</type>
+        <definition>rclcpp::GenericSubscription::SharedPtr udp_bridge::SubscriberDetails::subscription</definition>
+        <argsstring></argsstring>
+        <name>subscription</name>
+        <qualifiedname>udp_bridge::SubscriberDetails::subscription</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="29" column="42" bodyfile="include/udp_bridge/types.h" bodystart="29" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SubscriberDetails_1ac369010692bbf69d3aaa3567f9678532" prot="public" static="no" mutable="no">
+        <type>uint32_t</type>
+        <definition>uint32_t udp_bridge::SubscriberDetails::queue_size</definition>
+        <argsstring></argsstring>
+        <name>queue_size</name>
+        <qualifiedname>udp_bridge::SubscriberDetails::queue_size</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="30" column="12" bodyfile="include/udp_bridge/types.h" bodystart="30" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SubscriberDetails_1a2b0f44e71ae14867fd1688cacaab6354" prot="public" static="no" mutable="no">
+        <type>std::map&lt; std::string, <ref refid="structudp__bridge_1_1RemoteDetails" kindref="compound">RemoteDetails</ref> &gt;</type>
+        <definition>std::map&lt;std::string, RemoteDetails&gt; udp_bridge::SubscriberDetails::remote_details</definition>
+        <argsstring></argsstring>
+        <name>remote_details</name>
+        <qualifiedname>udp_bridge::SubscriberDetails::remote_details</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="31" column="12" bodyfile="include/udp_bridge/types.h" bodystart="31" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1SubscriberDetails_1a1ba64bbb2b895c4f541de489e3e0ff6c" prot="public" static="no" mutable="no">
+        <type><ref refid="classudp__bridge_1_1MessageStatistics" kindref="compound">MessageStatistics</ref></type>
+        <definition>MessageStatistics udp_bridge::SubscriberDetails::statistics</definition>
+        <argsstring></argsstring>
+        <name>statistics</name>
+        <qualifiedname>udp_bridge::SubscriberDetails::statistics</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/types.h" line="32" column="21" bodyfile="include/udp_bridge/types.h" bodystart="32" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <collaborationgraph>
+      <node id="3">
+        <label>udp_bridge::Statistics&lt; MessageSizeData &gt;</label>
+        <link refid="classudp__bridge_1_1Statistics"/>
+      </node>
+      <node id="2">
+        <label>udp_bridge::MessageStatistics</label>
+        <link refid="classudp__bridge_1_1MessageStatistics"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>udp_bridge::SubscriberDetails</label>
+        <link refid="structudp__bridge_1_1SubscriberDetails"/>
+        <childnode refid="2" relation="usage">
+          <edgelabel>statistics</edgelabel>
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="include/udp_bridge/types.h" line="27" column="1" bodyfile="include/udp_bridge/types.h" bodystart="28" bodyend="33"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1SubscriberDetails_1ac369010692bbf69d3aaa3567f9678532" prot="public" virt="non-virtual"><scope>udp_bridge::SubscriberDetails</scope><name>queue_size</name></member>
+      <member refid="structudp__bridge_1_1SubscriberDetails_1a2b0f44e71ae14867fd1688cacaab6354" prot="public" virt="non-virtual"><scope>udp_bridge::SubscriberDetails</scope><name>remote_details</name></member>
+      <member refid="structudp__bridge_1_1SubscriberDetails_1a1ba64bbb2b895c4f541de489e3e0ff6c" prot="public" virt="non-virtual"><scope>udp_bridge::SubscriberDetails</scope><name>statistics</name></member>
+      <member refid="structudp__bridge_1_1SubscriberDetails_1a6c3e99a9dd081a52baa5864aeb852610" prot="public" virt="non-virtual"><scope>udp_bridge::SubscriberDetails</scope><name>subscription</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

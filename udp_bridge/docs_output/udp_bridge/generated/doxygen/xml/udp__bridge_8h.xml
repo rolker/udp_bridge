@@ -1,0 +1,387 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="udp__bridge_8h" kind="file" language="C++">
+    <compoundname>udp_bridge.h</compoundname>
+    <includes local="yes">rclcpp_lifecycle/lifecycle_node.hpp</includes>
+    <includes local="yes">rclcpp/generic_publisher.hpp</includes>
+    <includes local="yes">rclcpp/generic_subscription.hpp</includes>
+    <includes local="yes">udp_bridge_interfaces/srv/subscribe.hpp</includes>
+    <includes local="yes">udp_bridge_interfaces/srv/add_remote.hpp</includes>
+    <includes local="yes">udp_bridge_interfaces/srv/list_remotes.hpp</includes>
+    <includes local="no">netinet/in.h</includes>
+    <includes refid="connection_8h" local="yes">connection.h</includes>
+    <includes refid="packet_8h" local="yes">packet.h</includes>
+    <includes refid="defragmenter_8h" local="yes">defragmenter.h</includes>
+    <includes refid="types_8h" local="yes">udp_bridge/types.h</includes>
+    <includes refid="wrapped__packet_8h" local="yes">udp_bridge/wrapped_packet.h</includes>
+    <includes local="yes">udp_bridge_interfaces/msg/connection_internal.hpp</includes>
+    <includes local="yes">udp_bridge_interfaces/msg/bridge_info.hpp</includes>
+    <includes local="yes">udp_bridge_interfaces/msg/topic_statistics_array.hpp</includes>
+    <incdepgraph>
+      <node id="9">
+        <label>connection.h</label>
+        <link refid="connection_8h_source"/>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="14" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="23" relation="include">
+        </childnode>
+        <childnode refid="22" relation="include">
+        </childnode>
+      </node>
+      <node id="24">
+        <label>defragmenter.h</label>
+        <link refid="defragmenter_8h_source"/>
+        <childnode refid="25" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+      </node>
+      <node id="16">
+        <label>udp_bridge/packet.h</label>
+        <link refid="packet_8h"/>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+      </node>
+      <node id="18">
+        <label>udp_bridge/statistics.h</label>
+        <link refid="statistics_8h_source"/>
+        <childnode refid="19" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+        <childnode refid="21" relation="include">
+        </childnode>
+        <childnode refid="22" relation="include">
+        </childnode>
+      </node>
+      <node id="17">
+        <label>udp_bridge/types.h</label>
+        <link refid="types_8h_source"/>
+        <childnode refid="18" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>include/udp_bridge/udp_bridge.h</label>
+        <link refid="udp__bridge_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="9" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="24" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="23" relation="include">
+        </childnode>
+        <childnode refid="26" relation="include">
+        </childnode>
+        <childnode refid="27" relation="include">
+        </childnode>
+        <childnode refid="28" relation="include">
+        </childnode>
+      </node>
+      <node id="23">
+        <label>udp_bridge/wrapped_packet.h</label>
+        <link refid="wrapped__packet_8h_source"/>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+      </node>
+      <node id="11">
+        <label>cstdint</label>
+      </node>
+      <node id="19">
+        <label>deque</label>
+      </node>
+      <node id="14">
+        <label>list</label>
+      </node>
+      <node id="15">
+        <label>map</label>
+      </node>
+      <node id="13">
+        <label>memory</label>
+      </node>
+      <node id="8">
+        <label>netinet/in.h</label>
+      </node>
+      <node id="3">
+        <label>rclcpp/generic_publisher.hpp</label>
+      </node>
+      <node id="4">
+        <label>rclcpp/generic_subscription.hpp</label>
+      </node>
+      <node id="25">
+        <label>rclcpp/rclcpp.hpp</label>
+      </node>
+      <node id="20">
+        <label>rclcpp/time.hpp</label>
+      </node>
+      <node id="2">
+        <label>rclcpp_lifecycle/lifecycle_node.hpp</label>
+      </node>
+      <node id="12">
+        <label>string</label>
+      </node>
+      <node id="27">
+        <label>udp_bridge_interfaces/msg/bridge_info.hpp</label>
+      </node>
+      <node id="26">
+        <label>udp_bridge_interfaces/msg/connection_internal.hpp</label>
+      </node>
+      <node id="22">
+        <label>udp_bridge_interfaces/msg/data_rates.hpp</label>
+      </node>
+      <node id="21">
+        <label>udp_bridge_interfaces/msg/topic_statistics.hpp</label>
+      </node>
+      <node id="28">
+        <label>udp_bridge_interfaces/msg/topic_statistics_array.hpp</label>
+      </node>
+      <node id="6">
+        <label>udp_bridge_interfaces/srv/add_remote.hpp</label>
+      </node>
+      <node id="7">
+        <label>udp_bridge_interfaces/srv/list_remotes.hpp</label>
+      </node>
+      <node id="5">
+        <label>udp_bridge_interfaces/srv/subscribe.hpp</label>
+      </node>
+      <node id="10">
+        <label>vector</label>
+      </node>
+    </incdepgraph>
+    <innerclass refid="classudp__bridge_1_1UDPBridge" prot="public">udp_bridge::UDPBridge</innerclass>
+    <innerclass refid="structudp__bridge_1_1UDPBridge_1_1PendingConnection" prot="private">udp_bridge::UDPBridge::PendingConnection</innerclass>
+    <innernamespace refid="namespaceudp__bridge">udp_bridge</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="preprocessor">#ifndef<sp/>UDP_BRIDGE_UDP_BRIDGE_H</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="2"><highlight class="normal"></highlight><highlight class="preprocessor">#define<sp/>UDP_BRIDGE_UDP_BRIDGE_H</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="3"><highlight class="normal"></highlight></codeline>
+<codeline lineno="4"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;rclcpp_lifecycle/lifecycle_node.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="5"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;rclcpp/generic_publisher.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="6"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;rclcpp/generic_subscription.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="7"><highlight class="normal"></highlight></codeline>
+<codeline lineno="8"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge_interfaces/srv/subscribe.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="9"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge_interfaces/srv/add_remote.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="10"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge_interfaces/srv/list_remotes.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="11"><highlight class="normal"></highlight></codeline>
+<codeline lineno="12"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;netinet/in.h&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="13"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;connection.h&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="14"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="packet_8h" kindref="compound">packet.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="15"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;defragmenter.h&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="16"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge/types.h&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="17"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge/wrapped_packet.h&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="18"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge_interfaces/msg/connection_internal.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge_interfaces/msg/bridge_info.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;udp_bridge_interfaces/msg/topic_statistics_array.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight><highlight class="comment">//#include<sp/>&quot;std_msgs/msg/int32.hpp&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal">udp_bridge</highlight></codeline>
+<codeline lineno="24"><highlight class="normal">{</highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">RemoteNode;</highlight></codeline>
+<codeline lineno="27"><highlight class="normal"></highlight></codeline>
+<codeline lineno="40" refid="classudp__bridge_1_1UDPBridge" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="classudp__bridge_1_1UDPBridge" kindref="compound">UDPBridge</ref>:<sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal"><sp/>rclcpp_lifecycle::LifecycleNode</highlight></codeline>
+<codeline lineno="41"><highlight class="normal">{</highlight></codeline>
+<codeline lineno="42"><highlight class="normal"></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="43"><highlight class="normal"><sp/><sp/></highlight><highlight class="keyword">using<sp/></highlight><highlight class="normal">CallbackReturn<sp/>=<sp/>rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;</highlight></codeline>
+<codeline lineno="44"><highlight class="normal"></highlight></codeline>
+<codeline lineno="45"><highlight class="normal"><sp/><sp/><ref refid="classudp__bridge_1_1UDPBridge" kindref="compound">UDPBridge</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string<sp/>&amp;node_name<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;udp_bridge&quot;</highlight><highlight class="normal">);</highlight></codeline>
+<codeline lineno="46"><highlight class="normal"></highlight></codeline>
+<codeline lineno="47"><highlight class="normal"></highlight></codeline>
+<codeline lineno="48"><highlight class="normal"><sp/><sp/>CallbackReturn<sp/>on_configure(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>rclcpp_lifecycle::State<sp/>&amp;);</highlight></codeline>
+<codeline lineno="49"><highlight class="normal"></highlight></codeline>
+<codeline lineno="50"><highlight class="normal"><sp/><sp/>CallbackReturn<sp/>on_activate(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>rclcpp_lifecycle::State<sp/>&amp;<sp/>state);</highlight></codeline>
+<codeline lineno="51"><highlight class="normal"></highlight></codeline>
+<codeline lineno="52"><highlight class="normal"><sp/><sp/>CallbackReturn<sp/>on_deactivate(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>rclcpp_lifecycle::State<sp/>&amp;<sp/>state);</highlight></codeline>
+<codeline lineno="53"><highlight class="normal"></highlight></codeline>
+<codeline lineno="54"><highlight class="normal"><sp/><sp/>CallbackReturn<sp/>on_cleanup(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>rclcpp_lifecycle::State<sp/>&amp;);</highlight></codeline>
+<codeline lineno="55"><highlight class="normal"></highlight></codeline>
+<codeline lineno="56"><highlight class="normal"><sp/><sp/>CallbackReturn<sp/>on_shutdown(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>rclcpp_lifecycle::State<sp/>&amp;<sp/>state);</highlight></codeline>
+<codeline lineno="57"><highlight class="normal"></highlight></codeline>
+<codeline lineno="61" refid="classudp__bridge_1_1UDPBridge_1a92143825f907e59f1568a03c789ead01" refkind="member"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classudp__bridge_1_1UDPBridge_1a92143825f907e59f1568a03c789ead01" kindref="member">spin_once</ref>();</highlight></codeline>
+<codeline lineno="62"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight></codeline>
+<codeline lineno="63"><highlight class="normal"></highlight><highlight class="keyword">private</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="66"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>setName(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string<sp/>&amp;name);</highlight></codeline>
+<codeline lineno="67"><highlight class="normal"></highlight></codeline>
+<codeline lineno="70"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>callback(std::string<sp/>topic_name,<sp/>std::string<sp/>topic_type,<sp/>std::shared_ptr&lt;rclcpp::SerializedMessage&gt;<sp/>message);</highlight></codeline>
+<codeline lineno="71"><highlight class="normal"></highlight></codeline>
+<codeline lineno="72"><highlight class="normal"></highlight></codeline>
+<codeline lineno="80"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decode(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="81"><highlight class="normal"></highlight></codeline>
+<codeline lineno="82"><highlight class="normal"><sp/><sp/></highlight><highlight class="keyword">template</highlight><highlight class="normal"><sp/>&lt;</highlight><highlight class="keyword">typename</highlight><highlight class="normal"><sp/>MessageType&gt;</highlight></codeline>
+<codeline lineno="83"><highlight class="normal"><sp/><sp/>MessageType<sp/>deserialize(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message)</highlight></codeline>
+<codeline lineno="84"><highlight class="normal"><sp/><sp/>{</highlight></codeline>
+<codeline lineno="85"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1Packet" kindref="compound">Packet</ref>*<sp/>packet<sp/>=<sp/></highlight><highlight class="keyword">reinterpret_cast&lt;</highlight><highlight class="keyword">const<sp/></highlight><highlight class="normal"><ref refid="structudp__bridge_1_1Packet" kindref="compound">Packet</ref>*</highlight><highlight class="keyword">&gt;</highlight><highlight class="normal">(message.data());</highlight></codeline>
+<codeline lineno="86"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">auto</highlight><highlight class="normal"><sp/>data_size<sp/>=<sp/>message.size()-</highlight><highlight class="keyword">sizeof</highlight><highlight class="normal">(<ref refid="structudp__bridge_1_1PacketHeader" kindref="compound">PacketHeader</ref>);</highlight></codeline>
+<codeline lineno="87"><highlight class="normal"><sp/><sp/><sp/><sp/>rclcpp::SerializedMessage<sp/>serialized_message;</highlight></codeline>
+<codeline lineno="88"><highlight class="normal"><sp/><sp/><sp/><sp/>serialized_message.reserve(data_size);</highlight></codeline>
+<codeline lineno="89"><highlight class="normal"><sp/><sp/><sp/><sp/>memcpy(serialized_message.get_rcl_serialized_message().buffer,<sp/>packet-&gt;data,<sp/>data_size);</highlight></codeline>
+<codeline lineno="90"><highlight class="normal"><sp/><sp/><sp/><sp/>serialized_message.get_rcl_serialized_message().buffer_length<sp/>=<sp/>data_size;</highlight></codeline>
+<codeline lineno="91"><highlight class="normal"><sp/><sp/><sp/><sp/>MessageType<sp/>deserialized_message;</highlight></codeline>
+<codeline lineno="92"><highlight class="normal"><sp/><sp/><sp/><sp/>rclcpp::Serialization&lt;MessageType&gt;<sp/>serializer;</highlight></codeline>
+<codeline lineno="93"><highlight class="normal"><sp/><sp/><sp/><sp/>serializer.deserialize_message(&amp;serialized_message,<sp/>&amp;deserialized_message);</highlight></codeline>
+<codeline lineno="94"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>deserialized_message;</highlight></codeline>
+<codeline lineno="95"><highlight class="normal"><sp/><sp/>}</highlight></codeline>
+<codeline lineno="96"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight></codeline>
+<codeline lineno="100"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decodeData(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="101"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight></codeline>
+<codeline lineno="103"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decodeBridgeInfo(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="104"><highlight class="normal"></highlight></codeline>
+<codeline lineno="106"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decodeTopicStatistics(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="107"><highlight class="normal"></highlight></codeline>
+<codeline lineno="109"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decodeSubscribeRequest(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="110"><highlight class="normal"></highlight></codeline>
+<codeline lineno="112"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decodeResendRequest(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="113"><highlight class="normal"></highlight></codeline>
+<codeline lineno="115"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>unwrap(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="116"><highlight class="normal"></highlight></codeline>
+<codeline lineno="118"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>decodeConnection(std::vector&lt;uint8_t&gt;<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref>&amp;<sp/>source_info);</highlight></codeline>
+<codeline lineno="119"><highlight class="normal"></highlight></codeline>
+<codeline lineno="121"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>remoteSubscribe(</highlight></codeline>
+<codeline lineno="122"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::Subscribe::Request&gt;<sp/>request,</highlight></codeline>
+<codeline lineno="123"><highlight class="normal"><sp/><sp/><sp/><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::Subscribe::Response&gt;<sp/>response);</highlight></codeline>
+<codeline lineno="124"><highlight class="normal"></highlight></codeline>
+<codeline lineno="126"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>remoteAdvertise(</highlight></codeline>
+<codeline lineno="127"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::Subscribe::Request&gt;<sp/>request,</highlight></codeline>
+<codeline lineno="128"><highlight class="normal"><sp/><sp/><sp/><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::Subscribe::Response&gt;<sp/>response);</highlight></codeline>
+<codeline lineno="129"><highlight class="normal"></highlight></codeline>
+<codeline lineno="131"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>addRemote(</highlight></codeline>
+<codeline lineno="132"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::AddRemote::Request&gt;<sp/>request,</highlight></codeline>
+<codeline lineno="133"><highlight class="normal"><sp/><sp/><sp/><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::AddRemote::Response&gt;<sp/>response);</highlight></codeline>
+<codeline lineno="134"><highlight class="normal"></highlight></codeline>
+<codeline lineno="136"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>listRemotes(</highlight></codeline>
+<codeline lineno="137"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::ListRemotes::Request&gt;<sp/>request,</highlight></codeline>
+<codeline lineno="138"><highlight class="normal"><sp/><sp/><sp/><sp/>std::shared_ptr&lt;udp_bridge_interfaces::srv::ListRemotes::Response&gt;<sp/>response);</highlight></codeline>
+<codeline lineno="139"><highlight class="normal"></highlight></codeline>
+<codeline lineno="140"><highlight class="normal"></highlight></codeline>
+<codeline lineno="142"><highlight class="normal"><sp/><sp/></highlight><highlight class="keyword">using<sp/></highlight><highlight class="normal">RemoteConnectionsList<sp/>=<sp/>std::map&lt;std::string,<sp/>std::vector&lt;std::string&gt;<sp/>&gt;;</highlight></codeline>
+<codeline lineno="143"><highlight class="normal"></highlight></codeline>
+<codeline lineno="145"><highlight class="normal"><sp/><sp/></highlight><highlight class="keyword">template</highlight><highlight class="normal"><sp/>&lt;</highlight><highlight class="keyword">typename</highlight><highlight class="normal"><sp/>MessageType&gt;</highlight></codeline>
+<codeline lineno="146"><highlight class="normal"><sp/><sp/><ref refid="structudp__bridge_1_1MessageSizeData" kindref="compound">MessageSizeData</ref><sp/>send(MessageType<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>RemoteConnectionsList&amp;<sp/>remotes,<sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/>is_overhead);</highlight></codeline>
+<codeline lineno="147"><highlight class="normal"></highlight></codeline>
+<codeline lineno="149"><highlight class="normal"><sp/><sp/></highlight><highlight class="keyword">template</highlight><highlight class="normal"><sp/>&lt;</highlight><highlight class="keyword">typename</highlight><highlight class="normal"><sp/>MessageType&gt;</highlight></codeline>
+<codeline lineno="150"><highlight class="normal"><sp/><sp/><ref refid="structudp__bridge_1_1MessageSizeData" kindref="compound">MessageSizeData</ref><sp/>send(MessageType<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;message,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/>remote,<sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/>is_overhead);</highlight></codeline>
+<codeline lineno="151"><highlight class="normal"></highlight></codeline>
+<codeline lineno="153"><highlight class="normal"><sp/><sp/>RemoteConnectionsList<sp/>allRemotes()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="154"><highlight class="normal"></highlight></codeline>
+<codeline lineno="156"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>statsReportCallback();</highlight></codeline>
+<codeline lineno="157"><highlight class="normal"></highlight></codeline>
+<codeline lineno="159"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>bridgeInfoCallback();</highlight></codeline>
+<codeline lineno="160"><highlight class="normal"></highlight></codeline>
+<codeline lineno="161"><highlight class="normal"></highlight></codeline>
+<codeline lineno="163"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>sendBridgeInfo();</highlight></codeline>
+<codeline lineno="164"><highlight class="normal"></highlight></codeline>
+<codeline lineno="166"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>sendConnectionRequests();</highlight></codeline>
+<codeline lineno="167"><highlight class="normal"></highlight></codeline>
+<codeline lineno="170"><highlight class="normal"><sp/><sp/>std::vector&lt;<sp/>std::vector&lt;uint8_t&gt;<sp/>&gt;<sp/>fragment(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::vector&lt;uint8_t&gt;&amp;<sp/>data);</highlight></codeline>
+<codeline lineno="171"><highlight class="normal"></highlight></codeline>
+<codeline lineno="173"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>cleanupSentPackets();</highlight></codeline>
+<codeline lineno="174"><highlight class="normal"></highlight></codeline>
+<codeline lineno="176"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>resendMissingPackets();</highlight></codeline>
+<codeline lineno="177"><highlight class="normal"></highlight></codeline>
+<codeline lineno="185"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>addSubscriberConnection(std::string<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;source_topic,<sp/>std::string<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>&amp;destination_topic,<sp/>uint32_t<sp/>queue_size,<sp/></highlight><highlight class="keywordtype">float</highlight><highlight class="normal"><sp/>period,<sp/>std::string<sp/>remote_node,<sp/>std::string<sp/>connection_id);</highlight></codeline>
+<codeline lineno="186"><highlight class="normal"></highlight></codeline>
+<codeline lineno="188"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/>updateLocalSubscriptions();<sp/><sp/></highlight></codeline>
+<codeline lineno="189"><highlight class="normal"></highlight></codeline>
+<codeline lineno="190"><highlight class="normal"></highlight></codeline>
+<codeline lineno="191"><highlight class="normal"></highlight></codeline>
+<codeline lineno="192"><highlight class="normal"><sp/><sp/></highlight><highlight class="comment">//void<sp/>maximumPacketSizeCallback(const<sp/>std_msgs::Int32::ConstPtr&amp;<sp/>msg);</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="193"><highlight class="normal"></highlight></codeline>
+<codeline lineno="195"><highlight class="normal"><sp/><sp/>std::string<sp/>name_;</highlight></codeline>
+<codeline lineno="196"><highlight class="normal"></highlight></codeline>
+<codeline lineno="197"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">int</highlight><highlight class="normal"><sp/>m_socket;</highlight></codeline>
+<codeline lineno="198"><highlight class="normal"><sp/><sp/>uint16_t<sp/>m_port<sp/>{4200};</highlight></codeline>
+<codeline lineno="199"><highlight class="normal"><sp/><sp/></highlight><highlight class="keywordtype">int</highlight><highlight class="normal"><sp/>m_max_packet_size<sp/>{65500};</highlight></codeline>
+<codeline lineno="200"><highlight class="normal"><sp/><sp/>uint32_t<sp/>next_fragmented_packet_id_<sp/>{0};</highlight></codeline>
+<codeline lineno="201"><highlight class="normal"></highlight></codeline>
+<codeline lineno="202"><highlight class="normal"><sp/><sp/>rclcpp::Service&lt;udp_bridge_interfaces::srv::Subscribe&gt;::SharedPtr<sp/>subscribe_service_;</highlight></codeline>
+<codeline lineno="203"><highlight class="normal"><sp/><sp/>rclcpp::Service&lt;udp_bridge_interfaces::srv::Subscribe&gt;::SharedPtr<sp/>advertise_service_;</highlight></codeline>
+<codeline lineno="204"><highlight class="normal"><sp/><sp/>rclcpp::Service&lt;udp_bridge_interfaces::srv::AddRemote&gt;::SharedPtr<sp/>add_remote_service_;</highlight></codeline>
+<codeline lineno="205"><highlight class="normal"><sp/><sp/>rclcpp::Service&lt;udp_bridge_interfaces::srv::ListRemotes&gt;::SharedPtr<sp/>list_remotes_service_;</highlight></codeline>
+<codeline lineno="206"><highlight class="normal"></highlight></codeline>
+<codeline lineno="207"><highlight class="normal"><sp/><sp/>rclcpp_lifecycle::LifecyclePublisher&lt;udp_bridge_interfaces::msg::TopicStatisticsArray&gt;::SharedPtr<sp/>topic_statistics_publisher_;</highlight></codeline>
+<codeline lineno="208"><highlight class="normal"><sp/><sp/>rclcpp_lifecycle::LifecyclePublisher&lt;udp_bridge_interfaces::msg::BridgeInfo&gt;::SharedPtr<sp/>bridge_info_publisher_;</highlight></codeline>
+<codeline lineno="209"><highlight class="normal"></highlight></codeline>
+<codeline lineno="210"><highlight class="normal"><sp/><sp/></highlight><highlight class="comment">//rclcpp::Subscriber<sp/><sp/>maximum_packet_size_subscriber_;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="211"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight></codeline>
+<codeline lineno="212"><highlight class="normal"><sp/><sp/>std::map&lt;std::string,<sp/>SubscriberDetails&gt;<sp/>m_subscribers;</highlight></codeline>
+<codeline lineno="213"><highlight class="normal"></highlight></codeline>
+<codeline lineno="214"><highlight class="normal"><sp/><sp/>std::map&lt;std::string,<sp/>rclcpp::GenericPublisher::SharedPtr&gt;<sp/>m_publishers;</highlight></codeline>
+<codeline lineno="215"><highlight class="normal"></highlight></codeline>
+<codeline lineno="216"><highlight class="normal"><sp/><sp/>rclcpp::TimerBase::SharedPtr<sp/>stats_report_timer_;</highlight></codeline>
+<codeline lineno="217"><highlight class="normal"><sp/><sp/>rclcpp::TimerBase::SharedPtr<sp/>bridge_info_timer_;</highlight></codeline>
+<codeline lineno="218"><highlight class="normal"><sp/><sp/>rclcpp::TimerBase::SharedPtr<sp/>spin_timer_;</highlight></codeline>
+<codeline lineno="219"><highlight class="normal"><sp/><sp/>rclcpp::TimerBase::SharedPtr<sp/>subscription_update_timer_;</highlight></codeline>
+<codeline lineno="220"><highlight class="normal"></highlight></codeline>
+<codeline lineno="221"><highlight class="normal"><sp/><sp/>uint64_t<sp/>next_packet_number_<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="222"><highlight class="normal"><sp/><sp/>rclcpp::Time<sp/>last_packet_number_assign_time_;</highlight></codeline>
+<codeline lineno="223"><highlight class="normal"></highlight></codeline>
+<codeline lineno="224"><highlight class="normal"><sp/><sp/>uint64_t<sp/>next_connection_internal_message_sequence_number_<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="225"><highlight class="normal"></highlight></codeline>
+<codeline lineno="226"><highlight class="normal"><sp/><sp/></highlight><highlight class="keyword">struct<sp/></highlight><highlight class="normal">PendingConnection</highlight></codeline>
+<codeline lineno="227"><highlight class="normal"><sp/><sp/>{</highlight></codeline>
+<codeline lineno="228"><highlight class="normal"><sp/><sp/><sp/><sp/>udp_bridge_interfaces::msg::ConnectionInternal<sp/>message;</highlight></codeline>
+<codeline lineno="229"><highlight class="normal"><sp/><sp/><sp/><sp/>std::shared_ptr&lt;Connection&gt;<sp/>connection;</highlight></codeline>
+<codeline lineno="230"><highlight class="normal"><sp/><sp/>};</highlight></codeline>
+<codeline lineno="231"><highlight class="normal"></highlight></codeline>
+<codeline lineno="233"><highlight class="normal"><sp/><sp/>std::map&lt;uint64_t,<sp/>PendingConnection&gt;<sp/>pending_connections_;</highlight></codeline>
+<codeline lineno="234"><highlight class="normal"></highlight></codeline>
+<codeline lineno="235"><highlight class="normal"><sp/><sp/>std::map&lt;std::string,<sp/>std::shared_ptr&lt;RemoteNode&gt;<sp/>&gt;<sp/>remote_nodes_;</highlight></codeline>
+<codeline lineno="236"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="237"><highlight class="normal"></highlight></codeline>
+<codeline lineno="238"><highlight class="normal">}<sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>udp_bridge</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="239"><highlight class="normal"></highlight></codeline>
+<codeline lineno="240"><highlight class="normal"></highlight><highlight class="preprocessor">#endif</highlight></codeline>
+    </programlisting>
+    <location file="include/udp_bridge/udp_bridge.h"/>
+  </compounddef>
+</doxygen>

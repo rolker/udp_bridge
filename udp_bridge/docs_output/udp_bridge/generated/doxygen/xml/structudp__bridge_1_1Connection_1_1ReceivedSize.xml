@@ -1,0 +1,50 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structudp__bridge_1_1Connection_1_1ReceivedSize" kind="struct" language="C++" prot="private">
+    <compoundname>udp_bridge::Connection::ReceivedSize</compoundname>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structudp__bridge_1_1Connection_1_1ReceivedSize_1a66713f6898156718bfb79c32c9f4fe48" prot="public" static="no" mutable="no">
+        <type>uint16_t</type>
+        <definition>uint16_t udp_bridge::Connection::ReceivedSize::size</definition>
+        <argsstring></argsstring>
+        <name>size</name>
+        <qualifiedname>udp_bridge::Connection::ReceivedSize::size</qualifiedname>
+        <initializer>= 0</initializer>
+        <briefdescription>
+<para>size in bytes of a received packet </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="117" column="14" bodyfile="include/udp_bridge/connection.h" bodystart="117" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structudp__bridge_1_1Connection_1_1ReceivedSize_1a54655b1219119c0fb839d9a9bf763c2a" prot="public" static="no" mutable="no">
+        <type>bool</type>
+        <definition>bool udp_bridge::Connection::ReceivedSize::duplicate</definition>
+        <argsstring></argsstring>
+        <name>duplicate</name>
+        <qualifiedname>udp_bridge::Connection::ReceivedSize::duplicate</qualifiedname>
+        <initializer>= false</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para>indicates if this is a duplicate packet that has already been seen on a different channel. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/connection.h" line="121" column="10" bodyfile="include/udp_bridge/connection.h" bodystart="121" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Info about a received packet useful for data rate statistics. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/connection.h" line="114" column="3" bodyfile="include/udp_bridge/connection.h" bodystart="115" bodyend="122"/>
+    <listofallmembers>
+      <member refid="structudp__bridge_1_1Connection_1_1ReceivedSize_1a54655b1219119c0fb839d9a9bf763c2a" prot="public" virt="non-virtual"><scope>udp_bridge::Connection::ReceivedSize</scope><name>duplicate</name></member>
+      <member refid="structudp__bridge_1_1Connection_1_1ReceivedSize_1a66713f6898156718bfb79c32c9f4fe48" prot="public" virt="non-virtual"><scope>udp_bridge::Connection::ReceivedSize</scope><name>size</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

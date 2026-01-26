@@ -1,0 +1,485 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classudp__bridge_1_1RemoteNode" kind="class" language="C++" prot="public">
+    <compoundname>udp_bridge::RemoteNode</compoundname>
+    <sectiondef kind="public-type">
+      <memberdef kind="typedef" id="classudp__bridge_1_1RemoteNode_1a94efb8f0fece6c04cd52b5b10feac882" prot="public" static="no">
+        <type>rclcpp::node_interfaces::NodeInterfaces&lt; rclcpp::node_interfaces::NodeTopicsInterface, rclcpp::node_interfaces::NodeLoggingInterface, rclcpp::node_interfaces::NodeClockInterface, rclcpp::node_interfaces::NodeBaseInterface &gt;</type>
+        <definition>using udp_bridge::RemoteNode::NodeInterfaces =  rclcpp::node_interfaces::NodeInterfaces&lt; rclcpp::node_interfaces::NodeTopicsInterface, rclcpp::node_interfaces::NodeLoggingInterface, rclcpp::node_interfaces::NodeClockInterface, rclcpp::node_interfaces::NodeBaseInterface &gt;</definition>
+        <argsstring></argsstring>
+        <name>NodeInterfaces</name>
+        <qualifiedname>udp_bridge::RemoteNode::NodeInterfaces</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="27" column="3" bodyfile="include/udp_bridge/remote_node.h" bodystart="32" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1af9b34a435fc0a11172a9c2c435b8b67d" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::RemoteNode::name_</definition>
+        <argsstring></argsstring>
+        <name>name_</name>
+        <qualifiedname>udp_bridge::RemoteNode::name_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="64" column="15" bodyfile="include/udp_bridge/remote_node.h" bodystart="64" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1af55d04ebe69674950dc62f7d26bd1e5d" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::RemoteNode::local_name_</definition>
+        <argsstring></argsstring>
+        <name>local_name_</name>
+        <qualifiedname>udp_bridge::RemoteNode::local_name_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="67" column="15" bodyfile="include/udp_bridge/remote_node.h" bodystart="67" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1afb901863f6f22e1f0d48731e5faa26c5" prot="private" static="no" mutable="no">
+        <type>std::map&lt; std::string, std::shared_ptr&lt; <ref refid="classudp__bridge_1_1Connection" kindref="compound">Connection</ref> &gt; &gt;</type>
+        <definition>std::map&lt;std::string, std::shared_ptr&lt;Connection&gt; &gt; udp_bridge::RemoteNode::connections_</definition>
+        <argsstring></argsstring>
+        <name>connections_</name>
+        <qualifiedname>udp_bridge::RemoteNode::connections_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="69" column="12" bodyfile="include/udp_bridge/remote_node.h" bodystart="69" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1a472f90ab232610a557bb8427abd4ea21" prot="private" static="no" mutable="no">
+        <type><ref refid="classudp__bridge_1_1Defragmenter" kindref="compound">Defragmenter</ref></type>
+        <definition>Defragmenter udp_bridge::RemoteNode::defragmenter_</definition>
+        <argsstring></argsstring>
+        <name>defragmenter_</name>
+        <qualifiedname>udp_bridge::RemoteNode::defragmenter_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="71" column="16" bodyfile="include/udp_bridge/remote_node.h" bodystart="71" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1a1e5f07a5aa3b645ac4abb29ae3dc5542" prot="private" static="no" mutable="no">
+        <type>std::map&lt; uint64_t, rclcpp::Time &gt;</type>
+        <definition>std::map&lt;uint64_t, rclcpp::Time&gt; udp_bridge::RemoteNode::received_packet_times_</definition>
+        <argsstring></argsstring>
+        <name>received_packet_times_</name>
+        <qualifiedname>udp_bridge::RemoteNode::received_packet_times_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="73" column="12" bodyfile="include/udp_bridge/remote_node.h" bodystart="73" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1af137fcea8a3ba19b8a4ba70c1a59382b" prot="private" static="no" mutable="no">
+        <type>std::map&lt; uint64_t, rclcpp::Time &gt;</type>
+        <definition>std::map&lt;uint64_t, rclcpp::Time&gt; udp_bridge::RemoteNode::resend_request_times_</definition>
+        <argsstring></argsstring>
+        <name>resend_request_times_</name>
+        <qualifiedname>udp_bridge::RemoteNode::resend_request_times_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="74" column="12" bodyfile="include/udp_bridge/remote_node.h" bodystart="74" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1abefe039613916c5e3eebd958a780a77a" prot="private" static="no" mutable="no">
+        <type>rclcpp::Publisher&lt; udp_bridge_interfaces::msg::BridgeInfo &gt;::SharedPtr</type>
+        <definition>rclcpp::Publisher&lt;udp_bridge_interfaces::msg::BridgeInfo&gt;::SharedPtr udp_bridge::RemoteNode::bridge_info_publisher_</definition>
+        <argsstring></argsstring>
+        <name>bridge_info_publisher_</name>
+        <qualifiedname>udp_bridge::RemoteNode::bridge_info_publisher_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="76" column="33" bodyfile="include/udp_bridge/remote_node.h" bodystart="76" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1a22503c7dc9c8c643297d34e3d1c45890" prot="private" static="no" mutable="no">
+        <type>rclcpp::Publisher&lt; udp_bridge_interfaces::msg::TopicStatisticsArray &gt;::SharedPtr</type>
+        <definition>rclcpp::Publisher&lt;udp_bridge_interfaces::msg::TopicStatisticsArray&gt;::SharedPtr udp_bridge::RemoteNode::topic_statistics_publisher_</definition>
+        <argsstring></argsstring>
+        <name>topic_statistics_publisher_</name>
+        <qualifiedname>udp_bridge::RemoteNode::topic_statistics_publisher_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="77" column="33" bodyfile="include/udp_bridge/remote_node.h" bodystart="77" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1a92ab0d4578668659a79d93c99f52dd94" prot="private" static="no" mutable="no">
+        <type>uint64_t</type>
+        <definition>uint64_t udp_bridge::RemoteNode::next_packet_number_</definition>
+        <argsstring></argsstring>
+        <name>next_packet_number_</name>
+        <qualifiedname>udp_bridge::RemoteNode::next_packet_number_</qualifiedname>
+        <initializer>= 0</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="79" column="12" bodyfile="include/udp_bridge/remote_node.h" bodystart="79" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1af90af0976e9d61ea26a8283521c9a061" prot="private" static="no" mutable="no">
+        <type>rclcpp::Time</type>
+        <definition>rclcpp::Time udp_bridge::RemoteNode::last_packet_time_</definition>
+        <argsstring></argsstring>
+        <name>last_packet_time_</name>
+        <qualifiedname>udp_bridge::RemoteNode::last_packet_time_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="80" column="16" bodyfile="include/udp_bridge/remote_node.h" bodystart="80" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1a12318c31d32e50ca1244cdde7738bd90" prot="private" static="no" mutable="no">
+        <type>rclcpp::Logger</type>
+        <definition>rclcpp::Logger udp_bridge::RemoteNode::logger_</definition>
+        <argsstring></argsstring>
+        <name>logger_</name>
+        <qualifiedname>udp_bridge::RemoteNode::logger_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="82" column="18" bodyfile="include/udp_bridge/remote_node.h" bodystart="82" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classudp__bridge_1_1RemoteNode_1afe6dc6f1e571af0c70e5c65c8b8756bb" prot="private" static="no" mutable="no">
+        <type>rclcpp::Clock::SharedPtr</type>
+        <definition>rclcpp::Clock::SharedPtr udp_bridge::RemoteNode::clock_</definition>
+        <argsstring></argsstring>
+        <name>clock_</name>
+        <qualifiedname>udp_bridge::RemoteNode::clock_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="83" column="28" bodyfile="include/udp_bridge/remote_node.h" bodystart="83" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a2544f0b18d777bc6abb7f93016e8e1eb" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>udp_bridge::RemoteNode::RemoteNode</definition>
+        <argsstring>(std::string remote_name, std::string local_name, NodeInterfaces node)</argsstring>
+        <name>RemoteNode</name>
+        <qualifiedname>udp_bridge::RemoteNode::RemoteNode</qualifiedname>
+        <param>
+          <type>std::string</type>
+          <declname>remote_name</declname>
+        </param>
+        <param>
+          <type>std::string</type>
+          <declname>local_name</declname>
+        </param>
+        <param>
+          <type>NodeInterfaces</type>
+          <declname>node</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="35" column="3"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a89e79e731a197180180b08fc98009bf3" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::RemoteNode::update</definition>
+        <argsstring>(const udp_bridge_interfaces::msg::Remote &amp;remote_message)</argsstring>
+        <name>update</name>
+        <qualifiedname>udp_bridge::RemoteNode::update</qualifiedname>
+        <param>
+          <type>const udp_bridge_interfaces::msg::Remote &amp;</type>
+          <declname>remote_message</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="37" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1af168a8510557e84395a10ce88ef8ff4f" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::RemoteNode::update</definition>
+        <argsstring>(const udp_bridge_interfaces::msg::BridgeInfo &amp;bridge_info, const SourceInfo &amp;source_info)</argsstring>
+        <name>update</name>
+        <qualifiedname>udp_bridge::RemoteNode::update</qualifiedname>
+        <param>
+          <type>const udp_bridge_interfaces::msg::BridgeInfo &amp;</type>
+          <declname>bridge_info</declname>
+        </param>
+        <param>
+          <type>const <ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref> &amp;</type>
+          <declname>source_info</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="38" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1ab2cb01f7726fd0afd7874727078cafe0" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>const std::string &amp;</type>
+        <definition>const std::string &amp; udp_bridge::RemoteNode::name</definition>
+        <argsstring>() const</argsstring>
+        <name>name</name>
+        <qualifiedname>udp_bridge::RemoteNode::name</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="40" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1ac8dfaf6b066b8157a67b49eb8c369ba4" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string udp_bridge::RemoteNode::topicName</definition>
+        <argsstring>() const</argsstring>
+        <name>topicName</name>
+        <qualifiedname>udp_bridge::RemoteNode::topicName</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="43" column="15"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a946ec45430904ff194f8bb752140db0a" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::shared_ptr&lt; <ref refid="classudp__bridge_1_1Connection" kindref="compound">Connection</ref> &gt;</type>
+        <definition>std::shared_ptr&lt; Connection &gt; udp_bridge::RemoteNode::connection</definition>
+        <argsstring>(std::string connection_id)</argsstring>
+        <name>connection</name>
+        <qualifiedname>udp_bridge::RemoteNode::connection</qualifiedname>
+        <param>
+          <type>std::string</type>
+          <declname>connection_id</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="45" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a17e8c8dcd8d6f4e4f86f1c708c50a993" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::vector&lt; std::shared_ptr&lt; <ref refid="classudp__bridge_1_1Connection" kindref="compound">Connection</ref> &gt; &gt;</type>
+        <definition>std::vector&lt; std::shared_ptr&lt; Connection &gt; &gt; udp_bridge::RemoteNode::connections</definition>
+        <argsstring>()</argsstring>
+        <name>connections</name>
+        <qualifiedname>udp_bridge::RemoteNode::connections</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="46" column="15"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1aea4b8131a175c32203b961f365711829" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::shared_ptr&lt; <ref refid="classudp__bridge_1_1Connection" kindref="compound">Connection</ref> &gt;</type>
+        <definition>std::shared_ptr&lt; Connection &gt; udp_bridge::RemoteNode::newConnection</definition>
+        <argsstring>(std::string connection_id, std::string host, uint16_t port)</argsstring>
+        <name>newConnection</name>
+        <qualifiedname>udp_bridge::RemoteNode::newConnection</qualifiedname>
+        <param>
+          <type>std::string</type>
+          <declname>connection_id</declname>
+        </param>
+        <param>
+          <type>std::string</type>
+          <declname>host</declname>
+        </param>
+        <param>
+          <type>uint16_t</type>
+          <declname>port</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="48" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a93e5ff60477898bc5bdd6cb1e3b4b931" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::vector&lt; uint8_t &gt;</type>
+        <definition>std::vector&lt; uint8_t &gt; udp_bridge::RemoteNode::unwrap</definition>
+        <argsstring>(std::vector&lt; uint8_t &gt; const &amp;message, const SourceInfo &amp;source_info)</argsstring>
+        <name>unwrap</name>
+        <qualifiedname>udp_bridge::RemoteNode::unwrap</qualifiedname>
+        <param>
+          <type>std::vector&lt; uint8_t &gt; const &amp;</type>
+          <declname>message</declname>
+        </param>
+        <param>
+          <type>const <ref refid="structudp__bridge_1_1SourceInfo" kindref="compound">SourceInfo</ref> &amp;</type>
+          <declname>source_info</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="50" column="15"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1af9087764dd38aff6ce3368fb33694e16" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::vector&lt; std::vector&lt; uint8_t &gt; &gt;</type>
+        <definition>std::vector&lt; std::vector&lt; uint8_t &gt; &gt; udp_bridge::RemoteNode::getPacketsToResend</definition>
+        <argsstring>(const udp_bridge_interfaces::msg::ResendRequest &amp;resend_request)</argsstring>
+        <name>getPacketsToResend</name>
+        <qualifiedname>udp_bridge::RemoteNode::getPacketsToResend</qualifiedname>
+        <param>
+          <type>const udp_bridge_interfaces::msg::ResendRequest &amp;</type>
+          <declname>resend_request</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="52" column="15"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a69e742771747de05a49690d35092f61c" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classudp__bridge_1_1Defragmenter" kindref="compound">Defragmenter</ref> &amp;</type>
+        <definition>Defragmenter &amp; udp_bridge::RemoteNode::defragmenter</definition>
+        <argsstring>()</argsstring>
+        <name>defragmenter</name>
+        <qualifiedname>udp_bridge::RemoteNode::defragmenter</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="54" column="16"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a5444819dc26522ccece9891ac133a974" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::RemoteNode::publishTopicStatistics</definition>
+        <argsstring>(const udp_bridge_interfaces::msg::TopicStatisticsArray &amp;statistics)</argsstring>
+        <name>publishTopicStatistics</name>
+        <qualifiedname>udp_bridge::RemoteNode::publishTopicStatistics</qualifiedname>
+        <param>
+          <type>const udp_bridge_interfaces::msg::TopicStatisticsArray &amp;</type>
+          <declname>statistics</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="56" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a1fd10796da42037fae02f723a1264f5a" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>void</type>
+        <definition>void udp_bridge::RemoteNode::clearReceivedPacketTimesBefore</definition>
+        <argsstring>(rclcpp::Time time)</argsstring>
+        <name>clearReceivedPacketTimesBefore</name>
+        <qualifiedname>udp_bridge::RemoteNode::clearReceivedPacketTimesBefore</qualifiedname>
+        <param>
+          <type>rclcpp::Time</type>
+          <declname>time</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="58" column="8"/>
+      </memberdef>
+      <memberdef kind="function" id="classudp__bridge_1_1RemoteNode_1a380b19986214955e640ae099129eec69" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>udp_bridge_interfaces::msg::ResendRequest</type>
+        <definition>udp_bridge_interfaces::msg::ResendRequest udp_bridge::RemoteNode::getMissingPackets</definition>
+        <argsstring>()</argsstring>
+        <name>getMissingPackets</name>
+        <qualifiedname>udp_bridge::RemoteNode::getMissingPackets</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="include/udp_bridge/remote_node.h" line="60" column="45"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/remote_node.h" line="23" column="1" bodyfile="include/udp_bridge/remote_node.h" bodystart="24" bodyend="84"/>
+    <listofallmembers>
+      <member refid="classudp__bridge_1_1RemoteNode_1abefe039613916c5e3eebd958a780a77a" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>bridge_info_publisher_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a1fd10796da42037fae02f723a1264f5a" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>clearReceivedPacketTimesBefore</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1afe6dc6f1e571af0c70e5c65c8b8756bb" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>clock_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a946ec45430904ff194f8bb752140db0a" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>connection</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a17e8c8dcd8d6f4e4f86f1c708c50a993" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>connections</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1afb901863f6f22e1f0d48731e5faa26c5" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>connections_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a69e742771747de05a49690d35092f61c" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>defragmenter</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a472f90ab232610a557bb8427abd4ea21" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>defragmenter_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a380b19986214955e640ae099129eec69" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>getMissingPackets</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1af9087764dd38aff6ce3368fb33694e16" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>getPacketsToResend</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1af90af0976e9d61ea26a8283521c9a061" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>last_packet_time_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1af55d04ebe69674950dc62f7d26bd1e5d" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>local_name_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a12318c31d32e50ca1244cdde7738bd90" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>logger_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1ab2cb01f7726fd0afd7874727078cafe0" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>name</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1af9b34a435fc0a11172a9c2c435b8b67d" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>name_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1aea4b8131a175c32203b961f365711829" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>newConnection</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a92ab0d4578668659a79d93c99f52dd94" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>next_packet_number_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a94efb8f0fece6c04cd52b5b10feac882" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>NodeInterfaces</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a5444819dc26522ccece9891ac133a974" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>publishTopicStatistics</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a1e5f07a5aa3b645ac4abb29ae3dc5542" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>received_packet_times_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a2544f0b18d777bc6abb7f93016e8e1eb" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>RemoteNode</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1af137fcea8a3ba19b8a4ba70c1a59382b" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>resend_request_times_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a22503c7dc9c8c643297d34e3d1c45890" prot="private" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>topic_statistics_publisher_</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1ac8dfaf6b066b8157a67b49eb8c369ba4" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>topicName</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a93e5ff60477898bc5bdd6cb1e3b4b931" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>unwrap</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1a89e79e731a197180180b08fc98009bf3" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>update</name></member>
+      <member refid="classudp__bridge_1_1RemoteNode_1af168a8510557e84395a10ce88ef8ff4f" prot="public" virt="non-virtual"><scope>udp_bridge::RemoteNode</scope><name>update</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

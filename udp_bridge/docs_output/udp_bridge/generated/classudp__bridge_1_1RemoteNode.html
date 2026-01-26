@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Class RemoteNode &mdash; udp_bridge 0.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=86f27845" />
+      <link rel="stylesheet" type="text/css" href="../_static/collapsible-lists/css/tree_view.css?v=a885cde7" />
+
+  
+  
+        <script src="../_static/jquery.js?v=8dae8fb0"></script>
+        <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+        <script src="../_static/documentation_options.js?v=7026087e"></script>
+        <script src="../_static/doctools.js?v=888ff710"></script>
+        <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+        <script src="../_static/collapsible-lists/js/CollapsibleLists.compressed.js?v=73120307"></script>
+        <script src="../_static/collapsible-lists/js/apply-collapsible-lists.js?v=660e4f45"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            udp_bridge
+          </a>
+              <div class="version">
+                0.0
+              </div>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../conceptual_overview.html">Conceptual Overview</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">udp_bridge</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Class RemoteNode</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/generated/classudp__bridge_1_1RemoteNode.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="class-remotenode">
+<span id="exhale-class-classudp-bridge-1-1remotenode"></span><h1>Class RemoteNode<a class="headerlink" href="#class-remotenode" title="Link to this heading"></a></h1>
+<ul class="simple">
+<li><p>Defined in <a class="reference internal" href="file_include_udp_bridge_remote_node.h.html#file-include-udp-bridge-remote-node-h"><span class="std std-ref">File remote_node.h</span></a></p></li>
+</ul>
+<section id="class-documentation">
+<h2>Class Documentation<a class="headerlink" href="#class-documentation" title="Link to this heading"></a></h2>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNodeE">
+<span id="_CPPv3N10udp_bridge10RemoteNodeE"></span><span id="_CPPv2N10udp_bridge10RemoteNodeE"></span><span id="udp_bridge::RemoteNode"></span><span class="target" id="classudp__bridge_1_1RemoteNode"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">RemoteNode</span></span></span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNodeE" title="Link to this definition"></a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-types">Public Types</p>
+<dl class="cpp type">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode14NodeInterfacesE">
+<span id="_CPPv3N10udp_bridge10RemoteNode14NodeInterfacesE"></span><span id="_CPPv2N10udp_bridge10RemoteNode14NodeInterfacesE"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a94efb8f0fece6c04cd52b5b10feac882"></span><span class="k"><span class="pre">using</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">NodeInterfaces</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">rclcpp</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">node_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">NodeInterfaces</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">rclcpp</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">node_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">NodeTopicsInterface</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">rclcpp</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">node_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">NodeLoggingInterface</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">rclcpp</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">node_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">NodeClockInterface</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">rclcpp</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">node_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">NodeBaseInterface</span></span><span class="p"><span class="pre">&gt;</span></span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode14NodeInterfacesE" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode10RemoteNodeENSt6stringENSt6stringE14NodeInterfaces">
+<span id="_CPPv3N10udp_bridge10RemoteNode10RemoteNodeENSt6stringENSt6stringE14NodeInterfaces"></span><span id="_CPPv2N10udp_bridge10RemoteNode10RemoteNodeENSt6stringENSt6stringE14NodeInterfaces"></span><span id="udp_bridge::RemoteNode::RemoteNode__ss.ss.NodeInterfaces"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a2544f0b18d777bc6abb7f93016e8e1eb"></span><span class="sig-name descname"><span class="n"><span class="pre">RemoteNode</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">remote_name</span></span>, <span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">local_name</span></span>, <a class="reference internal" href="#_CPPv4N10udp_bridge10RemoteNode14NodeInterfacesE" title="udp_bridge::RemoteNode::NodeInterfaces"><span class="n"><span class="pre">NodeInterfaces</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">node</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode10RemoteNodeENSt6stringENSt6stringE14NodeInterfaces" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg6RemoteE">
+<span id="_CPPv3N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg6RemoteE"></span><span id="_CPPv2N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg6RemoteE"></span><span id="udp_bridge::RemoteNode::update__udp_bridge_interfaces::msg::RemoteCR"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a89e79e731a197180180b08fc98009bf3"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">update</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">udp_bridge_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">msg</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Remote</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">remote_message</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg6RemoteE" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg10BridgeInfoERK10SourceInfo">
+<span id="_CPPv3N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg10BridgeInfoERK10SourceInfo"></span><span id="_CPPv2N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg10BridgeInfoERK10SourceInfo"></span><span id="udp_bridge::RemoteNode::update__udp_bridge_interfaces::msg::BridgeInfoCR.SourceInfoCR"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1af168a8510557e84395a10ce88ef8ff4f"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">update</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">udp_bridge_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">msg</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">BridgeInfo</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">bridge_info</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><a class="reference internal" href="structudp__bridge_1_1SourceInfo.html#_CPPv4N10udp_bridge10SourceInfoE" title="udp_bridge::SourceInfo"><span class="n"><span class="pre">SourceInfo</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">source_info</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode6updateERKN21udp_bridge_interfaces3msg10BridgeInfoERK10SourceInfo" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK10udp_bridge10RemoteNode4nameEv">
+<span id="_CPPv3NK10udp_bridge10RemoteNode4nameEv"></span><span id="_CPPv2NK10udp_bridge10RemoteNode4nameEv"></span><span id="udp_bridge::RemoteNode::nameC"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1ab2cb01f7726fd0afd7874727078cafe0"></span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">name</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK10udp_bridge10RemoteNode4nameEv" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK10udp_bridge10RemoteNode9topicNameEv">
+<span id="_CPPv3NK10udp_bridge10RemoteNode9topicNameEv"></span><span id="_CPPv2NK10udp_bridge10RemoteNode9topicNameEv"></span><span id="udp_bridge::RemoteNode::topicNameC"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1ac8dfaf6b066b8157a67b49eb8c369ba4"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">topicName</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK10udp_bridge10RemoteNode9topicNameEv" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode10connectionENSt6stringE">
+<span id="_CPPv3N10udp_bridge10RemoteNode10connectionENSt6stringE"></span><span id="_CPPv2N10udp_bridge10RemoteNode10connectionENSt6stringE"></span><span id="udp_bridge::RemoteNode::connection__ss"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a946ec45430904ff194f8bb752140db0a"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="classudp__bridge_1_1Connection.html#_CPPv4N10udp_bridge10ConnectionE" title="udp_bridge::Connection"><span class="n"><span class="pre">Connection</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">connection</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">connection_id</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode10connectionENSt6stringE" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode11connectionsEv">
+<span id="_CPPv3N10udp_bridge10RemoteNode11connectionsEv"></span><span id="_CPPv2N10udp_bridge10RemoteNode11connectionsEv"></span><span id="udp_bridge::RemoteNode::connections"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a17e8c8dcd8d6f4e4f86f1c708c50a993"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="classudp__bridge_1_1Connection.html#_CPPv4N10udp_bridge10ConnectionE" title="udp_bridge::Connection"><span class="n"><span class="pre">Connection</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">connections</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode11connectionsEv" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode13newConnectionENSt6stringENSt6stringE8uint16_t">
+<span id="_CPPv3N10udp_bridge10RemoteNode13newConnectionENSt6stringENSt6stringE8uint16_t"></span><span id="_CPPv2N10udp_bridge10RemoteNode13newConnectionENSt6stringENSt6stringE8uint16_t"></span><span id="udp_bridge::RemoteNode::newConnection__ss.ss.uint16_t"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1aea4b8131a175c32203b961f365711829"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="classudp__bridge_1_1Connection.html#_CPPv4N10udp_bridge10ConnectionE" title="udp_bridge::Connection"><span class="n"><span class="pre">Connection</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">newConnection</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">connection_id</span></span>, <span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">host</span></span>, <span class="n"><span class="pre">uint16_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">port</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode13newConnectionENSt6stringENSt6stringE8uint16_t" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode6unwrapERKNSt6vectorI7uint8_tEERK10SourceInfo">
+<span id="_CPPv3N10udp_bridge10RemoteNode6unwrapERKNSt6vectorI7uint8_tEERK10SourceInfo"></span><span id="_CPPv2N10udp_bridge10RemoteNode6unwrapERKNSt6vectorI7uint8_tEERK10SourceInfo"></span><span id="udp_bridge::RemoteNode::unwrap__std::vector:uint8_t:CR.SourceInfoCR"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a93e5ff60477898bc5bdd6cb1e3b4b931"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">uint8_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">unwrap</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">uint8_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">message</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><a class="reference internal" href="structudp__bridge_1_1SourceInfo.html#_CPPv4N10udp_bridge10SourceInfoE" title="udp_bridge::SourceInfo"><span class="n"><span class="pre">SourceInfo</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">source_info</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode6unwrapERKNSt6vectorI7uint8_tEERK10SourceInfo" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode18getPacketsToResendERKN21udp_bridge_interfaces3msg13ResendRequestE">
+<span id="_CPPv3N10udp_bridge10RemoteNode18getPacketsToResendERKN21udp_bridge_interfaces3msg13ResendRequestE"></span><span id="_CPPv2N10udp_bridge10RemoteNode18getPacketsToResendERKN21udp_bridge_interfaces3msg13ResendRequestE"></span><span id="udp_bridge::RemoteNode::getPacketsToResend__udp_bridge_interfaces::msg::ResendRequestCR"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1af9087764dd38aff6ce3368fb33694e16"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">uint8_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getPacketsToResend</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">udp_bridge_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">msg</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ResendRequest</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">resend_request</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode18getPacketsToResendERKN21udp_bridge_interfaces3msg13ResendRequestE" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode12defragmenterEv">
+<span id="_CPPv3N10udp_bridge10RemoteNode12defragmenterEv"></span><span id="_CPPv2N10udp_bridge10RemoteNode12defragmenterEv"></span><span id="udp_bridge::RemoteNode::defragmenter"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a69e742771747de05a49690d35092f61c"></span><a class="reference internal" href="classudp__bridge_1_1Defragmenter.html#_CPPv4N10udp_bridge12DefragmenterE" title="udp_bridge::Defragmenter"><span class="n"><span class="pre">Defragmenter</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">defragmenter</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode12defragmenterEv" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode22publishTopicStatisticsERKN21udp_bridge_interfaces3msg20TopicStatisticsArrayE">
+<span id="_CPPv3N10udp_bridge10RemoteNode22publishTopicStatisticsERKN21udp_bridge_interfaces3msg20TopicStatisticsArrayE"></span><span id="_CPPv2N10udp_bridge10RemoteNode22publishTopicStatisticsERKN21udp_bridge_interfaces3msg20TopicStatisticsArrayE"></span><span id="udp_bridge::RemoteNode::publishTopicStatistics__udp_bridge_interfaces::msg::TopicStatisticsArrayCR"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a5444819dc26522ccece9891ac133a974"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">publishTopicStatistics</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">udp_bridge_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">msg</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">TopicStatisticsArray</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">statistics</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode22publishTopicStatisticsERKN21udp_bridge_interfaces3msg20TopicStatisticsArrayE" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode30clearReceivedPacketTimesBeforeEN6rclcpp4TimeE">
+<span id="_CPPv3N10udp_bridge10RemoteNode30clearReceivedPacketTimesBeforeEN6rclcpp4TimeE"></span><span id="_CPPv2N10udp_bridge10RemoteNode30clearReceivedPacketTimesBeforeEN6rclcpp4TimeE"></span><span id="udp_bridge::RemoteNode::clearReceivedPacketTimesBefore__rclcpp::Time"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a1fd10796da42037fae02f723a1264f5a"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">clearReceivedPacketTimesBefore</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">rclcpp</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Time</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">time</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode30clearReceivedPacketTimesBeforeEN6rclcpp4TimeE" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N10udp_bridge10RemoteNode17getMissingPacketsEv">
+<span id="_CPPv3N10udp_bridge10RemoteNode17getMissingPacketsEv"></span><span id="_CPPv2N10udp_bridge10RemoteNode17getMissingPacketsEv"></span><span id="udp_bridge::RemoteNode::getMissingPackets"></span><span class="target" id="classudp__bridge_1_1RemoteNode_1a380b19986214955e640ae099129eec69"></span><span class="n"><span class="pre">udp_bridge_interfaces</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">msg</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ResendRequest</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getMissingPackets</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N10udp_bridge10RemoteNode17getMissingPacketsEv" title="Link to this definition"></a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2018-2026, Roland Arsenault.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

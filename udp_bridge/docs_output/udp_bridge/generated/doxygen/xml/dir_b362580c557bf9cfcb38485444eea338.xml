@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="dir_b362580c557bf9cfcb38485444eea338" kind="dir">
+    <compoundname>include/udp_bridge</compoundname>
+    <innerfile refid="connection_8h">connection.h</innerfile>
+    <innerfile refid="defragmenter_8h">defragmenter.h</innerfile>
+    <innerfile refid="packet_8h">packet.h</innerfile>
+    <innerfile refid="remote__node_8h">remote_node.h</innerfile>
+    <innerfile refid="statistics_8h">statistics.h</innerfile>
+    <innerfile refid="types_8h">types.h</innerfile>
+    <innerfile refid="udp__bridge_8h">udp_bridge.h</innerfile>
+    <innerfile refid="utilities_8h">utilities.h</innerfile>
+    <innerfile refid="wrapped__packet_8h">wrapped_packet.h</innerfile>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="include/udp_bridge/"/>
+  </compounddef>
+</doxygen>
