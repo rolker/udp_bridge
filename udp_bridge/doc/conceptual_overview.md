@@ -35,7 +35,7 @@ The main node class. It handles:
 -   The main receive loop (or callback).
 
 ### `udp_bridge::Connection`
-Represents a logic connection to a remote. It tracks:
+Represents a logical connection to a remote. It tracks:
 -   Remote host and port.
 -   Communication statistics (data rate, drop rate).
 -   Connection state (good, lost).

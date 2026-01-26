@@ -2,7 +2,7 @@
 
 # -- Project information -----------------------------------------------------
 project = 'udp_bridge'
-copyright = '2024, Roland Arsenault'
+copyright = '2018-2026, Roland Arsenault'
 author = 'Roland Arsenault'
 
 # -- General configuration ---------------------------------------------------
@@ -16,12 +16,12 @@ extensions = [
     'myst_parser',
 ]
 
-templates_path = ['_templates']
+templates_path = []
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # -- Options for HTML output -------------------------------------------------
 html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
+html_static_path = []
 
 # -- Breathe/Exhale Configuration --------------------------------------------
 # Setup the exhale extension
