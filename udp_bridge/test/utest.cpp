@@ -1,7 +1,8 @@
 #include "udp_bridge/packet.h"
 #include "udp_bridge/connection.h"
 #include <gtest/gtest.h>
-#include "ros/ros.h"
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 TEST(UDPBridge_Packet, compressionTest)
 {
@@ -34,7 +35,5 @@ TEST(UDPBridge_Packet, addressToDottedTest)
 
 int main(int argc, char **argv){
   testing::InitGoogleTest(&argc, argv);
-  //ros::init(argc, argv, "udp_bridge_tester");
-  //ros::NodeHandle nh;
   return RUN_ALL_TESTS();
 }
