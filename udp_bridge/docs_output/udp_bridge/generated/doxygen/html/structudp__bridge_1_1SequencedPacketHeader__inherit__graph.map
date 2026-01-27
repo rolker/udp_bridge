@@ -1,9 +1,0 @@
-<map id="udp_bridge::SequencedPacketHeader" name="udp_bridge::SequencedPacketHeader">
-<area shape="rect" id="Node000001" title=" " alt="" coords="121,79,337,119"/>
-<area shape="rect" id="Node000003" href="$structudp__bridge_1_1SequencedPacket.html" title=" " alt="" coords="5,167,221,192"/>
-<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="191,129,132,169,129,164,188,124"/>
-<area shape="rect" id="Node000004" href="$structudp__bridge_1_1WrappedPacket.html" title="Generates a SequencedPacket that can be sent using UDP." alt="" coords="245,167,448,192"/>
-<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="271,124,331,164,328,169,268,129"/>
-<area shape="rect" id="Node000002" href="$structudp__bridge_1_1PacketHeader.html" title=" " alt="" coords="133,5,325,31"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="232,44,232,79,227,79,227,44"/>
-</map>

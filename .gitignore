@@ -1,2 +1,7 @@
 doc/html
 doc/manifest.yaml
+
+# Generated documentation
+udp_bridge/docs_build/
+udp_bridge/docs_output/
+udp_bridge/cross_reference/
