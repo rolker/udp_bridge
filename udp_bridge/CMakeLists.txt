@@ -8,6 +8,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(diagnostic_updater REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -42,6 +43,7 @@ target_link_libraries(${PROJECT_NAME}
   PUBLIC
     rclcpp::rclcpp
     rclcpp_lifecycle::rclcpp_lifecycle
+    ${diagnostic_updater_TARGETS}
     ${udp_bridge_interfaces_TARGETS}
     ${ZLIB_LIBRARIES}
 )

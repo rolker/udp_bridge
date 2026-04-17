@@ -80,6 +80,9 @@ public:
   /// Returns the average data rate.
   udp_bridge_interfaces::msg::DataRates data_sent_rate(rclcpp::Time time, PacketSendCategory category);
 
+  /// Returns the average data rate across all packet categories.
+  udp_bridge_interfaces::msg::DataRates data_sent_rate(rclcpp::Time time);
+
   /// Remove saved sent packets older than cutoff_time.
   void cleanup_sent_packets(rclcpp::Time cutoff_time);
 

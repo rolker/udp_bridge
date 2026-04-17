@@ -187,6 +187,11 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   spin_timer_ = create_wall_timer(10ms, std::bind(&UDPBridge::spin_once, this));
   subscription_update_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::updateLocalSubscriptions, this));
 
+  diagnostic_updater_ = std::make_unique<diagnostic_updater::Updater>(this);
+  diagnostic_updater_->setHardwareID(name_);
+  syncDiagnosticTasks();
+  diagnostic_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::diagnosticTick, this));
+
   return LifecycleNode::on_configure(state);
 }
 
@@ -1030,6 +1035,102 @@ UDPBridge::RemoteConnectionsList UDPBridge::allRemotes() const
     if(remote.second)
       ret[remote.first];
   return ret;
+}
+
+void UDPBridge::diagnosticTick()
+{
+  if(!diagnostic_updater_)
+    return;
+  syncDiagnosticTasks();
+  diagnostic_updater_->force_update();
+}
+
+void UDPBridge::syncDiagnosticTasks()
+{
+  if(!diagnostic_updater_)
+    return;
+  for(auto& remote_entry: remote_nodes_)
+  {
+    const std::string& remote_name = remote_entry.first;
+    if(!remote_entry.second)
+      continue;
+    for(auto& connection: remote_entry.second->connections())
+    {
+      if(!connection)
+        continue;
+      std::string connection_id = connection->id();
+      std::string task_name = "udp_bridge " + name_ + ": " + remote_name + ": " + connection_id;
+      if(diagnostic_task_names_.count(task_name))
+        continue;
+      diagnostic_updater_->add(task_name,
+        [this, remote_name, connection_id](diagnostic_updater::DiagnosticStatusWrapper& stat)
+        {
+          diagnoseConnection(remote_name, connection_id, stat);
+        });
+      diagnostic_task_names_.insert(task_name);
+    }
+  }
+}
+
+void UDPBridge::diagnoseConnection(const std::string& remote_name,
+                                   const std::string& connection_id,
+                                   diagnostic_updater::DiagnosticStatusWrapper& stat)
+{
+  auto remote_it = remote_nodes_.find(remote_name);
+  if(remote_it == remote_nodes_.end() || !remote_it->second)
+  {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "remote not registered");
+    return;
+  }
+  auto connection = remote_it->second->connection(connection_id);
+  if(!connection)
+  {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "connection not registered");
+    return;
+  }
+
+  auto now_time = now();
+  auto totals = connection->data_sent_rate(now_time);
+  auto resends = connection->data_sent_rate(now_time, PacketSendCategory::resend);
+  auto rx = connection->data_receive_rate(now_time.seconds());
+  double last_rx = connection->last_receive_time();
+  double rx_age = (last_rx > 0.0) ? (now_time.seconds() - last_rx) : -1.0;
+
+  stat.add("host", connection->host());
+  stat.add("port", static_cast<int>(connection->port()));
+  stat.add("rate_limit_bytes_per_sec", static_cast<unsigned int>(connection->rateLimit()));
+  stat.add("tx_ok_bytes_per_sec", totals.success_bytes_per_second);
+  stat.add("tx_failed_bytes_per_sec", totals.failed_bytes_per_second);
+  stat.add("tx_dropped_bytes_per_sec", totals.dropped_bytes_per_second);
+  stat.add("tx_resend_bytes_per_sec", resends.success_bytes_per_second);
+  stat.add("rx_bytes_per_sec", rx.first);
+  stat.add("rx_duplicate_bytes_per_sec", rx.second);
+  stat.add("last_rx_age_s", rx_age);
+
+  constexpr double kStaleWarnSeconds = 5.0;
+  constexpr double kStaleErrorSeconds = 10.0;
+
+  std::string summary = "tx " + std::to_string(static_cast<uint64_t>(totals.success_bytes_per_second))
+                      + " B/s, rx " + std::to_string(static_cast<uint64_t>(rx.first)) + " B/s";
+
+  if(last_rx > 0.0 && rx_age > kStaleErrorSeconds)
+  {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                 "no rx for " + std::to_string(static_cast<uint64_t>(rx_age)) + "s");
+  }
+  else if(totals.failed_bytes_per_second > 0 || totals.dropped_bytes_per_second > 0)
+  {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "tx failures/drops");
+  }
+  else if(last_rx > 0.0 && rx_age > kStaleWarnSeconds)
+  {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
+                 "no rx for " + std::to_string(static_cast<uint64_t>(rx_age)) + "s");
+  }
+  else
+  {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, summary);
+  }
 }
 
 // void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)
