@@ -1041,6 +1041,8 @@ void UDPBridge::diagnosticTick()
 {
   if(!diagnostic_updater_)
     return;
+  if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+    return;
   syncDiagnosticTasks();
   diagnostic_updater_->force_update();
 }
