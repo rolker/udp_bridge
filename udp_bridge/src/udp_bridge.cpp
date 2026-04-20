@@ -207,6 +207,9 @@ UDPBridge::CallbackReturn UDPBridge::on_deactivate(const rclcpp_lifecycle::State
 
 UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & state)
 {
+  diagnostic_timer_.reset();
+  diagnostic_updater_.reset();
+  diagnostic_task_names_.clear();
   return LifecycleNode::on_cleanup(state);
 }
 
