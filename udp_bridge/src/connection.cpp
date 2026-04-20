@@ -297,6 +297,12 @@ DataRates Connection::data_sent_rate(rclcpp::Time time, PacketSendCategory categ
   return sent_packet_statistics_.get(category);
 }
 
+DataRates Connection::data_sent_rate(rclcpp::Time time)
+{
+  (void)time;
+  return sent_packet_statistics_.get();
+}
+
 
 void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, int socket, rclcpp::Time now)
 {

@@ -4,6 +4,9 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "rclcpp/generic_publisher.hpp"
 #include "rclcpp/generic_subscription.hpp"
+#include "diagnostic_updater/diagnostic_updater.hpp"
+
+#include <set>
 
 #include "udp_bridge_interfaces/srv/subscribe.hpp"
 #include "udp_bridge_interfaces/srv/add_remote.hpp"
@@ -155,6 +158,18 @@ private:
   /// Timer callback where data rate stats are reported
   void statsReportCallback();
 
+  /// Periodic tick: sync per-connection diagnostic tasks with current remotes
+  /// and force the diagnostic_updater to publish.
+  void diagnosticTick();
+
+  /// Register a diagnostic task for any (remote, connection) pair not yet tracked.
+  void syncDiagnosticTasks();
+
+  /// Populate a diagnostic status message for one (remote, connection) pair.
+  void diagnoseConnection(const std::string& remote_name,
+                          const std::string& connection_id,
+                          diagnostic_updater::DiagnosticStatusWrapper& stat);
+
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();
 
@@ -217,6 +232,12 @@ private:
   rclcpp::TimerBase::SharedPtr bridge_info_timer_;
   rclcpp::TimerBase::SharedPtr spin_timer_;
   rclcpp::TimerBase::SharedPtr subscription_update_timer_;
+  rclcpp::TimerBase::SharedPtr diagnostic_timer_;
+
+  std::unique_ptr<diagnostic_updater::Updater> diagnostic_updater_;
+  /// Names of diagnostic tasks already registered, so we don't double-add as
+  /// remotes/connections appear.
+  std::set<std::string> diagnostic_task_names_;
 
   uint64_t next_packet_number_ = 0;
   rclcpp::Time last_packet_number_assign_time_;
