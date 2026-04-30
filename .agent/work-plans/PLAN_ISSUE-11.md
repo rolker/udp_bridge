@@ -39,8 +39,9 @@ hits of the old name.
 Six commits on `feature/issue-11`:
 
 1. **Plan commit** — this file.
-2. **`docs/QOS_DESIGN.md`** — written first so the rest of the PR has an
-   anchor. Captures: mental model (UDP wire is dominant constraint), per-
+2. **`udp_bridge/doc/qos_design.md`** — written first so the rest of the
+   PR has an anchor. (Lives in the existing `doc/` sphinx setup, not a
+   new top-level `docs/` directory.) Captures: mental model (UDP wire is dominant constraint), per-
    dimension policy (reliability=BEST_AVAILABLE, durability=opt-in
    transient_local, history=KEEP_LAST(N), deadline/lifespan/liveliness not
    translated), per-topic override mechanism, future-work pointer for
@@ -112,7 +113,7 @@ Six commits on `feature/issue-11`:
      ("volatile"|"transient_local", default "volatile"), `uint32 history_depth`
      (default 1).
    - Backward-compat note: empty/zero values from an old sender are treated
-     as defaults. Document this in `QOS_DESIGN.md`.
+     as defaults. Document this in `qos_design.md`.
    - Per-topic config in `on_configure` (`udp_bridge.cpp:162-179` block)
      reads three new params (`reliability`, `durability`, `history_depth`)
      alongside `queue_size`, `period`, `source`, `destination`. Stash on
@@ -171,7 +172,8 @@ Six commits on `feature/issue-11`:
 | `udp_bridge/include/udp_bridge/connection.h` | Mutex declaration |
 | `udp_bridge/include/udp_bridge/types.h` | Extend `RemoteDetails` with `reliability`, `durability`, `history_depth` |
 | `udp_bridge_interfaces/msg/MessageInternal.msg` | Add `reliability`, `durability`, `history_depth` fields |
-| `udp_bridge/docs/QOS_DESIGN.md` | New design doc |
+| `udp_bridge/doc/qos_design.md` | New design doc (added to existing `doc/` sphinx setup, not a new `docs/` dir) |
+| `udp_bridge/doc/index.rst` | Add `qos_design` to toctree |
 | `udp_bridge/test/test_qos_resolution.cpp` | New unit test |
 | `udp_bridge/test/test_executor_split_integration.cpp` | New integration test |
 | `udp_bridge/test/mininet/test_subscriber_death.{py,bash}` | New mininet scenario |
@@ -185,8 +187,8 @@ Six commits on `feature/issue-11`:
 | Principle | Consideration |
 |---|---|
 | Human control and transparency | Per-topic QoS config is visible. QoS-default change uses BEST_AVAILABLE so no subscriber is silently disconnected. PR description must call out the QoS-contract change explicitly. |
-| Capture decisions, not just implementations | `QOS_DESIGN.md` is the artifact; this is the whole point of commit 2. Callback-group invariants captured in inline comment in `udp_bridge_node.cpp`. |
-| A change includes its consequences | Tests (unit + integration + mininet) ship with the change. `MessageInternal` schema extension documented in `QOS_DESIGN.md`. CAMP impact analyzed in review-issue comment; mitigation is built-in (BEST_AVAILABLE matches RELIABLE subscribers). |
+| Capture decisions, not just implementations | `qos_design.md` is the artifact; this is the whole point of commit 2. Callback-group invariants captured in inline comment in `udp_bridge_node.cpp`. |
+| A change includes its consequences | Tests (unit + integration + mininet) ship with the change. `MessageInternal` schema extension documented in `qos_design.md`. CAMP impact analyzed in review-issue comment; mitigation is built-in (BEST_AVAILABLE matches RELIABLE subscribers). |
 | Only what's needed | Idle publisher cleanup explicitly dropped (issue body Out of Scope). Auto-mirror deferred to Phase 2 (issue body Out of Scope). |
 | Improve incrementally | 6 commits, each independently reviewable. |
 | Test what breaks | Three test layers; mininet wedge reproduction is the headliner. rolker explicitly asked for "as many tests as appropriate". |
@@ -197,7 +199,7 @@ Six commits on `feature/issue-11`:
 |---|---|---|
 | 0002 — Worktree isolation | Yes | Working in `feature/issue-11` worktree on the udp_bridge project repo. |
 | 0008 — Follow ROS 2 conventions | Yes | `MultiThreadedExecutor` + `MutuallyExclusive` callback groups is canonical rclcpp. Per-topic param naming follows existing `udp_bridge.cpp:162-179` style. New `MessageInternal` fields use ROS 2 standard names (`reliability`, `durability`, `history_depth`). Targets Jazzy (verified `reliability_best_available()` available in `/opt/ros/jazzy/include/rclcpp/rclcpp/qos.hpp:190`). |
-| 0001 — Adopt ADRs | No | Package-internal design decision; `QOS_DESIGN.md` in the udp_bridge repo is the right home, not `docs/decisions/` in the workspace. |
+| 0001 — Adopt ADRs | No | Package-internal design decision; `qos_design.md` in the udp_bridge repo is the right home, not `docs/decisions/` in the workspace. |
 
 ## Consequences
 
@@ -226,10 +228,10 @@ flagged five items; absorbed inline:
    service handlers under `MultiThreadedExecutor`. Now enumerated in
    commit 3 with a periodic-group assignment for the services.
 2. CAMP override decision made explicit in the Consequences table and
-   in commit 2's `QOS_DESIGN.md` outline ("`BEST_AVAILABLE` matching is
+   in commit 2's `qos_design.md` outline ("`BEST_AVAILABLE` matching is
    the sole mitigation; no override inventory ships").
 3. `MessageInternal` mismatched-pair compatibility note added to commit
-   2's `QOS_DESIGN.md` outline.
+   2's `qos_design.md` outline.
 4. Mininet test artifact requirement (`Recv-Q` trace) added to commit 5.
 5. Reviewer's "typo" finding (`udp_bridge.cpp:7` vs `udp_bridge_node.cpp:7`)
    was a misread — both the plan and the issue body correctly say

@@ -6,6 +6,7 @@ udp_bridge
    :caption: Contents:
 
    conceptual_overview
+   qos_design
 
 Indices and tables
 ==================
