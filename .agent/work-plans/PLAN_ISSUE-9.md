@@ -45,21 +45,36 @@ additions use `*_`, older ROS-1-port code uses `m_*`. Standardize on `*_`
 (ROS 2 / Google style). Never half-rename. Per-commit grep before push to
 verify zero remaining hits of the old name.
 
+**Rebase mechanics with #11**: PR #11 lands first and touches
+`udp_bridge.cpp` extensively (executor split, callback-group
+assignment), so it will rename most/all `m_*` members in that file.
+By the time this PR rebases onto #11's merged state, those identifiers
+are already `*_`. Conflict resolution during rebase is "use the
+renamed name" — trivial. The reviewer's concern about rename-churn
+collisions is mitigated by the sequencing decision, not by deferring
+the renames.
+
 Six commits on `feature/issue-9`:
 
 1. **Plan commit** — this file.
-2. **D — TTL/window alignment + `BridgeInfo` schema extension.**
+2. **D — TTL/window alignment + `Remote.msg` schema extension.**
    - Single shared constant `kSentPacketTTL = 5.0s` in a new
      `udp_bridge/include/udp_bridge/resend_constants.h` header. Both
      `cleanupSentPackets` (`udp_bridge.cpp:742`) and
      `clearReceivedPacketTimesBefore` (`remote_node.cpp:175`) reference
      it. Receiver-window > sender-TTL becomes structurally impossible.
-   - Extend `udp_bridge_interfaces/msg/BridgeInfo.msg` with
-     `uint32 resend_giveup_count` (per-remote aggregate, populated by the
-     receiver when it gives up on missing packets). New field is
-     backward-compatible — old consumers ignore it; new consumers see 0
-     from old senders. `rqt_udp_bridge` can surface it with a one-line
-     addition.
+     Add a `static_assert` (or runtime check at startup) that the
+     receiver's window is `>=` `kSentPacketTTL` to lock in the contract.
+   - Extend `udp_bridge_interfaces/msg/Remote.msg` with
+     `uint32 resend_giveup_count` (per-remote, populated by the receiver
+     when it gives up on missing packets from that remote). Placed on
+     `Remote` rather than `BridgeInfo` to match the algorithm's actual
+     cardinality — give-up logic operates on per-RemoteNode packet-number
+     space; the receiver does not know which connection a missing packet
+     was supposed to arrive on. New field is backward-compatible — old
+     consumers ignore it; new consumers see 0 from old senders.
+     `rqt_udp_bridge` and bag-replay tooling can surface it with a
+     small addition.
    - Rationale on TTL: the `bridge_info`-advertised-TTL alternative is
      more flexible but adds a wire-format dependency that doesn't earn
      its complexity at this phase. Single shared constant is the boring
@@ -89,9 +104,11 @@ Six commits on `feature/issue-9`:
    request attempts in the 5 s window. Log at WARN + bump
    `resend_giveup_count` (see commit 2 below for schema location) so
    silent loss is visible.
-5. **Tests.** Four `TEST_F` cases in a new
-   `udp_bridge/test/test_remote_node_resend.cpp`, exercising
-   `getMissingPackets` directly:
+5. **Tests.** Five cases — four in a new
+   `udp_bridge/test/test_remote_node_resend.cpp` exercising
+   `getMissingPackets` directly, plus one in
+   `udp_bridge/test/test_connection_cleanup.cpp` exercising the sender-
+   side TTL path:
    - **reorder-within-debounce**: insert packets in order
      `1, 3, 2`, all timestamped within 100 ms; assert no resend
      requested for `2`.
@@ -104,6 +121,14 @@ Six commits on `feature/issue-9`:
    - **TTL give-up**: simulate `kSentPacketTTL+ε` of failed requests;
      assert `resend_giveup_count_` increments by exactly 1 for that
      packet and no further requests are issued for it.
+   - **Connection cleanup at TTL** (new file
+     `test_connection_cleanup.cpp`): seed `Connection::sent_packets_`
+     with packets at known timestamps; advance simulated time past
+     `kSentPacketTTL`; call `cleanup_sent_packets`; assert the expected
+     packets are evicted (boundary case: a packet at exactly
+     `now - kSentPacketTTL` is evicted; one at `now - kSentPacketTTL + ε`
+     is retained). This locks in the sender-side contract that pairs
+     with the receiver-side TTL check.
    `RemoteNode` constructor already takes `NodeInterfaces` — tests
    construct a mock node (or use `rclcpp::Node` directly) and inject a
    fake `Clock` to control time. Verify pattern via
@@ -124,9 +149,10 @@ Six commits on `feature/issue-9`:
 | `udp_bridge/src/udp_bridge.cpp` | `cleanupSentPackets` uses `kSentPacketTTL`; populate `BridgeInfo.resend_giveup_count` aggregate before publishing |
 | `udp_bridge/src/remote_node.cpp` | `getMissingPackets` uses constants header; debounce check; backoff + TTL-bounded give-up; bump `resend_giveup_count_`; WARN log on give-up |
 | `udp_bridge/include/udp_bridge/remote_node.h` | New `attempt_count_` map; `resend_giveup_count_` counter; getter for the counter so `udp_bridge.cpp` can populate `BridgeInfo` |
-| `udp_bridge_interfaces/msg/BridgeInfo.msg` | Append `uint32 resend_giveup_count` |
-| `udp_bridge/test/test_remote_node_resend.cpp` | New gtest with 4 cases |
-| `udp_bridge/CMakeLists.txt` | Register new test |
+| `udp_bridge_interfaces/msg/Remote.msg` | Append `uint32 resend_giveup_count` (per-remote cardinality, see commit 2) |
+| `udp_bridge/test/test_remote_node_resend.cpp` | New gtest with 4 cases on `getMissingPackets` |
+| `udp_bridge/test/test_connection_cleanup.cpp` | New gtest pinning sender-side TTL eviction contract |
+| `udp_bridge/CMakeLists.txt` | Register new tests |
 
 ## Principles Self-Check
 
@@ -152,8 +178,9 @@ Six commits on `feature/issue-9`:
 | If we change... | Also update... | Included in plan? |
 |---|---|---|
 | `getMissingPackets` algorithm | Tests for the new behavior | Yes — commit 5 |
-| Sender TTL constant | Receiver window (must remain ≥ TTL) | Yes — single shared constant in commit 2 makes this structural |
-| Resend stat schema | `rqt_udp_bridge` consumer | Not changed — `data_rates.msg` field names preserved; only adding new optional `give_up_count` if it doesn't already exist |
+| Sender TTL constant | Receiver window (must remain ≥ TTL) | Yes — single shared constant in commit 2 makes this structural; static_assert pins the contract |
+| `Remote.msg` schema (append `resend_giveup_count`) | Downstream consumers that introspect `Remote` (`bag_analysis/extractors/udp_bridge.py` in `layers/main/sensors_ws/src/marine_tools/bag_analysis/`, `rqt_udp_bridge` in `layers/main/ui_ws/src/rqt_udp_bridge/`) | Yes — both consumers introspect message fields rather than hard-code, so appended fields surface automatically. No code change required in either consumer; the field becomes available for plotting/dashboard surfacing whenever that's prioritized as a follow-up. |
+| `data_rates.msg` schema | `rqt_udp_bridge` consumer | Not changed — `data_rates.msg` field names preserved by this PR |
 | Algorithm constants | `QOS_DESIGN.md` (in #11) | No — these are resend-loop tuning constants, not part of the QoS contract |
 
 ## Open Questions
@@ -166,6 +193,34 @@ None remaining at plan time. All three questions resolved during planning
 Single PR, six commits. ~150-250 lines of code change plus ~200-300 lines
 of new tests. Smaller than #11. Some additional churn from `m_*` → `*_`
 renames in any file touched.
+
+## Updates from review-plan
+
+PR-#13 review (https://github.com/rolker/udp_bridge/pull/13#issuecomment-4356527452)
+flagged five items; absorbed inline:
+
+1. **`resend_giveup_count` placement moved from `BridgeInfo.msg` to
+   `Remote.msg`** (commit 2). The reviewer correctly caught the cardinality
+   mismatch — the give-up algorithm operates on per-RemoteNode packet-number
+   space, so per-Remote is the faithful placement. Rejected per-Connection
+   (option c in the discussion) because the receiver doesn't know which
+   connection a missing packet was supposed to arrive on.
+2. **Sender-side `cleanup_sent_packets` test added** (commit 5). New
+   `test_connection_cleanup.cpp` pins the boundary behavior of TTL
+   eviction. A `static_assert` on `kSentPacketTTL` vs the receiver
+   window also added in commit 2 to lock in the contract.
+3. **`bag_analysis/extractors/udp_bridge.py` added to consequences
+   table** (consumer of `Remote.msg`; introspects fields, so
+   forward-compatible with the appended `resend_giveup_count`).
+4. **Consequences-table wording fixed**: previously said "Resend stat
+   schema — Not changed" while simultaneously adding a new field;
+   now distinguishes between `Remote.msg` (changed — appended field,
+   consumers introspect, no breakage) and `data_rates.msg` (unchanged).
+5. **Rebase-mechanics note added** to the Approach preamble explaining
+   why the reviewer's rename-churn concern is mitigated by the
+   sequencing decision (#11 lands first, renames `m_*` in
+   `udp_bridge.cpp`; #9 rebases onto a file with no `m_*` left, so
+   nothing for this PR to rename in that file).
 
 ## Decisions made during planning
 
@@ -180,14 +235,19 @@ rationale survives.
   TTL is one principled boundary (when the sender has forgotten the
   packet, asking again is pointless). Removes a redundant magic number.
   Can re-add if field data ever shows amplification despite TTL.
-- **`resend_giveup_count` lives on `BridgeInfo`** as a per-remote
-  aggregate `uint32`. Surfaces in operator-side bag captures
-  (`bizzyboat.yaml` / `izzyboat.yaml` already record `bridge_info`) and
-  is one line for `rqt_udp_bridge` to display. Schema add is
-  backward-compatible. Rejected alternatives: private counter only
-  (no operational visibility), per-`DataRates` field (semantically
+- **`resend_giveup_count` lives on `Remote.msg`** as a per-remote
+  `uint32` (initial draft put it on `BridgeInfo.msg`; review-plan
+  caught the cardinality mismatch — give-up logic operates on
+  per-RemoteNode packet-number space, so per-Remote is faithful).
+  Surfaces in operator-side bag captures via the existing
+  `bridge_info`/Remote chain, and `rqt_udp_bridge` plus
+  `bag_analysis` introspect message fields, so the appended field
+  is automatically available to both. Schema add is backward-
+  compatible. Rejected alternatives: private counter only (no
+  operational visibility); per-`DataRates` field (semantically
   mismatched — give-up is per-RemoteNode receiver-side, not
-  per-Connection sender-side).
+  per-Connection sender-side, and the receiver doesn't know which
+  connection a missing packet would have arrived on).
 - **Backoff defaults**: `base = 0.2 s`, `cap = 1.6 s` (8× base).
   Schedule `0.2 → 0.4 → 0.8 → 1.6 → 1.6 …` covers cellular RTT
   (50-200 ms) up through degraded-satellite RTT (1-2 s). Yields ~6
