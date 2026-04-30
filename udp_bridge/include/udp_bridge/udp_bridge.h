@@ -198,7 +198,18 @@ private:
   /// @param period Minimum delay between messages sent in seconds
   /// @param remote_node destination udp_bridge
   /// @param connection_id  connection to remote to use
-  void addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::string remote_node, std::string connection_id);
+  /// @param reliability per-topic destination publisher reliability
+  ///                    ("best_available" default, "reliable", "best_effort")
+  /// @param durability per-topic durability ("volatile" default, "transient_local")
+  /// @param history_depth KEEP_LAST(N); 0 means default 1
+  void addSubscriberConnection(std::string const &source_topic,
+                               std::string const &destination_topic,
+                               uint32_t queue_size, float period,
+                               std::string remote_node,
+                               std::string connection_id,
+                               std::string reliability = "",
+                               std::string durability = "",
+                               uint32_t history_depth = 0);
 
   /// @brief Checks configured local topics and attempts to subscribe
   void updateLocalSubscriptions();  

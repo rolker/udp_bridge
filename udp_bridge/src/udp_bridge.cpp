@@ -17,6 +17,7 @@
 //     sent_packet_statistics_mutex_) for state owned by the Connection.
 
 #include "udp_bridge/udp_bridge.h"
+#include "udp_bridge/qos_resolution.h"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/serialization.hpp"
@@ -214,7 +215,21 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         declare_parameter(destination_param, source);
         auto destination = get_parameter(destination_param).as_string();
 
-        addSubscriberConnection( source, destination, queue_size, period, remote_info.name, connection.connection_id);
+        std::string reliability_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".reliability";
+        declare_parameter(reliability_param, std::string());
+        std::string reliability = get_parameter(reliability_param).as_string();
+
+        std::string durability_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".durability";
+        declare_parameter(durability_param, std::string());
+        std::string durability = get_parameter(durability_param).as_string();
+
+        std::string history_depth_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".history_depth";
+        declare_parameter(history_depth_param, 0);
+        uint32_t history_depth = static_cast<uint32_t>(get_parameter(history_depth_param).as_int());
+
+        addSubscriberConnection(source, destination, queue_size, period,
+                                remote_info.name, connection.connection_id,
+                                reliability, durability, history_depth);
       }
     }
   }
@@ -346,9 +361,17 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
 
   // Read remote_details / connection_rates and update last_sent_time + initial
   // statistics under subscribers_mutex_. We also capture per-destination
-  // destination_topic strings so the send loop below doesn't need to re-lock.
+  // destination_topic and QoS config so the send loop below doesn't need to
+  // re-lock.
+  struct DestinationConfig
+  {
+    std::string destination_topic;
+    std::string reliability;
+    std::string durability;
+    uint32_t history_depth = 0;
+  };
   RemoteConnectionsList destinations;
-  std::map<std::string, std::string> destination_topic_by_remote;
+  std::map<std::string, DestinationConfig> destination_config_by_remote;
   {
     std::lock_guard<std::mutex> lock(subscribers_mutex_);
     auto& sub = subscribers_[topic_name];
@@ -364,7 +387,11 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
             if(periods.count(connection_rate.second.period) == 0)
               periods.insert(connection_rate.second.period);
           }
-      destination_topic_by_remote[remote_details.first] = remote_details.second.destination_topic;
+      auto& dc = destination_config_by_remote[remote_details.first];
+      dc.destination_topic = remote_details.second.destination_topic;
+      dc.reliability       = remote_details.second.reliability;
+      dc.durability        = remote_details.second.durability;
+      dc.history_depth     = remote_details.second.history_depth;
     }
 
     MessageSizeData size_data;
@@ -397,9 +424,21 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
   // subscribers_mutex_ briefly per destination.
   for(auto destination: destinations)
   {
-    auto destination_topic_it = destination_topic_by_remote.find(destination.first);
-    message_internal.destination_topic =
-      (destination_topic_it != destination_topic_by_remote.end()) ? destination_topic_it->second : std::string{};
+    auto config_it = destination_config_by_remote.find(destination.first);
+    if(config_it != destination_config_by_remote.end())
+    {
+      message_internal.destination_topic = config_it->second.destination_topic;
+      message_internal.reliability       = config_it->second.reliability;
+      message_internal.durability        = config_it->second.durability;
+      message_internal.history_depth     = config_it->second.history_depth;
+    }
+    else
+    {
+      message_internal.destination_topic.clear();
+      message_internal.reliability.clear();
+      message_internal.durability.clear();
+      message_internal.history_depth = 0;
+    }
     RemoteConnectionsList connections;
     connections[destination.first] = destination.second;
     auto size_data = send(message_internal, connections, false);
@@ -487,7 +526,14 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     auto it = publishers_.find(topic);
     if(it == publishers_.end())
     {
-      publisher = create_generic_publisher(topic, outer_message.datatype, rclcpp::QoS(1));
+      // Resolve per-topic QoS from MessageInternal (sender-advertised),
+      // falling back to package defaults when fields are empty/zero —
+      // see udp_bridge/doc/qos_design.md for the contract.
+      auto qos = resolveDestinationPublisherQos(
+        outer_message.reliability,
+        outer_message.durability,
+        outer_message.history_depth);
+      publisher = create_generic_publisher(topic, outer_message.datatype, qos);
       publishers_[topic] = publisher;
       first_arrival = true;
     }
@@ -556,15 +602,41 @@ void UDPBridge::decodeTopicStatistics(std::vector<uint8_t> const &message, const
 }
 
 
-void UDPBridge::addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::string remote_node, std::string connection_id)
+void UDPBridge::addSubscriberConnection(std::string const &source_topic,
+                                        std::string const &destination_topic,
+                                        uint32_t queue_size, float period,
+                                        std::string remote_node,
+                                        std::string connection_id,
+                                        std::string reliability,
+                                        std::string durability,
+                                        uint32_t history_depth)
 {
   if(!remote_node.empty())
   {
     {
       std::lock_guard<std::mutex> lock(subscribers_mutex_);
-      subscribers_[source_topic].queue_size = std::max(queue_size, uint32_t(1));
-      subscribers_[source_topic].remote_details[remote_node].destination_topic = destination_topic;
-      subscribers_[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
+      auto& sub = subscribers_[source_topic];
+      sub.queue_size = std::max(queue_size, uint32_t(1));
+      auto& rd = sub.remote_details[remote_node];
+      rd.destination_topic = destination_topic;
+      rd.connection_rates[connection_id].period = period;
+      // QoS overrides — empty/zero retains existing or default behavior so
+      // that re-adding a subscription doesn't accidentally clear earlier
+      // per-topic QoS that was set elsewhere.
+      if(!reliability.empty())
+        rd.reliability = reliability;
+      if(!durability.empty())
+      {
+        rd.durability = durability;
+        // Source-side subscription durability follows the strongest
+        // per-topic setting across remotes for this source topic.
+        // transient_local overrides volatile so a latched source is
+        // received even if only one consumer needs it.
+        if(durability == "transient_local")
+          sub.durability = "transient_local";
+      }
+      if(history_depth != 0)
+        rd.history_depth = history_depth;
     }
     // sendBridgeInfo runs without subscribers_mutex_ held (it acquires
     // its own locks). Calling it inside the locked scope above would
@@ -591,8 +663,12 @@ void UDPBridge::updateLocalSubscriptions()
           this->callback(source_topic, topic_type, message);
         };
 
-        rclcpp::QoS qos(subscriber.second.queue_size);
-        qos.best_effort();
+        // Source-side QoS: best_effort (accepts any publisher) plus
+        // per-topic durability (transient_local when configured, so
+        // latched source values reach the bridge). See qos_design.md.
+        auto qos = resolveSourceSubscriptionQos(
+          subscriber.second.durability,
+          subscriber.second.queue_size);
 
         rclcpp::SubscriptionOptions options;
         options.ignore_local_publications = true;
