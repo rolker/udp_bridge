@@ -7,29 +7,82 @@ should have a written answer here.
 
 ## Mental model: the bridge is a UDP transport
 
-The bridge sits between two DDS domains and carries serialized ROS 2 messages
-across a UDP wire. End-to-end reliability across that wire is necessarily
-**best-effort with loss reduction**:
+The bridge sits between two ROS 2 graphs and carries serialized ROS 2
+messages across a UDP wire. End-to-end reliability across that wire is
+necessarily **best-effort with loss reduction**:
 
 - The resend layer (see `RemoteNode::getMissingPackets` and
   `Connection::resend_packets`) reduces loss by re-requesting missing packet
   numbers within a bounded TTL window.
-- It does not — and cannot — make the wire RELIABLE in the DDS sense. A
+- It does not — and cannot — make the wire RELIABLE in the QoS sense. A
   packet that is dropped after its sender-side TTL expires is permanently
-  lost; no amount of QoS configuration on either DDS endpoint changes that.
+  lost; no amount of QoS configuration on either endpoint changes that.
 
 **Consequence**: any QoS claim more aggressive than "best-effort with loss
-reduction" on the destination publisher is a lie. Specifically, declaring the
-destination publisher RELIABLE means it reports write success on data that
-was dropped mid-flight, and it inherits the destination-side cost of RELIABLE
-(per-subscriber writer state, history kept until acknowledged, stall risk if
-a subscriber goes away mid-stream — see issue #10's hypothesized wedge
-mechanism).
+reduction" on the destination publisher is a lie. Specifically, declaring
+the destination publisher RELIABLE means it reports write success on data
+that was dropped mid-flight, and it inherits the destination-side cost of
+RELIABLE (the publisher buffers messages and retries delivery until
+acknowledged; this can stall under back-pressure if a subscriber goes
+away mid-stream — see issue #10's hypothesized wedge mechanism, observed
+under `rmw_zenoh_cpp` but not specific to it).
 
-The bridge's job is to *deliver what survived the wire* and let local DDS
+The bridge's job is to *deliver what survived the wire* and let local ROS 2
 endpoints decide what contract they want with each other. It is not the
 bridge's job to assert a contract about the wire that the wire cannot
 honor.
+
+## How `BEST_AVAILABLE` matching works
+
+`BEST_AVAILABLE` is a special QoS value (see
+[REP-2003](https://github.com/ros-infrastructure/rep/blob/master/rep-2003.rst))
+that means **"I don't care; match whatever the other endpoint asks for."**
+It's available on three QoS dimensions: reliability, durability, and
+liveliness. This package leans on it for reliability on the destination
+publisher — it is why the publisher matches both RELIABLE and BEST_EFFORT
+subscribers without forcing the bridge to choose for them.
+
+The matching mechanism, simplified:
+
+1. An endpoint declares `BEST_AVAILABLE` on a dimension. The rmw layer
+   marks it as a placeholder rather than a concrete request.
+2. During discovery, when matching against a counterparty, the
+   `BEST_AVAILABLE` side adopts the counterparty's choice for that
+   dimension.
+3. If both sides are `BEST_AVAILABLE`, the result falls back to the
+   lenient default — `BEST_EFFORT` for reliability, `VOLATILE` for
+   durability.
+
+The reliability matching cases:
+
+| Subscriber declares | Publisher declares | Match? | Publisher's effective behavior |
+|---|---|---|---|
+| `RELIABLE` | `RELIABLE` | yes | `RELIABLE` |
+| `RELIABLE` | `BEST_EFFORT` | **no** — subscriber requires reliability the publisher won't provide | — |
+| `RELIABLE` | `BEST_AVAILABLE` | yes | `RELIABLE` (publisher buffers + retries on its local hop) |
+| `BEST_EFFORT` | `RELIABLE` | yes | `RELIABLE` (subscriber accepts the stronger contract) |
+| `BEST_EFFORT` | `BEST_AVAILABLE` | yes | `BEST_EFFORT` |
+| `BEST_AVAILABLE` | `BEST_AVAILABLE` | yes | `BEST_EFFORT` (lenient default) |
+
+`BEST_AVAILABLE` is implemented at the rmw layer, so it works across rmw
+implementations. `rmw_cyclonedds_cpp` and `rmw_fastrtps_cpp` map it onto
+the corresponding DDS QoS feature; `rmw_zenoh_cpp` maps it onto Zenoh's
+session-level QoS negotiation. The contract surface is the same — what
+differs between rmws is the underlying transport mechanism that
+implements RELIABLE delivery once a match is established.
+
+It was introduced in Iron Irwini and is fully usable in Jazzy
+(verified at `/opt/ros/jazzy/include/rclcpp/rclcpp/qos.hpp:190` —
+`reliability_best_available()` is the C++ setter on `rclcpp::QoS`).
+
+**Caveat specific to `udp_bridge`**: when a `RELIABLE` subscriber matches
+the bridge's `BEST_AVAILABLE` destination publisher, the publisher does
+behave `RELIABLE` — *for its local hop only*, between the bridge process
+and the destination subscriber. It cannot make the upstream UDP wire
+reliable; data that fell off the wire before `decodeData` was ever called
+is gone. The "transparency lie" warned about in the mental model isn't
+fixed by `BEST_AVAILABLE`; it's just kept from becoming a hard
+QoS-matching wall on top of it.
 
 ## Per-dimension policy
 
@@ -39,10 +92,10 @@ across a UDP wire. The package's policy per dimension:
 ### Reliability
 
 - **Destination publisher** (`udp_bridge.cpp::decodeData`, where messages
-  arriving over UDP are republished into the local DDS domain): uses
+  arriving over UDP are republished into the local ROS 2 graph): uses
   `BEST_AVAILABLE`. The publisher matches whatever the local subscriber
   declares — RELIABLE subscribers connect, BEST_EFFORT subscribers
-  connect, and the destination DDS hop's reliability is owned by the
+  connect, and the destination side's reliability is owned by the
   subscriber rather than asserted by the bridge.
 - **Source-side subscription** (`udp_bridge.cpp::updateLocalSubscriptions`,
   where the bridge subscribes locally to topics it forwards): uses
@@ -85,7 +138,7 @@ across a UDP wire. The package's policy per dimension:
   some cadence. None of these properties survive serialization,
   fragmentation, network transit, and reassembly in a meaningful way.
 - The "is the wire alive?" question is answered by the bridge's own
-  `bridge_info` heartbeat topic on a 2-second cadence, not by DDS
+  `bridge_info` heartbeat topic on a 2-second cadence, not by rmw-level
   liveliness assertions on user topics.
 
 ## How configuration works
@@ -162,7 +215,7 @@ This package ships **no per-topic `reliability: reliable` overrides** in
 the initial deployment of this design. The CAMP-style mitigation is
 entirely subsumed by `BEST_AVAILABLE` matching. If a future use case
 emerges that genuinely requires the destination publisher to assert
-`RELIABLE` semantics on the destination DDS hop (independent of what the
+`RELIABLE` semantics on the destination side (independent of what the
 subscriber declares), the per-topic `reliability: reliable` override is
 the right knob — but the bar is high, because asserting RELIABLE on a
 UDP-fed publisher is the lie this design avoids.
