@@ -6,6 +6,7 @@
 #include "rclcpp/generic_subscription.hpp"
 #include "diagnostic_updater/diagnostic_updater.hpp"
 
+#include <mutex>
 #include <set>
 
 #include "udp_bridge_interfaces/srv/subscribe.hpp"
@@ -209,9 +210,9 @@ private:
   /// Name used to identify this node to other udp_bridge nodes
   std::string name_;
 
-  int m_socket;
-  uint16_t m_port {4200};
-  int m_max_packet_size {65500};
+  int socket_;
+  uint16_t port_ {4200};
+  int max_packet_size_ {65500};
   uint32_t next_fragmented_packet_id_ {0};
 
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr subscribe_service_;
@@ -223,10 +224,18 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<udp_bridge_interfaces::msg::BridgeInfo>::SharedPtr bridge_info_publisher_;
 
   //rclcpp::Subscriber  maximum_packet_size_subscriber_;
-    
-  std::map<std::string, SubscriberDetails> m_subscribers;
 
-  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> m_publishers;
+  /// Callback groups for the MultiThreadedExecutor.
+  /// Invariants documented in udp_bridge_node.cpp.
+  rclcpp::CallbackGroup::SharedPtr socket_drain_group_;
+  rclcpp::CallbackGroup::SharedPtr republish_group_;
+  rclcpp::CallbackGroup::SharedPtr periodic_group_;
+
+  std::map<std::string, SubscriberDetails> subscribers_;
+  std::mutex subscribers_mutex_;
+
+  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> publishers_;
+  std::mutex publishers_mutex_;
 
   rclcpp::TimerBase::SharedPtr stats_report_timer_;
   rclcpp::TimerBase::SharedPtr bridge_info_timer_;
@@ -252,8 +261,10 @@ private:
 
   /// Map pending remote connections to their message sequence_number.
   std::map<uint64_t, PendingConnection> pending_connections_;
+  std::mutex pending_connections_mutex_;
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
+  std::mutex remote_nodes_mutex_;
 };
 
 } // namespace udp_bridge

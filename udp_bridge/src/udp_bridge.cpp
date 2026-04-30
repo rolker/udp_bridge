@@ -45,18 +45,18 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
 
-  declare_parameter("port", m_port);
-  m_port = get_parameter("port").as_int();
-  RCLCPP_INFO_STREAM(get_logger(), "port: " << m_port); 
+  declare_parameter("port", port_);
+  port_ = get_parameter("port").as_int();
+  RCLCPP_INFO_STREAM(get_logger(), "port: " << port_); 
 
-  declare_parameter("maximum_packet_size", m_max_packet_size);
-  m_max_packet_size = get_parameter("maximum_packet_size").as_int();
-  RCLCPP_INFO_STREAM(get_logger(), "maximum_packet_size: " << m_max_packet_size);
+  declare_parameter("maximum_packet_size", max_packet_size_);
+  max_packet_size_ = get_parameter("maximum_packet_size").as_int();
+  RCLCPP_INFO_STREAM(get_logger(), "maximum_packet_size: " << max_packet_size_);
 
   //maximum_packet_size_subscriber_ = ros::NodeHandle("~").subscribe("maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
 
-  m_socket = socket(AF_INET, SOCK_DGRAM, 0);
-  if(m_socket < 0)
+  socket_ = socket(AF_INET, SOCK_DGRAM, 0);
+  if(socket_ < 0)
   {
     RCLCPP_ERROR(get_logger(),"Failed creating socket");
     exit(1);
@@ -66,9 +66,9 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   memset((char *)&bind_address, 0, sizeof(bind_address));
   bind_address.sin_family = AF_INET;
   bind_address.sin_addr.s_addr = htonl(INADDR_ANY);
-  bind_address.sin_port = htons(m_port);
+  bind_address.sin_port = htons(port_);
   
-  if(bind(m_socket, (sockaddr*)&bind_address, sizeof(bind_address)) < 0)
+  if(bind(socket_, (sockaddr*)&bind_address, sizeof(bind_address)) < 0)
   {
     RCLCPP_ERROR(get_logger(), "Error binding socket");
     exit(1);
@@ -77,7 +77,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   timeval socket_timeout;
   socket_timeout.tv_sec = 0;
   socket_timeout.tv_usec = 1000;
-  if(setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout, sizeof(socket_timeout)) < 0)
+  if(setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout, sizeof(socket_timeout)) < 0)
   {
     RCLCPP_ERROR(get_logger(), "Error setting socket timeout");
     exit(1);
@@ -85,23 +85,43 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   int buffer_size;
   unsigned int s = sizeof(buffer_size);
-  getsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, (void*)&buffer_size, &s);
+  getsockopt(socket_, SOL_SOCKET, SO_RCVBUF, (void*)&buffer_size, &s);
   RCLCPP_INFO_STREAM(get_logger(), "recv buffer size:" << buffer_size);
   buffer_size = 500000;
-  setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
-  getsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, (void*)&buffer_size, &s);
+  setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
+  getsockopt(socket_, SOL_SOCKET, SO_RCVBUF, (void*)&buffer_size, &s);
   RCLCPP_INFO_STREAM(get_logger(), "recv buffer size set to:" << buffer_size);
   buffer_size = 500000;
-  setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size));
-  getsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, (void*)&buffer_size, &s);
+  setsockopt(socket_, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size));
+  getsockopt(socket_, SOL_SOCKET, SO_SNDBUF, (void*)&buffer_size, &s);
   RCLCPP_INFO_STREAM(get_logger(), "send buffer size set to:" << buffer_size);
 
-  std::string node_name = get_name();
-  subscribe_service_ = create_service<Subscribe>(node_name+"/remote_subscribe", std::bind(&UDPBridge::remoteSubscribe, this, _1, _2));
-  advertise_service_ = create_service<Subscribe>(node_name+"/remote_advertise", std::bind(&UDPBridge::remoteAdvertise, this, _1, _2));
+  // Callback groups — invariants documented in udp_bridge_node.cpp.
+  socket_drain_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  republish_group_    = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  periodic_group_     = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
-  add_remote_service_ = create_service<AddRemote>(node_name+"/add_remote", std::bind(&UDPBridge::addRemote, this, _1, _2));
-  list_remotes_service_ = create_service<ListRemotes>(node_name+"/list_remotes", std::bind(&UDPBridge::listRemotes, this, _1, _2));
+  std::string node_name = get_name();
+  // Service handlers are admin-style work; assign to the periodic group so they
+  // serialize against other admin work but never starve the socket-drain group.
+  const rclcpp::QoS service_qos = rclcpp::ServicesQoS();
+  subscribe_service_ = create_service<Subscribe>(
+    node_name+"/remote_subscribe",
+    std::bind(&UDPBridge::remoteSubscribe, this, _1, _2),
+    service_qos, periodic_group_);
+  advertise_service_ = create_service<Subscribe>(
+    node_name+"/remote_advertise",
+    std::bind(&UDPBridge::remoteAdvertise, this, _1, _2),
+    service_qos, periodic_group_);
+
+  add_remote_service_ = create_service<AddRemote>(
+    node_name+"/add_remote",
+    std::bind(&UDPBridge::addRemote, this, _1, _2),
+    service_qos, periodic_group_);
+  list_remotes_service_ = create_service<ListRemotes>(
+    node_name+"/list_remotes",
+    std::bind(&UDPBridge::listRemotes, this, _1, _2),
+    service_qos, periodic_group_);
   
   topic_statistics_publisher_ = create_publisher<TopicStatisticsArray>(node_name+"/topic_statistics",10);
 
@@ -182,15 +202,21 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   }
   
   
-  stats_report_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::statsReportCallback, this));
-  bridge_info_timer_ = create_wall_timer(2s, std::bind(&UDPBridge::bridgeInfoCallback, this));
-  spin_timer_ = create_wall_timer(10ms, std::bind(&UDPBridge::spin_once, this));
-  subscription_update_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::updateLocalSubscriptions, this));
+  stats_report_timer_ = create_wall_timer(
+    1s, std::bind(&UDPBridge::statsReportCallback, this), periodic_group_);
+  bridge_info_timer_ = create_wall_timer(
+    2s, std::bind(&UDPBridge::bridgeInfoCallback, this), periodic_group_);
+  // Hot path: socket drainer must never be starved. Owns its own group.
+  spin_timer_ = create_wall_timer(
+    10ms, std::bind(&UDPBridge::spin_once, this), socket_drain_group_);
+  subscription_update_timer_ = create_wall_timer(
+    1s, std::bind(&UDPBridge::updateLocalSubscriptions, this), periodic_group_);
 
   diagnostic_updater_ = std::make_unique<diagnostic_updater::Updater>(this);
   diagnostic_updater_->setHardwareID(name_);
   syncDiagnosticTasks();
-  diagnostic_timer_ = create_wall_timer(1s, std::bind(&UDPBridge::diagnosticTick, this));
+  diagnostic_timer_ = create_wall_timer(
+    1s, std::bind(&UDPBridge::diagnosticTick, this), periodic_group_);
 
   return LifecycleNode::on_configure(state);
 }
@@ -244,7 +270,7 @@ void UDPBridge::spin_once()
   while(true)
   {
     pollfd p;
-    p.fd = m_socket;
+    p.fd = socket_;
     p.events = POLLIN;
     int ret = poll(&p, 1, 10);
     if(ret < 0)
@@ -255,9 +281,9 @@ void UDPBridge::spin_once()
       std::vector<uint8_t> buffer;
       int buffer_size;
       unsigned int buffer_size_size = sizeof(buffer_size);
-      getsockopt(m_socket,SOL_SOCKET,SO_RCVBUF,&buffer_size,&buffer_size_size);
+      getsockopt(socket_,SOL_SOCKET,SO_RCVBUF,&buffer_size,&buffer_size_size);
       buffer.resize(buffer_size);
-      receive_length = recvfrom(m_socket, &buffer.front(), buffer_size, 0, (sockaddr*)&remote_address, &remote_address_length);
+      receive_length = recvfrom(socket_, &buffer.front(), buffer_size, 0, (sockaddr*)&remote_address, &remote_address_length);
       RCLCPP_DEBUG_STREAM(get_logger(), "received " << receive_length << " bytes");
       if(receive_length > 0)
       {
@@ -295,7 +321,7 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
 
   RemoteConnectionsList destinations;
   // figure out which remote connection is due for a message to be sent.
-  for(auto& remote_details: m_subscribers[topic_name].remote_details)
+  for(auto& remote_details: subscribers_[topic_name].remote_details)
   {
     std::unordered_set<float> periods; // group the sending to connections with same period
     for(auto& connection_rate: remote_details.second.connection_rates)
@@ -313,7 +339,7 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
   size_data.message_size = message->size();
   size_data.timestamp = now;
   size_data.send_results[""][""];
-  m_subscribers[topic_name].statistics.add(size_data);
+  subscribers_[topic_name].statistics.add(size_data);
   if (destinations.empty())
   {
     RCLCPP_DEBUG_STREAM(get_logger(), "No ready destination to send message");
@@ -335,12 +361,12 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
 
   for(auto destination: destinations)
   {
-    message_internal.destination_topic = m_subscribers[topic_name].remote_details[destination.first].destination_topic;
+    message_internal.destination_topic = subscribers_[topic_name].remote_details[destination.first].destination_topic;
     RemoteConnectionsList connections;
     connections[destination.first] = destination.second;
     size_data = send(message_internal, connections, false);
     size_data.message_size = message->size();
-    m_subscribers[topic_name].statistics.add(size_data);
+    subscribers_[topic_name].statistics.add(size_data);
   }  
 }
 
@@ -408,13 +434,13 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   auto topic = outer_message.destination_topic;
   if(topic.empty())
     topic = outer_message.source_topic;
-  if (m_publishers.find(topic) == m_publishers.end())
+  if (publishers_.find(topic) == publishers_.end())
   {
-    m_publishers[topic] = create_generic_publisher(topic, outer_message.datatype, rclcpp::QoS(1));
+    publishers_[topic] = create_generic_publisher(topic, outer_message.datatype, rclcpp::QoS(1));
     sendBridgeInfo();
   }
   
-  m_publishers[topic]->publish(serialized_message);
+  publishers_[topic]->publish(serialized_message);
 }
 
 void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -441,7 +467,7 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
 
   if(remote_node != remote_nodes_.end())
     for(auto connection: remote_node->second->connections())
-      connection->resend_packets(rr.missing_packets, m_socket, now);
+      connection->resend_packets(rr.missing_packets, socket_, now);
 }
 
 void UDPBridge::decodeTopicStatistics(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -458,7 +484,7 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic, std::st
 {
   if(!remote_node.empty())
   {
-    // if(m_subscribers.find(source_topic) == m_subscribers.end())
+    // if(subscribers_.find(source_topic) == subscribers_.end())
     // {
     //   queue_size = std::max(queue_size, uint32_t(1));
 
@@ -476,20 +502,21 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic, std::st
     //     };
     //     rclcpp::SubscriptionOptions options;
     //     options.ignore_local_publications = true;
-    //     m_subscribers[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
+    //     subscribers_[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
 
     //   }
     // }
-    m_subscribers[source_topic].queue_size = std::max(queue_size, uint32_t(1));
-    m_subscribers[source_topic].remote_details[remote_node].destination_topic = destination_topic;
-    m_subscribers[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
+    subscribers_[source_topic].queue_size = std::max(queue_size, uint32_t(1));
+    subscribers_[source_topic].remote_details[remote_node].destination_topic = destination_topic;
+    subscribers_[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
     sendBridgeInfo();
   }
 }
 
 void UDPBridge::updateLocalSubscriptions()
 {
-  for (auto& subscriber: m_subscribers)
+  std::lock_guard<std::mutex> lock(subscribers_mutex_);
+  for (auto& subscriber: subscribers_)
   {
     if(!subscriber.second.subscription)
     {
@@ -506,14 +533,17 @@ void UDPBridge::updateLocalSubscriptions()
 
         rclcpp::QoS qos(subscriber.second.queue_size);
         qos.best_effort();
-  
+
         rclcpp::SubscriptionOptions options;
         options.ignore_local_publications = true;
-        m_subscribers[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
+        // Forwarding subscriptions run in republish_group_ so a stalled
+        // remote publisher cannot starve the socket-drain group.
+        options.callback_group = republish_group_;
+        subscribers_[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
 
       }
     }
-  } 
+  }
 }
 
 void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -724,7 +754,7 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
       for(auto connection: connections)
         if(connection)
         {
-          auto result = connection->send(wrapped_packets, m_socket, name_, is_overhead, now);
+          auto result = connection->send(wrapped_packets, socket_, name_, is_overhead, now);
           size_data.send_results[remote.first][connection->id()]=result;
         }
       
@@ -790,7 +820,7 @@ void UDPBridge::statsReportCallback()
 
   rclcpp::Time now = get_clock()->now();
   TopicStatisticsArray tsa;
-  for(auto &subscriber: m_subscribers)
+  for(auto &subscriber: subscribers_)
   {
     for(auto ts: subscriber.second.statistics.get())
     {
@@ -812,8 +842,8 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
 {
   std::vector<std::vector<uint8_t> > ret;
 
-  unsigned long max_fragment_payload_size = m_max_packet_size-(sizeof(FragmentHeader)+sizeof(SequencedPacketHeader));
-  if(data.size()+sizeof(SequencedPacketHeader) > m_max_packet_size)
+  unsigned long max_fragment_payload_size = max_packet_size_-(sizeof(FragmentHeader)+sizeof(SequencedPacketHeader));
+  if(data.size()+sizeof(SequencedPacketHeader) > max_packet_size_)
   {
     for(unsigned long i = 0; i < data.size(); i += max_fragment_payload_size)
     {
@@ -860,9 +890,9 @@ void UDPBridge::sendBridgeInfo()
     TopicInfo ti;
     ti.topic = topic.first;
     ti.datatype = topic.second.front();
-    if (m_subscribers.find(topic.first) != m_subscribers.end())
+    if (subscribers_.find(topic.first) != subscribers_.end())
     {
-      for(auto r: m_subscribers[topic.first].remote_details)
+      for(auto r: subscribers_[topic.first].remote_details)
       {
         TopicRemoteDetails trd;
         trd.remote = r.first;
@@ -912,8 +942,8 @@ void UDPBridge::sendBridgeInfo()
 
   bi.next_packet_number = next_packet_number_;
   bi.last_packet_time = last_packet_number_assign_time_;
-  bi.local_port = m_port;
-  bi.maximum_packet_size = m_max_packet_size;
+  bi.local_port = port_;
+  bi.maximum_packet_size = max_packet_size_;
 
   bridge_info_publisher_->publish(bi);
 
@@ -1140,7 +1170,7 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
 
 // void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)
 // {
-//   m_max_packet_size = msg->data;
+//   max_packet_size_ = msg->data;
 // }
 
 

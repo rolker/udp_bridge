@@ -53,9 +53,33 @@ Six commits on `feature/issue-11`:
    trailing-field-tolerance behavior during implementation; if not
    automatic, document explicitly that both endpoints must be redeployed
    together).
-3. **Executor split + thread-safety primitives.** `udp_bridge_node.cpp`
-   switches to `MultiThreadedExecutor`. Three callback groups created in
-   `UDPBridge::on_configure`:
+3. **Executor split + thread-safety primitives.** Split into two commits
+   for reviewability:
+
+   **3a — Executor split, callback groups, m_*→*_ renames, mutex
+   declarations.** `udp_bridge_node.cpp` switches to
+   `MultiThreadedExecutor` with the three-group invariant documented
+   inline. `udp_bridge.h` gains the three callback-group members and
+   the four mutexes (publishers_, subscribers_, remote_nodes_,
+   pending_connections_) as declarations. `udp_bridge.cpp` creates the
+   groups in `on_configure` and assigns timers, services, and the
+   forwarding-subscription callback to the right groups. The five
+   `m_*` members in the package (`m_socket`, `m_port`,
+   `m_max_packet_size`, `m_subscribers`, `m_publishers`) are renamed
+   to trailing-underscore form. Build verifies the structural changes
+   compile and link.
+
+   **3b — Mutex audit + lock guards.** Adds `std::lock_guard` /
+   `std::scoped_lock` at every site that accesses shared state across
+   callback groups. Lock order (to prevent deadlock):
+   `remote_nodes_mutex_` → `subscribers_mutex_` → `publishers_mutex_` →
+   `pending_connections_mutex_`. Helper functions (e.g. `sendBridgeInfo`)
+   document that callers must hold the relevant locks; entry points
+   (timers, callbacks, service handlers) acquire them. Pattern: lock
+   briefly to access the map, copy out shared_ptrs, release before
+   slow operations (publish, network I/O).
+
+   Three callback groups created in `UDPBridge::on_configure`:
    - `socket_drain_group_` (MutuallyExclusive) — `spin_timer_` only.
    - `republish_group_` (MutuallyExclusive) — forwarding subscription
      callbacks (`callback`) and per-topic generic publishers' work in
