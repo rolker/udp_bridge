@@ -25,6 +25,17 @@ the code gaps and the documentation gap.
 
 ## Approach
 
+**Sequencing**: this PR lands first; #9 rebases onto its mutex additions in
+`Connection`. Decided during planning.
+
+**As-you-go cleanup**: every commit that edits a file in this PR also renames
+any `m_foo` member to `foo_` in that file, with full grep-and-replace across
+the codebase to update every reference (header + all `.cpp` + tests).
+The current package mixes both conventions — newer additions use `*_`, older
+ROS-1-port code uses `m_*`. Standardize on `*_` (ROS 2 / Google style).
+Never half-rename. Per-commit grep before push to verify zero remaining
+hits of the old name.
+
 Six commits on `feature/issue-11`:
 
 1. **Plan commit** — this file.
@@ -103,12 +114,20 @@ Six commits on `feature/issue-11`:
      bridged through a single-process `UDPBridge` configured with
      loopback. Assert both directions match (publisher→bridge,
      bridge→subscriber) without the silent-no-match failure mode.
-   - **Mininet (#10 reproduction attempt)**: extend
-     `udp_bridge/test/mininet/` with a scenario that kills an operator-side
-     subscriber mid-stream. Assert the bridge's `Recv-Q` (via
-     `getsockopt`/`/proc/net/udp`) stays bounded and bridge-info heartbeats
-     keep flowing. Outcome documented in PR description regardless of
-     whether the wedge reproduces — the test is exploratory.
+   - **Mininet (#10 reproduction attempt — manual run, not CI gate)**:
+     the existing `udp_bridge/test/mininet/` setup
+     (`multilink.py`, `operator.bash`, `robot.bash`, etc.) was added some
+     time ago and is likely stale — first task is to get it running on a
+     current Linux dev machine (sudo + netns) and document the steps in a
+     new `udp_bridge/test/mininet/README.md`. Then add a scenario that
+     kills an operator-side subscriber mid-stream. Assert the bridge's
+     `Recv-Q` (via `getsockopt`/`/proc/net/udp`) stays bounded and
+     bridge-info heartbeats keep flowing. Outcome documented in PR
+     description regardless of whether the wedge reproduces — the test
+     is exploratory. Not wired into CI (mininet needs root and a Linux
+     kernel; flaky in containerized runners). The gtest integration test
+     in this same commit is the CI signal; mininet is the closed-loop
+     manual check on a dev machine before merge.
 6. **Validation.** Build + run all tests. Run `make test` from workspace
    root. Capture output for PR description. Flag #10 reproduction outcome
    explicitly.
@@ -128,6 +147,8 @@ Six commits on `feature/issue-11`:
 | `udp_bridge/test/test_qos_resolution.cpp` | New unit test |
 | `udp_bridge/test/test_executor_split_integration.cpp` | New integration test |
 | `udp_bridge/test/mininet/test_subscriber_death.{py,bash}` | New mininet scenario |
+| `udp_bridge/test/mininet/README.md` | New: how to run the (refreshed) mininet setup, prerequisites, expected output |
+| `udp_bridge/test/mininet/*` | Refresh stale setup as needed to get it running on a current Linux dev machine |
 | `udp_bridge/CMakeLists.txt` | Register new tests |
 | `udp_bridge/package.xml` | Add test deps if needed |
 
@@ -161,10 +182,30 @@ Six commits on `feature/issue-11`:
 
 ## Open Questions
 
-1. **Coordination with #9**: both PRs touch `udp_bridge.cpp`. #9 also touches `remote_node.cpp` heavily; #11 touches it only for callback group assignment. Recommend #11 lands first (executor split is structural; #9 rebases onto it). Confirm with reviewer before opening PRs.
-2. **Mininet test thoroughness**: mininet requires root in tests. CI may not run it. Plan keeps mininet test as a manual-run integration test rather than a CI gate; gtest integration test is the CI signal.
-3. **`MessageInternal` schema**: chose explicit string fields over an opaque QoS-bytes blob. Strings are more debuggable in `ros2 topic echo`. Confirm this trade-off is acceptable.
+None remaining at plan time. All five questions resolved during planning
+(see `## Decisions made during planning` below).
 
 ## Estimated Scope
 
-Single PR, six commits. Working estimate: ~600-900 lines of code change plus ~300-500 lines of new tests, plus the design doc (~150 lines).
+Single PR, six commits. Working estimate: ~600-900 lines of code change plus ~300-500 lines of new tests, plus the design doc (~150 lines). Some additional churn from `m_*` → `*_` renames in any file touched.
+
+## Decisions made during planning
+
+These resolved the original `Open Questions` set; recorded here so the
+rationale survives.
+
+- **Sequencing**: this PR (#11) lands first; #9 rebases. #11 is structural
+  (executor split adds mutexes to `Connection::sent_packets_`, which #9
+  touches via TTL alignment). The reverse rebase would be more error-prone.
+- **Mininet as manual-run, not CI gate**: mininet needs root and a Linux
+  kernel; CI runners are flaky for it. Wedge reproduction in mininet is a
+  one-time manual exercise per PR; gtest integration test is the CI signal.
+  Stale mininet setup gets a freshening pass as part of this work.
+- **`MessageInternal` schema = explicit string fields** (`reliability`,
+  `durability`, `history_depth`). Debuggable in `ros2 topic echo` and bag
+  inspection; backward-compat trivial (empty/zero = defaults). Rejected
+  alternatives: opaque QoS-bytes blob (worse debugging) and receive-side-only
+  config (two configs to maintain per topic, async with discovery).
+- **Naming convention**: trailing-underscore (`*_`) is the target. Rename
+  `m_*` → `*_` as we go, with full grep-and-replace per variable; never
+  half-rename.
