@@ -1,3 +1,21 @@
+// Locking convention (see udp_bridge.h members):
+//
+//   - publishers_mutex_, subscribers_mutex_, remote_nodes_mutex_,
+//     pending_connections_mutex_ guard the four maps that cross
+//     callback-group boundaries under MultiThreadedExecutor.
+//   - When more than one of these is needed in a single function, use
+//     std::scoped_lock to acquire them deadlock-free in one shot. No
+//     manual lock-ordering required.
+//   - Pattern: lock briefly, copy out shared_ptrs / values needed, then
+//     release the lock before slow operations (publish, sendto, recvfrom).
+//   - Helpers in this file (sendBridgeInfo, allRemotes, sendConnectionRequests,
+//     addSubscriberConnection, the send() template specialization) acquire
+//     their own locks; callers do NOT pre-lock. Each entry-point caller
+//     (timer, subscription, service handler, decode handler) is otherwise
+//     responsible for taking locks before touching the maps directly.
+//   - Connection has its own per-instance mutexes (sent_packets_mutex_ and
+//     sent_packet_statistics_mutex_) for state owned by the Connection.
+
 #include "udp_bridge/udp_bridge.h"
 
 #include "rclcpp/rclcpp.hpp"
@@ -297,11 +315,18 @@ void UDPBridge::spin_once()
     else
       break;
   }
-  for(auto remote: remote_nodes_)
+  // Snapshot remotes for the per-remote defragmenter cleanup.
+  std::vector<std::pair<std::string, std::shared_ptr<RemoteNode>>> remotes;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
+  }
+  auto cleanup_cutoff = get_clock()->now() - rclcpp::Duration::from_seconds(5);
+  for(auto& remote: remotes)
   {
     if(remote.second)
     {
-      int discard_count = remote.second->defragmenter().cleanup(get_clock()->now() - rclcpp::Duration::from_seconds(5));
+      int discard_count = remote.second->defragmenter().cleanup(cleanup_cutoff);
       if(discard_count)
         RCLCPP_INFO_STREAM(get_logger(), "Discarded " << discard_count << " incomplete packets from " << remote.first);
     }
@@ -319,27 +344,36 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
 
   rclcpp::Time now = get_clock()->now();
 
+  // Read remote_details / connection_rates and update last_sent_time + initial
+  // statistics under subscribers_mutex_. We also capture per-destination
+  // destination_topic strings so the send loop below doesn't need to re-lock.
   RemoteConnectionsList destinations;
-  // figure out which remote connection is due for a message to be sent.
-  for(auto& remote_details: subscribers_[topic_name].remote_details)
+  std::map<std::string, std::string> destination_topic_by_remote;
   {
-    std::unordered_set<float> periods; // group the sending to connections with same period
-    for(auto& connection_rate: remote_details.second.connection_rates)
-      if(connection_rate.second.period >= 0)
-        if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
-        {
-          destinations[remote_details.first].push_back(connection_rate.first);
-          connection_rate.second.last_sent_time = now;
-          if(periods.count(connection_rate.second.period) == 0)
-            periods.insert(connection_rate.second.period);
-        }
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    auto& sub = subscribers_[topic_name];
+    for(auto& remote_details: sub.remote_details)
+    {
+      std::unordered_set<float> periods; // group the sending to connections with same period
+      for(auto& connection_rate: remote_details.second.connection_rates)
+        if(connection_rate.second.period >= 0)
+          if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
+          {
+            destinations[remote_details.first].push_back(connection_rate.first);
+            connection_rate.second.last_sent_time = now;
+            if(periods.count(connection_rate.second.period) == 0)
+              periods.insert(connection_rate.second.period);
+          }
+      destination_topic_by_remote[remote_details.first] = remote_details.second.destination_topic;
+    }
+
+    MessageSizeData size_data;
+    size_data.message_size = message->size();
+    size_data.timestamp = now;
+    size_data.send_results[""][""];
+    sub.statistics.add(size_data);
   }
 
-  MessageSizeData size_data;
-  size_data.message_size = message->size();
-  size_data.timestamp = now;
-  size_data.send_results[""][""];
-  subscribers_[topic_name].statistics.add(size_data);
   if (destinations.empty())
   {
     RCLCPP_DEBUG_STREAM(get_logger(), "No ready destination to send message");
@@ -348,26 +382,33 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
 
   // First, serialize message in a MessageInternal message
   MessageInternal message_internal;
-  
+
   message_internal.source_topic = topic_name;
   message_internal.datatype = topic_type;
   //message.md5sum = msg->getMD5Sum();
   //message.message_definition = msg->getMessageDefinition();
 
-  
+
   message_internal.data.resize(message->size());
   memcpy(message_internal.data.data(), message->get_rcl_serialized_message().buffer, message->size());
-  
 
+  // Send (slow — acquires remote_nodes_mutex_ / pending_connections_mutex_
+  // internally). Updating per-destination statistics afterward locks
+  // subscribers_mutex_ briefly per destination.
   for(auto destination: destinations)
   {
-    message_internal.destination_topic = subscribers_[topic_name].remote_details[destination.first].destination_topic;
+    auto destination_topic_it = destination_topic_by_remote.find(destination.first);
+    message_internal.destination_topic =
+      (destination_topic_it != destination_topic_by_remote.end()) ? destination_topic_it->second : std::string{};
     RemoteConnectionsList connections;
     connections[destination.first] = destination.second;
-    size_data = send(message_internal, connections, false);
+    auto size_data = send(message_internal, connections, false);
     size_data.message_size = message->size();
-    subscribers_[topic_name].statistics.add(size_data);
-  }  
+    {
+      std::lock_guard<std::mutex> lock(subscribers_mutex_);
+      subscribers_[topic_name].statistics.add(size_data);
+    }
+  }
 }
 
 void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -381,9 +422,12 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& so
   const Packet *packet = reinterpret_cast<const Packet*>(message.data());
   RCLCPP_DEBUG_STREAM(get_logger(), "Received packet of type " << int(packet->type) << " and size " << message.size() << " from '" << source_info.node_name << "' (" << source_info.host << ":" << source_info.port << ")");
   std::shared_ptr<RemoteNode> remote_node;
-  auto remote_node_iterator = remote_nodes_.find(source_info.node_name);
-  if(remote_node_iterator != remote_nodes_.end())
-    remote_node = remote_node_iterator->second;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote_node_iterator = remote_nodes_.find(source_info.node_name);
+    if(remote_node_iterator != remote_nodes_.end())
+      remote_node = remote_node_iterator->second;
+  }
   switch(packet->type)
   {
     case PacketType::Data:
@@ -423,50 +467,76 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& so
 
 void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
+  (void)source_info;
   auto outer_message = deserialize<MessageInternal>(message);
 
   rclcpp::SerializedMessage serialized_message;
   serialized_message.reserve(outer_message.data.size());
   memcpy(serialized_message.get_rcl_serialized_message().buffer, outer_message.data.data(), outer_message.data.size());
   serialized_message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
-  
+
   // publish, but first advertise if publisher not present
   auto topic = outer_message.destination_topic;
   if(topic.empty())
     topic = outer_message.source_topic;
-  if (publishers_.find(topic) == publishers_.end())
+
+  rclcpp::GenericPublisher::SharedPtr publisher;
+  bool first_arrival = false;
   {
-    publishers_[topic] = create_generic_publisher(topic, outer_message.datatype, rclcpp::QoS(1));
-    sendBridgeInfo();
+    std::lock_guard<std::mutex> lock(publishers_mutex_);
+    auto it = publishers_.find(topic);
+    if(it == publishers_.end())
+    {
+      publisher = create_generic_publisher(topic, outer_message.datatype, rclcpp::QoS(1));
+      publishers_[topic] = publisher;
+      first_arrival = true;
+    }
+    else
+    {
+      publisher = it->second;
+    }
   }
-  
-  publishers_[topic]->publish(serialized_message);
+
+  // sendBridgeInfo and publish run without publishers_mutex_ held —
+  // both are slow operations that should not block the publishers_ map.
+  if(first_arrival)
+    sendBridgeInfo();
+
+  publisher->publish(serialized_message);
 }
 
 void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
   auto bridge_info = deserialize<BridgeInfo>(message);
 
-  auto remote_node = remote_nodes_[source_info.node_name];
-  if(!remote_node)
+  std::shared_ptr<RemoteNode> remote_node;
   {
-    remote_node = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
-    remote_nodes_[source_info.node_name] = remote_node;
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    remote_node = remote_nodes_[source_info.node_name];
+    if(!remote_node)
+    {
+      remote_node = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
+      remote_nodes_[source_info.node_name] = remote_node;
+    }
   }
   remote_node->update(bridge_info, source_info);
-
 }
 
 void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
   auto rr = deserialize<ResendRequest>(message);
-
-  auto remote_node = remote_nodes_.find(source_info.node_name);
-
   auto now = get_clock()->now();
 
-  if(remote_node != remote_nodes_.end())
-    for(auto connection: remote_node->second->connections())
+  std::vector<std::shared_ptr<Connection>> connections;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote_node = remote_nodes_.find(source_info.node_name);
+    if(remote_node != remote_nodes_.end() && remote_node->second)
+      connections = remote_node->second->connections();
+  }
+  // resend_packets does network I/O — call without remote_nodes_mutex_ held.
+  for(auto& connection: connections)
+    if(connection)
       connection->resend_packets(rr.missing_packets, socket_, now);
 }
 
@@ -474,9 +544,15 @@ void UDPBridge::decodeTopicStatistics(std::vector<uint8_t> const &message, const
 {
   auto topic_statistics = deserialize<TopicStatisticsArray>(message);
 
-  auto remote = remote_nodes_.find(source_info.node_name);
-  if(remote != remote_nodes_.end())
-    remote->second->publishTopicStatistics(topic_statistics);
+  std::shared_ptr<RemoteNode> remote_node;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto it = remote_nodes_.find(source_info.node_name);
+    if(it != remote_nodes_.end())
+      remote_node = it->second;
+  }
+  if(remote_node)
+    remote_node->publishTopicStatistics(topic_statistics);
 }
 
 
@@ -484,31 +560,15 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic, std::st
 {
   if(!remote_node.empty())
   {
-    // if(subscribers_.find(source_topic) == subscribers_.end())
-    // {
-    //   queue_size = std::max(queue_size, uint32_t(1));
-
-    //   rclcpp::QoS qos(queue_size);
-    //   qos.best_effort();
-
-    //   auto info = get_publishers_info_by_topic(source_topic);
-    //   if(!info.empty())
-    //   {
-    //     std::string topic_type = info.front().topic_type();
-
-    //     auto cb = [this, source_topic, topic_type](std::shared_ptr<rclcpp::SerializedMessage> message)
-    //     {
-    //       this->callback(source_topic, topic_type, message);
-    //     };
-    //     rclcpp::SubscriptionOptions options;
-    //     options.ignore_local_publications = true;
-    //     subscribers_[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
-
-    //   }
-    // }
-    subscribers_[source_topic].queue_size = std::max(queue_size, uint32_t(1));
-    subscribers_[source_topic].remote_details[remote_node].destination_topic = destination_topic;
-    subscribers_[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
+    {
+      std::lock_guard<std::mutex> lock(subscribers_mutex_);
+      subscribers_[source_topic].queue_size = std::max(queue_size, uint32_t(1));
+      subscribers_[source_topic].remote_details[remote_node].destination_topic = destination_topic;
+      subscribers_[source_topic].remote_details[remote_node].connection_rates[connection_id].period = period;
+    }
+    // sendBridgeInfo runs without subscribers_mutex_ held (it acquires
+    // its own locks). Calling it inside the locked scope above would
+    // deadlock since it re-acquires subscribers_mutex_.
     sendBridgeInfo();
   }
 }
@@ -559,29 +619,29 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
   {
     const SequencedPacket* wrapped_packet = reinterpret_cast<const SequencedPacket*>(message.data());
 
-    
-
-    auto remote_iterator = remote_nodes_.find(wrapped_packet->source_node);
-    std::shared_ptr<RemoteNode> remote;
-    if(remote_iterator != remote_nodes_.end())
-      remote = remote_iterator->second;
-
     auto updated_source_info = source_info;
     updated_source_info.node_name = wrapped_packet->source_node;
 
-    if(!remote)
+    std::shared_ptr<RemoteNode> remote;
     {
-      if(wrapped_packet->source_node == name_)
+      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+      auto remote_iterator = remote_nodes_.find(wrapped_packet->source_node);
+      if(remote_iterator != remote_nodes_.end())
+        remote = remote_iterator->second;
+
+      if(!remote)
       {
-        RCLCPP_ERROR_STREAM(get_logger(), "Received a packet from a node with our name: " << name_ << " connection: " << wrapped_packet->connection_id << " host: " << source_info.host << " port: " << source_info.port);
-        return;
-      }
-      else
-      {
+        if(wrapped_packet->source_node == name_)
+        {
+          RCLCPP_ERROR_STREAM(get_logger(), "Received a packet from a node with our name: " << name_ << " connection: " << wrapped_packet->connection_id << " host: " << source_info.host << " port: " << source_info.port);
+          return;
+        }
         remote = std::make_shared<RemoteNode>(wrapped_packet->source_node, name_, *this);
         remote_nodes_[wrapped_packet->source_node] = remote;
       }
     }
+    // remote->unwrap and the recursive decode() run without remote_nodes_mutex_
+    // held; decode() will reacquire it for any RemoteNode lookups it needs.
     try
     {
       decode(remote->unwrap(message, updated_source_info), updated_source_info);
@@ -603,68 +663,78 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
   {
     case ConnectionInternal::OPERATION_CONNECT:
       {
-        auto remote = remote_nodes_[source_info.node_name];
-        if(!remote)
         {
-          remote = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
-          remote_nodes_[source_info.node_name] = remote;
+          std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+          auto remote = remote_nodes_[source_info.node_name];
+          if(!remote)
+          {
+            remote = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
+            remote_nodes_[source_info.node_name] = remote;
+          }
+          uint16_t port = source_info.port;
+          if(connection_internal.return_port != 0)
+            port = connection_internal.return_port;
+          auto host = source_info.host;
+          if(!connection_internal.return_host.empty())
+            host = connection_internal.return_host;
+          auto connection = remote->connection(connection_internal.connection_id);
+          if(!connection)
+          {
+            connection = remote->newConnection(connection_internal.connection_id, host, port);
+            remote->connections().push_back(connection);
+          }
+          else
+            connection->setHostAndPort(host, port);
+          if(connection_internal.return_maximum_bytes_per_second > 0)
+            connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
+          connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
+          connection_internal.return_host = connection->returnHost();
+          connection_internal.return_port = connection->returnPort();
         }
-        uint16_t port = source_info.port;
-        if(connection_internal.return_port != 0)
-          port = connection_internal.return_port;
-        auto host = source_info.host;
-        if(!connection_internal.return_host.empty())      
-          host = connection_internal.return_host;
-        auto connection = remote->connection(connection_internal.connection_id);
-        if(!connection)
-        {
-          connection = remote->newConnection(connection_internal.connection_id, host, port);
-          remote->connections().push_back(connection);
-        }
-        else
-          connection->setHostAndPort(host, port);
-        if(connection_internal.return_maximum_bytes_per_second > 0)
-          connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
-        connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
-        connection_internal.return_host = connection->returnHost();
-        connection_internal.return_port = connection->returnPort();
+        // send() acquires its own locks; call without remote_nodes_mutex_.
         send(connection_internal, source_info.node_name, true);
       }
       break;
     case ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE:
-      if(pending_connections_.find(connection_internal.sequence_number) != pending_connections_.end())
       {
-        auto remote = remote_nodes_[source_info.node_name];
-        if(!remote)
+        std::scoped_lock lock(remote_nodes_mutex_, pending_connections_mutex_);
+        if(pending_connections_.find(connection_internal.sequence_number) != pending_connections_.end())
         {
-          remote = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
-          remote_nodes_[source_info.node_name] = remote;
-        }
-        auto connection = remote->connection(connection_internal.connection_id);
-        auto pending_connection = pending_connections_[connection_internal.sequence_number].connection;
-        if(pending_connection)
-        {
-          if(!connection)
+          auto remote = remote_nodes_[source_info.node_name];
+          if(!remote)
           {
-            connection = pending_connection;
-            remote->connections().push_back(connection);
+            remote = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
+            remote_nodes_[source_info.node_name] = remote;
           }
-          else
-          {}
+          auto connection = remote->connection(connection_internal.connection_id);
+          auto pending_connection = pending_connections_[connection_internal.sequence_number].connection;
+          if(pending_connection)
+          {
+            if(!connection)
+            {
+              connection = pending_connection;
+              remote->connections().push_back(connection);
+            }
+          }
+          pending_connections_.erase(connection_internal.sequence_number);
         }
-        pending_connections_.erase(connection_internal.sequence_number);
       }
       break;
     default:
       RCLCPP_WARN_STREAM(get_logger(), "Unhandled ConnectionInternal operation type: " << connection_internal.operation);
   }
-
 }
 
 
 void UDPBridge::resendMissingPackets()
 {
-  for(auto remote: remote_nodes_)
+  // Snapshot remotes under the lock; getMissingPackets and send() run unlocked.
+  std::vector<std::pair<std::string, std::shared_ptr<RemoteNode>>> remotes;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
+  }
+  for(auto remote: remotes)
     if(remote.second)
     {
       auto rr = remote.second->getMissingPackets();
@@ -726,12 +796,20 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
     size_data.sent_size += wrapped_packets.back().packet.size();
   }
 
-  if(!wrapped_packets.empty())
+  if(wrapped_packets.empty())
+    return size_data;
+
+  size_data.timestamp = wrapped_packets.front().timestamp;
+
+  // Resolve all (remote, connections) under the maps' locks, copy out
+  // shared_ptrs, then release before doing the actual send (which performs
+  // network I/O and can stall).
+  std::map<std::string, std::vector<std::shared_ptr<Connection>>> connections_by_remote;
   {
-    size_data.timestamp = wrapped_packets.front().timestamp;
+    std::scoped_lock lock(remote_nodes_mutex_, pending_connections_mutex_);
     for(auto remote: remotes)
     {
-      std::vector<std::shared_ptr<Connection> > connections;
+      std::vector<std::shared_ptr<Connection>> connections;
       if(remote.first.empty()) // connection request?
       {
         for(auto sequence_number_str: remote.second)
@@ -751,14 +829,18 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
               connections.push_back(remote_node->second->connection(connection_id));
         }
       }
-      for(auto connection: connections)
-        if(connection)
-        {
-          auto result = connection->send(wrapped_packets, socket_, name_, is_overhead, now);
-          size_data.send_results[remote.first][connection->id()]=result;
-        }
-      
+      connections_by_remote[remote.first] = std::move(connections);
     }
+  }
+
+  for(auto& entry: connections_by_remote)
+  {
+    for(auto connection: entry.second)
+      if(connection)
+      {
+        auto result = connection->send(wrapped_packets, socket_, name_, is_overhead, now);
+        size_data.send_results[entry.first][connection->id()] = result;
+      }
   }
 
   return size_data;
@@ -767,15 +849,23 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
 void UDPBridge::cleanupSentPackets()
 {
   auto now = get_clock()->now();
-  if(now.nanoseconds() != 0)
+  if(now.nanoseconds() == 0)
+    return;
+  auto old_enough = now - rclcpp::Duration::from_seconds(3.0);
+
+  // Snapshot connections under the lock; cleanup_sent_packets takes its own
+  // per-Connection mutex.
+  std::vector<std::shared_ptr<Connection>> connections;
   {
-    auto old_enough = now - rclcpp::Duration::from_seconds(3.0);
-    for(auto remote: remote_nodes_)
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    for(auto& remote: remote_nodes_)
       if(remote.second)
         for(auto connection: remote.second->connections())
           if(connection)
-            connection->cleanup_sent_packets(old_enough);
+            connections.push_back(connection);
   }
+  for(auto& connection: connections)
+    connection->cleanup_sent_packets(old_enough);
 }
 
 
@@ -800,15 +890,21 @@ void UDPBridge::remoteAdvertise(
   const std::shared_ptr<udp_bridge::Subscribe::Request> request,
   std::shared_ptr<udp_bridge::Subscribe::Response> response)
 {
-  auto remote = remote_nodes_.find(request->remote);
-  if(remote == remote_nodes_.end())
-    return;
-  auto connection = remote->second->connection(request->connection_id);
+  (void)response;
+  std::shared_ptr<Connection> connection;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote = remote_nodes_.find(request->remote);
+    if(remote == remote_nodes_.end())
+      return;
+    connection = remote->second->connection(request->connection_id);
+  }
   if(!connection)
     return;
 
+  // addSubscriberConnection acquires its own locks (and calls sendBridgeInfo
+  // internally); calling sendBridgeInfo a second time here is redundant.
   addSubscriberConnection(request->source_topic, request->destination_topic, request->queue_size, request->period, request->remote, request->connection_id);
-  sendBridgeInfo();
 }
 
 void UDPBridge::statsReportCallback()
@@ -818,18 +914,20 @@ void UDPBridge::statsReportCallback()
     return;
   }
 
-  rclcpp::Time now = get_clock()->now();
   TopicStatisticsArray tsa;
-  for(auto &subscriber: subscribers_)
   {
-    for(auto ts: subscriber.second.statistics.get())
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    for(auto& subscriber: subscribers_)
     {
-      ts.source_node = name_;
-      ts.source_topic = subscriber.first;
-      auto details = subscriber.second.remote_details.find(ts.destination_node);
-      if(details != subscriber.second.remote_details.end())
-        ts.destination_topic = details->second.destination_topic;
-      tsa.topics.push_back(ts);
+      for(auto ts: subscriber.second.statistics.get())
+      {
+        ts.source_node = name_;
+        ts.source_topic = subscriber.first;
+        auto details = subscriber.second.remote_details.find(ts.destination_node);
+        if(details != subscriber.second.remote_details.end())
+          ts.destination_topic = details->second.destination_topic;
+        tsa.topics.push_back(ts);
+      }
     }
   }
 
@@ -885,66 +983,78 @@ void UDPBridge::sendBridgeInfo()
   BridgeInfo bi;
   bi.stamp = get_clock()->now();
   bi.name = name_;
-  for(auto topic: get_topic_names_and_types())
-  {
-    TopicInfo ti;
-    ti.topic = topic.first;
-    ti.datatype = topic.second.front();
-    if (subscribers_.find(topic.first) != subscribers_.end())
-    {
-      for(auto r: subscribers_[topic.first].remote_details)
-      {
-        TopicRemoteDetails trd;
-        trd.remote = r.first;
-        trd.destination_topic = r.second.destination_topic;
-        for(auto c:r.second.connection_rates)
-        {
-          TopicRemoteConnectionDetails trcd;
-          trcd.connection_id = c.first;
-          trcd.period = c.second.period;
-          trd.connections.push_back(trcd);
-        }
-        ti.remotes.push_back(trd);
-      }
-    }
-    bi.topics.push_back(ti);
-  }
+  // get_topic_names_and_types() is a node-graph query; safe to call without
+  // any of our maps' mutexes.
+  auto topic_names_and_types = get_topic_names_and_types();
 
-  for(auto remote_node: remote_nodes_)
-    if(remote_node.second)
+  // Build the topics + remotes sections under scoped_lock so we get a
+  // consistent snapshot. Connection statistics queries take their own
+  // per-Connection mutex.
+  {
+    std::scoped_lock lock(subscribers_mutex_, remote_nodes_mutex_);
+    for(auto topic: topic_names_and_types)
     {
-      udp_bridge::Remote remote;
-      remote.name = remote_node.first;
-      remote.topic_name = remote_node.second->topicName();
-      for(auto connection: remote_node.second->connections())
-        if(connection)
+      TopicInfo ti;
+      ti.topic = topic.first;
+      ti.datatype = topic.second.front();
+      auto sub_it = subscribers_.find(topic.first);
+      if(sub_it != subscribers_.end())
+      {
+        for(auto r: sub_it->second.remote_details)
         {
-          RemoteConnection rc;
-          rc.connection_id = connection->id();
-          rc.host = connection->host();
-          rc.port = connection->port();
-          rc.ip_address = connection->ip_address();
-          rc.return_host = connection->returnHost();
-          rc.return_port = connection->returnPort();
-          rc.source_ip_address = connection->sourceIPAddress();
-          rc.source_port = connection->sourcePort();
-          rc.maximum_bytes_per_second = connection->rateLimit();
-          auto receive_rates = connection->data_receive_rate(rclcpp::Time(bi.stamp).seconds());
-          rc.received_bytes_per_second = receive_rates.first + receive_rates.second;
-          rc.duplicate_bytes_per_second = receive_rates.second;
-          rc.message = connection->data_sent_rate(bi.stamp, PacketSendCategory::message);
-          rc.overhead = connection->data_sent_rate(bi.stamp, PacketSendCategory::overhead);
-          rc.resend = connection->data_sent_rate(bi.stamp, PacketSendCategory::resend);
-          remote.connections.push_back(rc);
+          TopicRemoteDetails trd;
+          trd.remote = r.first;
+          trd.destination_topic = r.second.destination_topic;
+          for(auto c: r.second.connection_rates)
+          {
+            TopicRemoteConnectionDetails trcd;
+            trcd.connection_id = c.first;
+            trcd.period = c.second.period;
+            trd.connections.push_back(trcd);
+          }
+          ti.remotes.push_back(trd);
         }
-      bi.remotes.push_back(remote);
+      }
+      bi.topics.push_back(ti);
     }
+
+    for(auto remote_node: remote_nodes_)
+      if(remote_node.second)
+      {
+        udp_bridge::Remote remote;
+        remote.name = remote_node.first;
+        remote.topic_name = remote_node.second->topicName();
+        for(auto connection: remote_node.second->connections())
+          if(connection)
+          {
+            RemoteConnection rc;
+            rc.connection_id = connection->id();
+            rc.host = connection->host();
+            rc.port = connection->port();
+            rc.ip_address = connection->ip_address();
+            rc.return_host = connection->returnHost();
+            rc.return_port = connection->returnPort();
+            rc.source_ip_address = connection->sourceIPAddress();
+            rc.source_port = connection->sourcePort();
+            rc.maximum_bytes_per_second = connection->rateLimit();
+            auto receive_rates = connection->data_receive_rate(rclcpp::Time(bi.stamp).seconds());
+            rc.received_bytes_per_second = receive_rates.first + receive_rates.second;
+            rc.duplicate_bytes_per_second = receive_rates.second;
+            rc.message = connection->data_sent_rate(bi.stamp, PacketSendCategory::message);
+            rc.overhead = connection->data_sent_rate(bi.stamp, PacketSendCategory::overhead);
+            rc.resend = connection->data_sent_rate(bi.stamp, PacketSendCategory::resend);
+            remote.connections.push_back(rc);
+          }
+        bi.remotes.push_back(remote);
+      }
+  }
 
   bi.next_packet_number = next_packet_number_;
   bi.last_packet_time = last_packet_number_assign_time_;
   bi.local_port = port_;
   bi.maximum_packet_size = max_packet_size_;
 
+  // publish + send run without our maps' mutexes.
   bridge_info_publisher_->publish(bi);
 
   send(bi, allRemotes(), true);
@@ -952,11 +1062,20 @@ void UDPBridge::sendBridgeInfo()
 
 void UDPBridge::sendConnectionRequests()
 {
-  for(auto pending_connection: pending_connections_)
+  // Snapshot pending_connections_ entries we need under the lock, then
+  // call send() (which acquires its own locks) without holding ours.
+  std::vector<std::pair<uint64_t, ConnectionInternal>> snapshots;
+  {
+    std::lock_guard<std::mutex> lock(pending_connections_mutex_);
+    snapshots.reserve(pending_connections_.size());
+    for(auto& pending_connection: pending_connections_)
+      snapshots.emplace_back(pending_connection.first, pending_connection.second.message);
+  }
+  for(auto& s: snapshots)
   {
     RemoteConnectionsList rcl;
-    rcl[""].push_back(std::to_string(pending_connection.first));
-    send(pending_connection.second.message, rcl, true);
+    rcl[""].push_back(std::to_string(s.first));
+    send(s.second, rcl, true);
   }
 }
 
@@ -964,72 +1083,85 @@ void UDPBridge::addRemote(
   std::shared_ptr<udp_bridge::AddRemote::Request> request,
   std::shared_ptr<udp_bridge::AddRemote::Response> response)
 {
+  (void)response;
   auto connection_id = request->connection_id;
   if(connection_id.empty())
     connection_id = "default";
 
+  bool should_send_bridge_info = false;
   if(!request->name.empty())
   {
-    auto remote = remote_nodes_[request->name];
-    if(!remote)
     {
-      remote = std::make_shared<RemoteNode>(request->name, name_, *this);
-      remote_nodes_[request->name] = remote;
-    }
-
-    uint16_t port = 4200;
-    if (request->port != 0)
-      port = request->port;
-
-    auto connection = remote->connection(connection_id);
-    if(!request->address.empty())
-    {
-      if(!connection)
+      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+      auto remote = remote_nodes_[request->name];
+      if(!remote)
       {
-        connection = remote->newConnection(connection_id, request->address, port);
-        remote->connections().push_back(connection);
+        remote = std::make_shared<RemoteNode>(request->name, name_, *this);
+        remote_nodes_[request->name] = remote;
       }
-      else
-        connection->setHostAndPort(request->address, port);
+
+      uint16_t port = 4200;
+      if (request->port != 0)
+        port = request->port;
+
+      auto connection = remote->connection(connection_id);
+      if(!request->address.empty())
+      {
+        if(!connection)
+        {
+          connection = remote->newConnection(connection_id, request->address, port);
+          remote->connections().push_back(connection);
+        }
+        else
+          connection->setHostAndPort(request->address, port);
+      }
+      if(connection)
+      {
+        connection->setReturnHostAndPort(request->return_address, request->return_port);
+        connection->setRateLimit(request->maximum_bytes_per_second);
+        should_send_bridge_info = true;
+      }
     }
-    if(connection)
-    {
-      connection->setReturnHostAndPort(request->return_address, request->return_port);
-      connection->setRateLimit(request->maximum_bytes_per_second);
+    if(should_send_bridge_info)
       sendBridgeInfo();
-    }
   }
 
   if(request->name.empty() || request->return_maximum_bytes_per_second > 0) // we don't know the remote name, so send a connection request
   {
-    auto sequence_number = next_connection_internal_message_sequence_number_++;
-    auto& connection_internal = pending_connections_[sequence_number];
-    connection_internal.message.connection_id = connection_id;
-    connection_internal.message.sequence_number = sequence_number;
-    connection_internal.message.operation = ConnectionInternal::OPERATION_CONNECT;
-    connection_internal.message.return_host = request->return_address;
-    connection_internal.message.return_port = request->return_port;
-    connection_internal.message.return_maximum_bytes_per_second = request->return_maximum_bytes_per_second;
-    if(!request->address.empty())
+    ConnectionInternal connection_internal_message;
     {
-      connection_internal.connection = std::make_shared<Connection>(connection_id, request->address, request->port);
-      connection_internal.connection->setRateLimit(request->maximum_bytes_per_second);
+      std::lock_guard<std::mutex> lock(pending_connections_mutex_);
+      auto sequence_number = next_connection_internal_message_sequence_number_++;
+      auto& connection_internal = pending_connections_[sequence_number];
+      connection_internal.message.connection_id = connection_id;
+      connection_internal.message.sequence_number = sequence_number;
+      connection_internal.message.operation = ConnectionInternal::OPERATION_CONNECT;
+      connection_internal.message.return_host = request->return_address;
+      connection_internal.message.return_port = request->return_port;
+      connection_internal.message.return_maximum_bytes_per_second = request->return_maximum_bytes_per_second;
+      if(!request->address.empty())
+      {
+        connection_internal.connection = std::make_shared<Connection>(connection_id, request->address, request->port);
+        connection_internal.connection->setRateLimit(request->maximum_bytes_per_second);
+      }
+      connection_internal_message = connection_internal.message;
     }
     RemoteConnectionsList rcl;
     if(request->name.empty())
-      rcl[""].push_back(std::to_string(sequence_number));
+      rcl[""].push_back(std::to_string(connection_internal_message.sequence_number));
     else
       rcl[request->name].push_back(connection_id);
-    send(connection_internal.message, rcl, true);
+    send(connection_internal_message, rcl, true);
   }
-
 }
 
 void UDPBridge::listRemotes(
   std::shared_ptr<udp_bridge::ListRemotes::Request> request,
   std::shared_ptr<udp_bridge::ListRemotes::Response> response)
 {
+  (void)request;
   auto now = get_clock()->now();
+  std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
   for(auto remote: remote_nodes_)
     if(remote.second)
     {
@@ -1064,6 +1196,7 @@ void UDPBridge::listRemotes(
 UDPBridge::RemoteConnectionsList UDPBridge::allRemotes() const
 {
   RemoteConnectionsList ret;
+  std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
   for(auto remote: remote_nodes_)
     if(remote.second)
       ret[remote.first];
@@ -1084,26 +1217,37 @@ void UDPBridge::syncDiagnosticTasks()
 {
   if(!diagnostic_updater_)
     return;
-  for(auto& remote_entry: remote_nodes_)
+  // Snapshot (remote_name, connection_id) pairs under the lock; the
+  // diagnostic_updater_->add call captures by value so the registered task
+  // does not need to outlive the lock.
+  std::vector<std::pair<std::string, std::string>> remote_connection_pairs;
   {
-    const std::string& remote_name = remote_entry.first;
-    if(!remote_entry.second)
-      continue;
-    for(auto& connection: remote_entry.second->connections())
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    for(auto& remote_entry: remote_nodes_)
     {
-      if(!connection)
+      if(!remote_entry.second)
         continue;
-      std::string connection_id = connection->id();
-      std::string task_name = "udp_bridge " + name_ + ": " + remote_name + ": " + connection_id;
-      if(diagnostic_task_names_.count(task_name))
-        continue;
-      diagnostic_updater_->add(task_name,
-        [this, remote_name, connection_id](diagnostic_updater::DiagnosticStatusWrapper& stat)
-        {
-          diagnoseConnection(remote_name, connection_id, stat);
-        });
-      diagnostic_task_names_.insert(task_name);
+      for(auto& connection: remote_entry.second->connections())
+      {
+        if(!connection)
+          continue;
+        remote_connection_pairs.emplace_back(remote_entry.first, connection->id());
+      }
     }
+  }
+  for(auto& pair: remote_connection_pairs)
+  {
+    const std::string& remote_name = pair.first;
+    const std::string& connection_id = pair.second;
+    std::string task_name = "udp_bridge " + name_ + ": " + remote_name + ": " + connection_id;
+    if(diagnostic_task_names_.count(task_name))
+      continue;
+    diagnostic_updater_->add(task_name,
+      [this, remote_name, connection_id](diagnostic_updater::DiagnosticStatusWrapper& stat)
+      {
+        diagnoseConnection(remote_name, connection_id, stat);
+      });
+    diagnostic_task_names_.insert(task_name);
   }
 }
 
@@ -1111,13 +1255,17 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
                                    const std::string& connection_id,
                                    diagnostic_updater::DiagnosticStatusWrapper& stat)
 {
-  auto remote_it = remote_nodes_.find(remote_name);
-  if(remote_it == remote_nodes_.end() || !remote_it->second)
+  std::shared_ptr<Connection> connection;
   {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "remote not registered");
-    return;
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote_it = remote_nodes_.find(remote_name);
+    if(remote_it == remote_nodes_.end() || !remote_it->second)
+    {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "remote not registered");
+      return;
+    }
+    connection = remote_it->second->connection(connection_id);
   }
-  auto connection = remote_it->second->connection(connection_id);
   if(!connection)
   {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "connection not registered");

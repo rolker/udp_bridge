@@ -71,13 +71,27 @@ Six commits on `feature/issue-11`:
 
    **3b — Mutex audit + lock guards.** Adds `std::lock_guard` /
    `std::scoped_lock` at every site that accesses shared state across
-   callback groups. Lock order (to prevent deadlock):
-   `remote_nodes_mutex_` → `subscribers_mutex_` → `publishers_mutex_` →
-   `pending_connections_mutex_`. Helper functions (e.g. `sendBridgeInfo`)
-   document that callers must hold the relevant locks; entry points
-   (timers, callbacks, service handlers) acquire them. Pattern: lock
-   briefly to access the map, copy out shared_ptrs, release before
-   slow operations (publish, network I/O).
+   callback groups. Multi-mutex acquisition uses `std::scoped_lock`
+   (deadlock-free by construction); no manual lock-ordering required.
+   The opposite of what the original plan said: helpers (`sendBridgeInfo`,
+   `allRemotes`, `sendConnectionRequests`, `addSubscriberConnection`,
+   the `send()` template specialization) acquire **their own** locks;
+   callers do NOT pre-lock. Pattern: lock briefly to access the map,
+   copy out shared_ptrs, release before slow operations (publish,
+   network I/O). Locking convention documented at the top of
+   `udp_bridge.cpp`.
+
+   `Connection` gets three private mutexes: `sent_packets_mutex_`,
+   `sent_packet_statistics_mutex_`, and `receive_history_mutex_` —
+   guarding the three pieces of state that are written by the
+   receive/send (socket-drain) path and read by stats / diagnostic
+   timers (periodic group). One API change: `Connection::last_receive_time()`
+   returns `double` by value instead of `const double&` (a reference
+   would dangle after the mutex unlocks). The single caller in
+   `udp_bridge.cpp` already stored to a `double`, so behavior is
+   unchanged.
+
+   Build verified clean; the existing 8 tests pass.
 
    Three callback groups created in `UDPBridge::on_configure`:
    - `socket_drain_group_` (MutuallyExclusive) — `spin_timer_` only.

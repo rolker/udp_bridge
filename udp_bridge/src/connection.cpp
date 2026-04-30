@@ -141,13 +141,15 @@ std::string Connection::ip_address_with_port() const
   return ip_address_+":"+std::to_string(port_);
 }
 
-const double& Connection::last_receive_time() const
+double Connection::last_receive_time() const
 {
+  std::lock_guard<std::mutex> lock(receive_history_mutex_);
   return last_receive_time_;
 }
 
 void Connection::update_last_receive_time(double t, int data_size, bool duplicate)
 {
+  std::lock_guard<std::mutex> lock(receive_history_mutex_);
   last_receive_time_ = t;
   ReceivedSize rs;
   rs.size = data_size;
@@ -162,8 +164,14 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   for(const auto& p: packets)
     total_size += p.packet_size;
 
-  if(!sent_packet_statistics_.can_send(total_size, data_rate_limit_, now))
+  bool can_send;
   {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    can_send = sent_packet_statistics_.can_send(total_size, data_rate_limit_, now);
+  }
+  if(!can_send)
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     for(const auto& p: packets)
     {
 
@@ -184,7 +192,10 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   for(const auto& p: packets)
   {
     auto packet = WrappedPacket(p, remote, id_);
-    sent_packets_[packet.packet_number] = packet;
+    {
+      std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+      sent_packets_[packet.packet_number] = packet;
+    }
     PacketSendCategory category = PacketSendCategory::message;
     if(is_overhead)
       category = PacketSendCategory::overhead;
@@ -205,13 +216,20 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   ret.send_result = SendResult::failed;
   if(addresses_.empty())
   {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
     return ret;
   }
 
-  if(!sent_packet_statistics_.can_send(data.size(), data_rate_limit_, ret.timestamp))
+  bool can_send;
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    can_send = sent_packet_statistics_.can_send(data.size(), data_rate_limit_, ret.timestamp);
+  }
+  if(!can_send)
   {
     ret.send_result = SendResult::dropped;
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
     return ret;
   }
@@ -236,8 +254,11 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
               tries+=1;
               break;
             case ECONNREFUSED:
+            {
+              std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
               sent_packet_statistics_.add(ret);
               return ret;
+            }
             default:
               throw(ConnectionException(strerror(errno)));
           }
@@ -246,6 +267,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
         else
         {
           ret.send_result = SendResult::success;
+          std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
           sent_packet_statistics_.add(ret);
           return ret;
         }
@@ -264,12 +286,14 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   // {
   //     ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
   // }
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   sent_packet_statistics_.add(ret);
   return ret;
 }
 
 std::pair<double, double> Connection::data_receive_rate(double time)
 {
+  std::lock_guard<std::mutex> lock(receive_history_mutex_);
   double five_secs_ago = time - 5;
   while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < five_secs_ago)
     data_size_received_history_.erase(data_size_received_history_.begin());
@@ -294,28 +318,42 @@ std::pair<double, double> Connection::data_receive_rate(double time)
 
 DataRates Connection::data_sent_rate(rclcpp::Time time, PacketSendCategory category)
 {
+  (void)time;
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   return sent_packet_statistics_.get(category);
 }
 
 DataRates Connection::data_sent_rate(rclcpp::Time time)
 {
   (void)time;
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   return sent_packet_statistics_.get();
 }
 
 
 void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, int socket, rclcpp::Time now)
 {
-  for(auto packet_number: missing_packets)
+  // Copy out the packets we need under the lock, then send without it —
+  // send() does network I/O and we don't want to hold sent_packets_mutex_
+  // for that long.
+  std::vector<std::vector<uint8_t>> packets_to_resend;
   {
-    auto packet_to_resend = sent_packets_.find(packet_number);
-    if(packet_to_resend != sent_packets_.end())
-      send(packet_to_resend->second.packet, socket, PacketSendCategory::resend, now);
+    std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+    packets_to_resend.reserve(missing_packets.size());
+    for(auto packet_number: missing_packets)
+    {
+      auto it = sent_packets_.find(packet_number);
+      if(it != sent_packets_.end())
+        packets_to_resend.push_back(it->second.packet);
+    }
   }
+  for(auto& packet: packets_to_resend)
+    send(packet, socket, PacketSendCategory::resend, now);
 }
 
 void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
 {
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
   std::vector<uint64_t> expired;
   for(auto sp: sent_packets_)
     if(sp.second.timestamp < cutoff_time)

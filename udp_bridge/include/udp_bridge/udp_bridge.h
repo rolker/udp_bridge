@@ -232,10 +232,10 @@ private:
   rclcpp::CallbackGroup::SharedPtr periodic_group_;
 
   std::map<std::string, SubscriberDetails> subscribers_;
-  std::mutex subscribers_mutex_;
+  mutable std::mutex subscribers_mutex_;
 
   std::map<std::string, rclcpp::GenericPublisher::SharedPtr> publishers_;
-  std::mutex publishers_mutex_;
+  mutable std::mutex publishers_mutex_;
 
   rclcpp::TimerBase::SharedPtr stats_report_timer_;
   rclcpp::TimerBase::SharedPtr bridge_info_timer_;
@@ -261,10 +261,10 @@ private:
 
   /// Map pending remote connections to their message sequence_number.
   std::map<uint64_t, PendingConnection> pending_connections_;
-  std::mutex pending_connections_mutex_;
+  mutable std::mutex pending_connections_mutex_;
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
-  std::mutex remote_nodes_mutex_;
+  mutable std::mutex remote_nodes_mutex_;
 };
 
 } // namespace udp_bridge

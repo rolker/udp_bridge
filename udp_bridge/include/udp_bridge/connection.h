@@ -8,6 +8,7 @@
 #include <memory>
 #include <list>
 #include <map>
+#include <mutex>
 #include <netinet/in.h>
 #include <udp_bridge/packet.h>
 #include "udp_bridge/types.h"
@@ -60,7 +61,11 @@ public:
 
   const sockaddr_in* socket_address() const;
 
-  const double& last_receive_time() const;
+  /// Returns the time (seconds since epoch) the last packet was received
+  /// on this connection, or 0.0 if no packet has been received yet.
+  /// Returns by value (not reference) because the underlying field is
+  /// guarded by a mutex; a reference would dangle after lock release.
+  double last_receive_time() const;
   void update_last_receive_time(double t, int data_size, bool duplicate);
 
   void resend_packets(const std::vector<uint64_t> &missing_packets, int socket, rclcpp::Time now);
@@ -124,14 +129,26 @@ private:
     bool duplicate = false;
   };
   std::map<double, std::vector<ReceivedSize> > data_size_received_history_;
+  /// Guards data_size_received_history_ and last_receive_time_. Written by
+  /// update_last_receive_time on the receive (socket-drain) path; read by
+  /// data_receive_rate / last_receive_time on the periodic-stats path.
+  mutable std::mutex receive_history_mutex_;
 
   /// History of recently sent packets.
   /// Each connection keeps a buffer of sent packets in case a resend is needed.
-  /// The same data packets are replicated for each connection to account for 
+  /// The same data packets are replicated for each connection to account for
   /// different source_node or connection_id.
   std::map<uint64_t, WrappedPacket> sent_packets_;
+  /// Guards sent_packets_. Touched by send (writes), resend_packets
+  /// (reads), and cleanup_sent_packets (writes), which can be invoked
+  /// from different callback groups under MultiThreadedExecutor.
+  mutable std::mutex sent_packets_mutex_;
 
   PacketSendStatistics sent_packet_statistics_;
+  /// Guards sent_packet_statistics_. Updated on every send (republish
+  /// or socket-drain group) and read by stats / diagnostic timers
+  /// (periodic group).
+  mutable std::mutex sent_packet_statistics_mutex_;
 };
 
 
