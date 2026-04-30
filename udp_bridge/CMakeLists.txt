@@ -16,6 +16,9 @@ find_package(udp_bridge_interfaces REQUIRED)
 
 find_package(ZLIB REQUIRED)
 
+# std_msgs is a test-only dependency for the QoS-matching integration test.
+find_package(std_msgs QUIET)
+
 option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
 if(ENABLE_COVERAGE)
   add_compile_options(-fprofile-arcs -ftest-coverage)
@@ -75,6 +78,19 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_defragmenter test/test_defragmenter.cpp)
   target_link_libraries(test_defragmenter ${PROJECT_NAME})
+
+  ament_add_gtest(test_qos_resolution test/test_qos_resolution.cpp)
+  target_link_libraries(test_qos_resolution ${PROJECT_NAME})
+
+  if(std_msgs_FOUND)
+    ament_add_gtest(test_qos_matching_integration test/test_qos_matching_integration.cpp)
+    target_link_libraries(test_qos_matching_integration
+      ${PROJECT_NAME}
+      ${std_msgs_TARGETS}
+    )
+  else()
+    message(STATUS "udp_bridge: std_msgs not found; skipping QoS-matching integration test")
+  endif()
 endif()
 
 ament_package()
