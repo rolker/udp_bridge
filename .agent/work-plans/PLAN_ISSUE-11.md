@@ -44,7 +44,14 @@ Six commits on `feature/issue-11`:
    dimension policy (reliability=BEST_AVAILABLE, durability=opt-in
    transient_local, history=KEEP_LAST(N), deadline/lifespan/liveliness not
    translated), per-topic override mechanism, future-work pointer for
-   source-QoS advertisement in `bridge_info`.
+   source-QoS advertisement in `bridge_info`. Also covers
+   `MessageInternal` schema mismatched-pair behavior: empty/zero values
+   from an old sender are treated as defaults; ROS 2 message
+   serialization tolerates trailing-field absence so a new sender's
+   QoS fields are simply not read by an old receiver (verify the
+   trailing-field-tolerance behavior during implementation; if not
+   automatic, document explicitly that both endpoints must be redeployed
+   together).
 3. **Executor split + thread-safety primitives.** `udp_bridge_node.cpp`
    switches to `MultiThreadedExecutor`. Three callback groups created in
    `UDPBridge::on_configure`:
@@ -77,6 +84,21 @@ Six commits on `feature/issue-11`:
    - `diagnostic_task_names_` (`udp_bridge.h:240`) — modified in
      `syncDiagnosticTasks` (periodic group). Single-writer; no contention
      today, but document the invariant.
+   - `pending_connections_` (`udp_bridge.h:254`) — touched by
+     `decodeConnection` (socket-drain group, on connection-management
+     packet receipt) and the four service handlers (currently default
+     callback group, see below). Add `std::mutex`.
+   - **Service handlers** (`subscribe_service_`, `advertise_service_`,
+     `add_remote_service_`, `list_remotes_service_` declared at
+     `udp_bridge.h:217-220`) — under `MultiThreadedExecutor` these
+     default to the node's default callback group, which races against
+     the new socket-drain / republish / periodic groups. Assign all four
+     services to the **periodic group** (services are infrequent admin
+     calls; same group as other admin-style timers is fine and avoids
+     proliferating groups). The mutexes added for `m_subscribers`,
+     `remote_nodes_`, and `pending_connections_` cover the actual data
+     races; the group assignment ensures we don't accidentally serialize
+     hot-path work behind a service call.
    Add a brief `// callback group invariants:` comment block in
    `udp_bridge_node.cpp` explaining the three groups and what each owns.
 4. **Receive-side publisher QoS = BEST_AVAILABLE + per-topic config wiring.**
@@ -127,7 +149,13 @@ Six commits on `feature/issue-11`:
      is exploratory. Not wired into CI (mininet needs root and a Linux
      kernel; flaky in containerized runners). The gtest integration test
      in this same commit is the CI signal; mininet is the closed-loop
-     manual check on a dev machine before merge.
+     manual check on a dev machine before merge. Capture a
+     `Recv-Q`-over-time trace (e.g., a CSV from periodic
+     `/proc/net/udp` snapshots, or a small `python3 + getsockopt` helper)
+     before-and-after the killed-subscriber event; include the trace in
+     the PR description or as a dated results file under
+     `udp_bridge/test/mininet/results/` so the wedge-or-no-wedge outcome
+     is reviewable rather than narrated.
 6. **Validation.** Build + run all tests. Run `make test` from workspace
    root. Capture output for PR description. Flag #10 reproduction outcome
    explicitly.
@@ -177,7 +205,7 @@ Six commits on `feature/issue-11`:
 |---|---|---|
 | `udp_bridge.cpp` executor / threading | Connection state synchronization | Yes — commit 3 mutex audit |
 | `MessageInternal.msg` schema | `udp_bridge_interfaces` build, downstream readers | Yes — schema is internal to udp_bridge, only `udp_bridge.cpp` reads it; backward-compat handled by treating empty strings as defaults |
-| Receive-side publisher QoS default | CAMP subscribers (`layers/main/ui_ws/src/camp/src/camp2/ros/`) | No update needed — BEST_AVAILABLE matches RELIABLE; the whole point of choosing BEST_AVAILABLE over BEST_EFFORT |
+| Receive-side publisher QoS default | CAMP subscribers (`layers/main/ui_ws/src/camp/src/camp2/ros/`) | No code update needed — `BEST_AVAILABLE` matches RELIABLE subscribers automatically; that's why this option was chosen over a flat `BEST_EFFORT` flip. **No per-topic `reliability: reliable` override inventory ships in this PR**; `BEST_AVAILABLE` matching is the sole mitigation for the CAMP blast-radius concern raised in the review-issue comment. The per-topic override (item 3) is the future hatch if a specific topic ever needs guaranteed reliable receive-side semantics — but no current consumer demands it, so we don't pre-emptively populate the inventory. |
 | `data_rates.msg` / `bridge_info.msg` | `rqt_udp_bridge` consumer | Not changed by this PR — confirmed |
 
 ## Open Questions
@@ -188,6 +216,24 @@ None remaining at plan time. All five questions resolved during planning
 ## Estimated Scope
 
 Single PR, six commits. Working estimate: ~600-900 lines of code change plus ~300-500 lines of new tests, plus the design doc (~150 lines). Some additional churn from `m_*` → `*_` renames in any file touched.
+
+## Updates from review-plan
+
+PR-#12 review (https://github.com/rolker/udp_bridge/pull/12#issuecomment-4356543190)
+flagged five items; absorbed inline:
+
+1. Thread-safety audit was missing `pending_connections_` and the four
+   service handlers under `MultiThreadedExecutor`. Now enumerated in
+   commit 3 with a periodic-group assignment for the services.
+2. CAMP override decision made explicit in the Consequences table and
+   in commit 2's `QOS_DESIGN.md` outline ("`BEST_AVAILABLE` matching is
+   the sole mitigation; no override inventory ships").
+3. `MessageInternal` mismatched-pair compatibility note added to commit
+   2's `QOS_DESIGN.md` outline.
+4. Mininet test artifact requirement (`Recv-Q` trace) added to commit 5.
+5. Reviewer's "typo" finding (`udp_bridge.cpp:7` vs `udp_bridge_node.cpp:7`)
+   was a misread — both the plan and the issue body correctly say
+   `udp_bridge_node.cpp:7`. No fix needed.
 
 ## Decisions made during planning
 
