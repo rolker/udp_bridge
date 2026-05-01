@@ -66,7 +66,13 @@ install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  
+  # std_msgs is required for the QoS-matching integration test, which
+  # validates the load-bearing BEST_AVAILABLE matching guarantee
+  # against the active rmw. Marking it REQUIRED here (instead of QUIET
+  # at the top level + a silent-skip below) prevents minimal-dependency
+  # CI builds from quietly losing that coverage.
+  find_package(std_msgs REQUIRED)
+
   ament_add_gtest(utest test/utest.cpp)
   target_link_libraries(utest ${PROJECT_NAME})
 
@@ -75,6 +81,15 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_defragmenter test/test_defragmenter.cpp)
   target_link_libraries(test_defragmenter ${PROJECT_NAME})
+
+  ament_add_gtest(test_qos_resolution test/test_qos_resolution.cpp)
+  target_link_libraries(test_qos_resolution ${PROJECT_NAME})
+
+  ament_add_gtest(test_qos_matching_integration test/test_qos_matching_integration.cpp)
+  target_link_libraries(test_qos_matching_integration
+    ${PROJECT_NAME}
+    ${std_msgs_TARGETS}
+  )
 endif()
 
 ament_package()

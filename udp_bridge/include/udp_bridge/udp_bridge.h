@@ -1,26 +1,32 @@
 #ifndef UDP_BRIDGE_UDP_BRIDGE_H
 #define UDP_BRIDGE_UDP_BRIDGE_H
 
+// C system headers
+#include <netinet/in.h>
+
+// C++ standard library
+#include <atomic>
+#include <mutex>
+#include <set>
+
+// Other library / project includes
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "rclcpp/generic_publisher.hpp"
 #include "rclcpp/generic_subscription.hpp"
 #include "diagnostic_updater/diagnostic_updater.hpp"
 
-#include <set>
-
 #include "udp_bridge_interfaces/srv/subscribe.hpp"
 #include "udp_bridge_interfaces/srv/add_remote.hpp"
 #include "udp_bridge_interfaces/srv/list_remotes.hpp"
+#include "udp_bridge_interfaces/msg/connection_internal.hpp"
+#include "udp_bridge_interfaces/msg/bridge_info.hpp"
+#include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 
-#include <netinet/in.h>
 #include "connection.h"
 #include "packet.h"
 #include "defragmenter.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
-#include "udp_bridge_interfaces/msg/connection_internal.hpp"
-#include "udp_bridge_interfaces/msg/bridge_info.hpp"
-#include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 //#include "std_msgs/msg/int32.hpp"
 
 namespace udp_bridge
@@ -197,7 +203,18 @@ private:
   /// @param period Minimum delay between messages sent in seconds
   /// @param remote_node destination udp_bridge
   /// @param connection_id  connection to remote to use
-  void addSubscriberConnection(std::string const &source_topic, std::string const &destination_topic, uint32_t queue_size, float period, std::string remote_node, std::string connection_id);
+  /// @param reliability per-topic destination publisher reliability
+  ///                    ("best_available" default, "reliable", "best_effort")
+  /// @param durability per-topic durability ("volatile" default, "transient_local")
+  /// @param history_depth KEEP_LAST(N); 0 means default 1
+  void addSubscriberConnection(std::string const &source_topic,
+                               std::string const &destination_topic,
+                               uint32_t queue_size, float period,
+                               std::string remote_node,
+                               std::string connection_id,
+                               std::string reliability = "",
+                               std::string durability = "",
+                               uint32_t history_depth = 0);
 
   /// @brief Checks configured local topics and attempts to subscribe
   void updateLocalSubscriptions();  
@@ -209,10 +226,16 @@ private:
   /// Name used to identify this node to other udp_bridge nodes
   std::string name_;
 
-  int m_socket;
-  uint16_t m_port {4200};
-  int m_max_packet_size {65500};
-  uint32_t next_fragmented_packet_id_ {0};
+  // socket_, port_, max_packet_size_ are set once in on_configure and
+  // are read-only afterward — no synchronization needed.
+  int socket_;
+  uint16_t port_ {4200};
+  int max_packet_size_ {65500};
+
+  // Protocol counters — incremented from multiple callback groups via
+  // send<>(), so atomic is required. fetch_add(1) gives a unique value
+  // per call.
+  std::atomic<uint32_t> next_fragmented_packet_id_ {0};
 
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr subscribe_service_;
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr advertise_service_;
@@ -223,10 +246,18 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<udp_bridge_interfaces::msg::BridgeInfo>::SharedPtr bridge_info_publisher_;
 
   //rclcpp::Subscriber  maximum_packet_size_subscriber_;
-    
-  std::map<std::string, SubscriberDetails> m_subscribers;
 
-  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> m_publishers;
+  /// Callback groups for the MultiThreadedExecutor.
+  /// Invariants documented in udp_bridge_node.cpp.
+  rclcpp::CallbackGroup::SharedPtr socket_drain_group_;
+  rclcpp::CallbackGroup::SharedPtr republish_group_;
+  rclcpp::CallbackGroup::SharedPtr periodic_group_;
+
+  std::map<std::string, SubscriberDetails> subscribers_;
+  mutable std::mutex subscribers_mutex_;
+
+  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> publishers_;
+  mutable std::mutex publishers_mutex_;
 
   rclcpp::TimerBase::SharedPtr stats_report_timer_;
   rclcpp::TimerBase::SharedPtr bridge_info_timer_;
@@ -239,10 +270,18 @@ private:
   /// remotes/connections appear.
   std::set<std::string> diagnostic_task_names_;
 
-  uint64_t next_packet_number_ = 0;
-  rclcpp::Time last_packet_number_assign_time_;
+  // Protocol counters touched from multiple callback groups; atomic is
+  // required to prevent duplicate packet numbers from corrupting the
+  // resend protocol. last_packet_number_assign_time_ is stored as
+  // nanoseconds so it can be a primitive atomic; readers reconstruct
+  // an rclcpp::Time on access. The two writes (next_packet_number_++
+  // and the time stamp) aren't atomic together — diagnostic skew
+  // between bi.next_packet_number and bi.last_packet_time is acceptable
+  // (both are diagnostic display).
+  std::atomic<uint64_t> next_packet_number_ {0};
+  std::atomic<int64_t> last_packet_number_assign_time_ns_ {0};
 
-  uint64_t next_connection_internal_message_sequence_number_ = 0;
+  std::atomic<uint64_t> next_connection_internal_message_sequence_number_ {0};
 
   struct PendingConnection
   {
@@ -252,8 +291,10 @@ private:
 
   /// Map pending remote connections to their message sequence_number.
   std::map<uint64_t, PendingConnection> pending_connections_;
+  mutable std::mutex pending_connections_mutex_;
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
+  mutable std::mutex remote_nodes_mutex_;
 };
 
 } // namespace udp_bridge

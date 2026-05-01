@@ -16,37 +16,43 @@ using namespace udp_bridge_interfaces::msg;
 Connection::Connection(std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
   id_(id), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
 {
-  resolveHost();
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  resolveHost();  // re-enters mutex (recursive)
 }
 
 void Connection::setHostAndPort(const std::string &host, uint16_t port)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   if(host != host_ || port != port_)
   {
     host_ = host;
     port_ = port;
-    resolveHost();
+    resolveHost();  // re-enters mutex (recursive)
   }
 }
 
-const std::string& Connection::sourceIPAddress() const
+std::string Connection::sourceIPAddress() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return source_ip_address_;
 }
 
 uint16_t Connection::sourcePort() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return source_port_;
 }
 
 void Connection::setSourceIPAndPort(const std::string &source_ip, uint16_t source_port)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   source_ip_address_ = source_ip;
   source_port_ = source_port;
 }
 
 void Connection::setRateLimit(uint32_t maximum_bytes_per_second)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   if(maximum_bytes_per_second == 0)
     data_rate_limit_ = default_rate_limit;
   else
@@ -55,24 +61,26 @@ void Connection::setRateLimit(uint32_t maximum_bytes_per_second)
 
 uint32_t Connection::rateLimit() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return data_rate_limit_;
 }
 
 void Connection::resolveHost()
 {
+  // Caller (ctor or setHostAndPort) holds config_mutex_.
   addresses_.clear();
 
   if(host_.empty() || port_ == 0)
     return;
 
   struct addrinfo hints = {0}, *addresses;
-  
+
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_protocol = IPPROTO_UDP;
-  
+
   std::string port_string = std::to_string(port_);
-  
+
   int ret = getaddrinfo(host_.c_str(), port_string.c_str(), &hints, &addresses);
   if(ret != 0)
     throw std::runtime_error(gai_strerror(ret));
@@ -86,15 +94,9 @@ void Connection::resolveHost()
   freeaddrinfo(addresses);
 }
 
-const sockaddr_in* Connection::socket_address() const
-{
-  if(addresses_.empty())
-    return nullptr;
-  return &addresses_.front();
-}
-
 std::string Connection::str() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   std::stringstream ret;
   ret << host_ << ":" << port_;
   return ret.str();
@@ -105,49 +107,58 @@ const std::string& Connection::id() const
   return id_;
 }
 
-const std::string& Connection::returnHost() const
+std::string Connection::returnHost() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return return_host_;
 }
 
 void Connection::setReturnHostAndPort(const std::string &return_host, uint16_t return_port)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return_host_ = return_host;
   return_port_ = return_port;
 }
 
 uint16_t Connection::returnPort() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return return_port_;
 }
 
-const std::string& Connection::host() const
+std::string Connection::host() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return host_;
 }
 
 uint16_t Connection::port() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return port_;
 }
 
-const std::string& Connection::ip_address() const
+std::string Connection::ip_address() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return ip_address_;
 }
 
 std::string Connection::ip_address_with_port() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return ip_address_+":"+std::to_string(port_);
 }
 
-const double& Connection::last_receive_time() const
+double Connection::last_receive_time() const
 {
+  std::lock_guard<std::mutex> lock(receive_history_mutex_);
   return last_receive_time_;
 }
 
 void Connection::update_last_receive_time(double t, int data_size, bool duplicate)
 {
+  std::lock_guard<std::mutex> lock(receive_history_mutex_);
   last_receive_time_ = t;
   ReceivedSize rs;
   rs.size = data_size;
@@ -162,8 +173,22 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   for(const auto& p: packets)
     total_size += p.packet_size;
 
-  if(!sent_packet_statistics_.can_send(total_size, data_rate_limit_, now))
+  // Snapshot rate_limit under config_mutex_; the can_send check then
+  // uses the snapshot under sent_packet_statistics_mutex_ separately.
+  uint32_t rate_limit;
   {
+    std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+    rate_limit = data_rate_limit_;
+  }
+
+  bool can_send;
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    can_send = sent_packet_statistics_.can_send(total_size, rate_limit, now);
+  }
+  if(!can_send)
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     for(const auto& p: packets)
     {
 
@@ -184,7 +209,10 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   for(const auto& p: packets)
   {
     auto packet = WrappedPacket(p, remote, id_);
-    sent_packets_[packet.packet_number] = packet;
+    {
+      std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+      sent_packets_[packet.packet_number] = packet;
+    }
     PacketSendCategory category = PacketSendCategory::message;
     if(is_overhead)
       category = PacketSendCategory::overhead;
@@ -203,15 +231,38 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   ret.size = data.size();
   ret.category = category;
   ret.send_result = SendResult::failed;
-  if(addresses_.empty())
+
+  // Snapshot the destination address + rate limit under config_mutex_
+  // before doing any network I/O. We must NOT pass &addresses_.front()
+  // across the unlock — a concurrent setHostAndPort() → resolveHost()
+  // would clear() then push_back(), and the pointer in flight could
+  // dangle by the time sendto() reads it.
+  sockaddr_in destination;
+  uint32_t rate_limit;
+  bool no_address;
   {
+    std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+    no_address = addresses_.empty();
+    if(!no_address)
+      destination = addresses_.front();
+    rate_limit = data_rate_limit_;
+  }
+  if(no_address)
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
     return ret;
   }
 
-  if(!sent_packet_statistics_.can_send(data.size(), data_rate_limit_, ret.timestamp))
+  bool can_send;
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    can_send = sent_packet_statistics_.can_send(data.size(), rate_limit, ret.timestamp);
+  }
+  if(!can_send)
   {
     ret.send_result = SendResult::dropped;
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
     return ret;
   }
@@ -228,7 +279,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
       int poll_ret = poll(&p, 1, 10);
       if(poll_ret > 0 && p.revents & POLLOUT)
       {
-        bytes_sent = sendto(socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(addresses_.data()), sizeof(sockaddr_in));
+        bytes_sent = sendto(socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
         if(bytes_sent == -1)
           switch(errno)
           {
@@ -236,8 +287,11 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
               tries+=1;
               break;
             case ECONNREFUSED:
+            {
+              std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
               sent_packet_statistics_.add(ret);
               return ret;
+            }
             default:
               throw(ConnectionException(strerror(errno)));
           }
@@ -246,6 +300,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
         else
         {
           ret.send_result = SendResult::success;
+          std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
           sent_packet_statistics_.add(ret);
           return ret;
         }
@@ -264,12 +319,14 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   // {
   //     ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
   // }
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   sent_packet_statistics_.add(ret);
   return ret;
 }
 
 std::pair<double, double> Connection::data_receive_rate(double time)
 {
+  std::lock_guard<std::mutex> lock(receive_history_mutex_);
   double five_secs_ago = time - 5;
   while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < five_secs_ago)
     data_size_received_history_.erase(data_size_received_history_.begin());
@@ -294,28 +351,42 @@ std::pair<double, double> Connection::data_receive_rate(double time)
 
 DataRates Connection::data_sent_rate(rclcpp::Time time, PacketSendCategory category)
 {
+  (void)time;
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   return sent_packet_statistics_.get(category);
 }
 
 DataRates Connection::data_sent_rate(rclcpp::Time time)
 {
   (void)time;
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   return sent_packet_statistics_.get();
 }
 
 
 void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, int socket, rclcpp::Time now)
 {
-  for(auto packet_number: missing_packets)
+  // Copy out the packets we need under the lock, then send without it —
+  // send() does network I/O and we don't want to hold sent_packets_mutex_
+  // for that long.
+  std::vector<std::vector<uint8_t>> packets_to_resend;
   {
-    auto packet_to_resend = sent_packets_.find(packet_number);
-    if(packet_to_resend != sent_packets_.end())
-      send(packet_to_resend->second.packet, socket, PacketSendCategory::resend, now);
+    std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+    packets_to_resend.reserve(missing_packets.size());
+    for(auto packet_number: missing_packets)
+    {
+      auto it = sent_packets_.find(packet_number);
+      if(it != sent_packets_.end())
+        packets_to_resend.push_back(it->second.packet);
+    }
   }
+  for(auto& packet: packets_to_resend)
+    send(packet, socket, PacketSendCategory::resend, now);
 }
 
 void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
 {
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
   std::vector<uint64_t> expired;
   for(auto sp: sent_packets_)
     if(sp.second.timestamp < cutoff_time)
