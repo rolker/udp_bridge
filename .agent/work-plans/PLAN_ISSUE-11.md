@@ -36,7 +36,14 @@ ROS-1-port code uses `m_*`. Standardize on `*_` (ROS 2 / Google style).
 Never half-rename. Per-commit grep before push to verify zero remaining
 hits of the old name.
 
-Six commits on `feature/issue-11`:
+Originally drafted as six substantive commits; landed as nine code
+commits on `feature/issue-11` (commit 3 split into 3a/3b for
+reviewability, plus three follow-ups from review-code: 7 absorbing the
+must-fix thread-safety findings, 8 absorbing two Copilot inline
+comments, 9 adding `Connection::config_mutex_` to close a
+use-after-free in `send()`, 10 trivial linter cleanups, 11 plan
+housekeeping). The original six-commit structure below describes the
+core architectural shape:
 
 1. **Plan commit** — this file.
 2. **`udp_bridge/doc/qos_design.md`** — written first so the rest of the
@@ -201,24 +208,31 @@ Six commits on `feature/issue-11`:
 
 ## Files to Change
 
+This table reflects what actually landed (inline-edited as the PR
+progressed; the original draft contained two stale entries —
+`test_executor_split_integration.cpp` and
+`test_subscriber_death.{py,bash}` — that were renamed/deferred during
+implementation).
+
 | File | Change |
 |------|--------|
-| `udp_bridge/src/udp_bridge_node.cpp` | Switch to `MultiThreadedExecutor`; add design comment |
-| `udp_bridge/src/udp_bridge.cpp` | Create 3 callback groups in `on_configure`; assign timers; add mutexes; per-topic QoS config reads; resolve QoS for publisher in `decodeData`; populate QoS fields in `MessageInternal` from `callback`; honor `transient_local` on source subscription in `updateLocalSubscriptions` |
-| `udp_bridge/src/connection.cpp` | Add `std::mutex` for `sent_packets_` access |
-| `udp_bridge/include/udp_bridge/udp_bridge.h` | Callback group members; mutexes for `m_publishers` / `m_subscribers` / `remote_nodes_` |
-| `udp_bridge/include/udp_bridge/connection.h` | Mutex declaration |
-| `udp_bridge/include/udp_bridge/types.h` | Extend `RemoteDetails` with `reliability`, `durability`, `history_depth` |
-| `udp_bridge_interfaces/msg/MessageInternal.msg` | Add `reliability`, `durability`, `history_depth` fields |
-| `udp_bridge/doc/qos_design.md` | New design doc (added to existing `doc/` sphinx setup, not a new `docs/` dir) |
+| `udp_bridge/src/udp_bridge_node.cpp` | Switch to `MultiThreadedExecutor`; add design comment with callback-group invariants |
+| `udp_bridge/src/udp_bridge.cpp` | Create 3 callback groups in `on_configure`; assign timers + service handlers; locking-convention comment block; mutex audit; atomic counters; per-topic QoS config reads + validation/clamping for `history_depth`; three-phase release-before-rmw lookups in `decodeData` and `updateLocalSubscriptions`; populate QoS fields in `MessageInternal` from `callback`; honor `transient_local` on source subscription |
+| `udp_bridge/src/connection.cpp` | Add `sent_packets_mutex_`, `sent_packet_statistics_mutex_`, `receive_history_mutex_`, `config_mutex_`; lock all setters/getters; snapshot destination address + rate_limit under `config_mutex_` in `send` to close use-after-free; remove unused `socket_address()` |
+| `udp_bridge/src/remote_node.cpp` | Add `state_mutex_` lock guards at every public method that touches mutable state; refactor `unwrap` so duplicate-check + insert happen under the lock |
+| `udp_bridge/include/udp_bridge/udp_bridge.h` | Callback group members; mutexes for `publishers_` / `subscribers_` / `remote_nodes_` / `pending_connections_`; atomic protocol counters (`next_packet_number_`, `next_fragmented_packet_id_`, `next_connection_internal_message_sequence_number_`, `last_packet_number_assign_time_ns_`) |
+| `udp_bridge/include/udp_bridge/connection.h` | Mutex declarations + documentation; signature changes for getters returning `std::string` by value (was `const std::string&`) so they don't dangle past lock release; `last_receive_time()` returns `double` by value |
+| `udp_bridge/include/udp_bridge/remote_node.h` | `mutable std::recursive_mutex state_mutex_` declaration with rationale block; document `defragmenter_` socket-drain-only contract |
+| `udp_bridge/include/udp_bridge/types.h` | Extend `RemoteDetails` with `reliability`, `durability`, `history_depth`; extend `SubscriberDetails` with source-side `durability` |
+| `udp_bridge/include/udp_bridge/qos_resolution.h` | New header-only QoS resolver (`resolveDestinationPublisherQos`, `resolveSourceSubscriptionQos`) so tests can link against it without the rest of the package |
+| `udp_bridge_interfaces/msg/MessageInternal.msg` | Append `reliability`, `durability`, `history_depth` fields (backward-compatible) |
+| `udp_bridge/doc/qos_design.md` | New design doc in the existing `doc/` sphinx setup |
 | `udp_bridge/doc/index.rst` | Add `qos_design` to toctree |
-| `udp_bridge/test/test_qos_resolution.cpp` | New unit test |
-| `udp_bridge/test/test_executor_split_integration.cpp` | New integration test |
-| `udp_bridge/test/mininet/test_subscriber_death.{py,bash}` | New mininet scenario |
-| `udp_bridge/test/mininet/README.md` | New: how to run the (refreshed) mininet setup, prerequisites, expected output |
-| `udp_bridge/test/mininet/*` | Refresh stale setup as needed to get it running on a current Linux dev machine |
-| `udp_bridge/CMakeLists.txt` | Register new tests |
-| `udp_bridge/package.xml` | Add test deps if needed |
+| `udp_bridge/test/test_qos_resolution.cpp` | New 14-case unit test for the QoS resolver |
+| `udp_bridge/test/test_qos_matching_integration.cpp` | New 5-case integration test exercising end-to-end QoS matching against the live rmw (renamed from the original draft `test_executor_split_integration.cpp`) |
+| `udp_bridge/test/mininet/README.md` | Document the situation (mininet scaffold is ROS-1 vintage; ROS-2 port deferred) |
+| `udp_bridge/test/mininet/recv_q_trace.py` | Standalone Recv-Q polling helper (replaces the originally-planned `test_subscriber_death.{py,bash}` scenario, which is deferred to field-deployment validation under `rmw_zenoh_cpp` per the acceptance criterion) |
+| `udp_bridge/CMakeLists.txt` | Register new tests; conditional `std_msgs` find_package for the integration test |
 
 ## Principles Self-Check
 
@@ -255,18 +269,30 @@ None remaining at plan time. All five questions resolved during planning
 
 ## Estimated Scope
 
-Single PR, six commits (commit 3 split 3a/3b for reviewability — see
-"During implementation" notes in plan-task). Working estimate:
-~600-900 lines of code change plus ~300-500 lines of new tests, plus
-the design doc (~150 lines). Some additional churn from `m_*` → `*_`
-renames in any file touched.
+**Original estimate**: single PR, six substantive commits (commit 3
+split into 3a/3b during planning for reviewability — see "During
+implementation" notes in plan-task). ~600-900 LOC code change plus
+~300-500 LOC new tests, plus the design doc (~150 lines). Some
+additional churn from `m_*` → `*_` renames in any file touched.
 
-Actual outcome (post-implementation): seven commits on the branch
-(plan + 2 + 2b + 3a + 3b + 4 + 5 + 6/validation). Diff size is
-roughly within the working estimate; thread-safety audit (3b) was
-larger than initially scoped because Connection's receive-history
-state needed its own mutex too. Test count: 8 → 29 (+14 unit + 5
-integration), all passing.
+**Actual outcome**: 14 commits on `feature/issue-11` (3 plan/plan-edit
++ 11 substantive). The substantive set: commit 2 (qos_design.md), 2b
+(doc revision), 3a (executor + groups + renames), 3b (mutex audit),
+4 (per-topic QoS + MessageInternal), 5 (tests + mininet refresh),
+6 (validation), 7 (review-code thread-safety must-fix absorbed), 8
+(two Copilot inline comments absorbed), 9 (`Connection::config_mutex_`
+closing a use-after-free in send()), 10 (linter cleanups), 11 (plan
+housekeeping — this commit). Test count: 8 → 29 (+14 unit + 5
+integration), all passing throughout.
+
+The commits-7-through-9 trio (must-fix items + Connection
+config-string concurrency) was larger than the original 3a/3b plan
+anticipated. The thread-safety audit ultimately required: four mutexes
+on UDPBridge, four mutexes on Connection (sent_packets,
+sent_packet_statistics, receive_history, config), one recursive_mutex
+on RemoteNode, four atomic counters on UDPBridge, and a release-
+before-rmw refactor at four sites (decodeData, updateLocalSubscriptions,
+Connection::send variants, Connection::resend_packets).
 
 ## Acceptance (against issue body)
 
@@ -365,6 +391,70 @@ The locking-convention block at `udp_bridge.cpp:1-17` was extended to
 document the three-phase pattern, the per-RemoteNode mutex, the atomic
 counters, and the "set-once-at-configure" invariant for `name_` /
 `port_` / `max_packet_size_`.
+
+### Commit 8 — Copilot inline comments
+
+Two valid Copilot findings on commit 7:
+
+1. `test_qos_matching_integration.cpp` used `std::atomic<bool>` without
+   a direct `#include <atomic>`. Worked via transitive include but
+   isn't portable. Added the explicit include.
+2. `udp_bridge.cpp:on_configure` did
+   `static_cast<uint32_t>(get_parameter(history_depth_param).as_int())`
+   with no bounds check. ROS 2 params are int64; an unchecked cast of a
+   negative or out-of-range value wraps to a huge `uint32_t` and
+   triggers a multi-billion KEEP_LAST allocation in the rmw layer. Now
+   reads into int64, warns + treats negative as 0 (default), warns +
+   clamps over-large values at 10000, then casts.
+
+### Commit 9 — Connection config-string concurrency (deferred concern)
+
+The first review-code pass flagged `Connection`'s config strings
+(`host_`, `port_`, `addresses_`, `ip_address_`, `data_rate_limit_`,
+etc.) as a Suggestion-level concern: writers reachable from socket-
+drain (`decodeBridgeInfo` → `RemoteNode::update(BridgeInfo)` →
+`c->setHostAndPort`) AND from periodic (`addRemote` service handler)
+race against readers (`bridgeInfoCallback`, `listRemotes`,
+`diagnoseConnection`, and most importantly `Connection::send` reading
+`addresses_.data()` for `sendto`). The second review-code pass
+upgraded the severity: a concurrent `setHostAndPort()` →
+`resolveHost()` does `addresses_.clear()` then `push_back()`, so
+`Connection::send` could pass a dangling pointer to `sendto()` — a
+real use-after-free.
+
+Fix in commit 9: add `mutable std::recursive_mutex config_mutex_` to
+Connection (recursive because ctor + setHostAndPort call resolveHost
+internally). Lock all setters and getters. In `Connection::send`,
+snapshot the destination `sockaddr_in` (by value) and `data_rate_limit_`
+under `config_mutex_`, release the lock, then `sendto` using the
+snapshot — the writer can no longer corrupt the address mid-send.
+Getters that returned `const std::string&` now return `std::string` by
+value (a reference would dangle past lock release); all current
+callers already either assigned to fields or passed to stat.add(), so
+RVO/move handles the change transparently. Removed the unused
+`socket_address()` method that returned `const sockaddr_in*` into
+`addresses_` — it had no callers and would have dangled under the
+same mechanism.
+
+### Commit 10 — Linter cleanups
+
+Trivial polish: remove unused imports in `recv_q_trace.py`, add final
+newline to `types.h`, reorganize `udp_bridge.h` includes per ament
+style (C system → C++ stdlib → library/project), tighten two
+read-only loops to `for(const auto&)`. Long-line cpplint findings on
+the new per-topic param-name declarations (137-143 chars) intentionally
+not changed — they match the existing pattern of the parameter-name
+strings above them in the same function.
+
+### Commit 11 — Plan housekeeping
+
+This commit. Updates the Files-to-Change table to reflect what
+actually landed (the original draft had two stale rows that were
+caught across two plan-drift passes but kept getting deferred), adds
+the missing rows for `qos_resolution.h`, `remote_node.h`, and
+`remote_node.cpp` (added in commits 4 and 7 respectively), reconciles
+the commit-count text in Estimated Scope, and documents commits 8-11
+above.
 
 ## Updates from review-plan
 
