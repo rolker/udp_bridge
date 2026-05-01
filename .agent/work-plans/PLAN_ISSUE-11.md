@@ -255,7 +255,74 @@ None remaining at plan time. All five questions resolved during planning
 
 ## Estimated Scope
 
-Single PR, six commits. Working estimate: ~600-900 lines of code change plus ~300-500 lines of new tests, plus the design doc (~150 lines). Some additional churn from `m_*` → `*_` renames in any file touched.
+Single PR, six commits (commit 3 split 3a/3b for reviewability — see
+"During implementation" notes in plan-task). Working estimate:
+~600-900 lines of code change plus ~300-500 lines of new tests, plus
+the design doc (~150 lines). Some additional churn from `m_*` → `*_`
+renames in any file touched.
+
+Actual outcome (post-implementation): seven commits on the branch
+(plan + 2 + 2b + 3a + 3b + 4 + 5 + 6/validation). Diff size is
+roughly within the working estimate; thread-safety audit (3b) was
+larger than initially scoped because Connection's receive-history
+state needed its own mutex too. Test count: 8 → 29 (+14 unit + 5
+integration), all passing.
+
+## Acceptance (against issue body)
+
+- [x] `udp_bridge_node` uses `MultiThreadedExecutor`; `spin_timer_` is
+      in its own callback group; existing tests still pass.
+      **Landed in commit 3a**; the 8 pre-existing tests remain green
+      through every commit on the branch.
+- [x] Receive-side publisher uses `BEST_AVAILABLE` reliability (matches
+      both RELIABLE and BEST_EFFORT subscribers without breaking
+      matching). **Landed in commit 4**; verified end-to-end against
+      the live rmw by `test_qos_matching_integration.cpp` in commit 5
+      (5 cases including a negative control proving the matching
+      mechanism actually distinguishes reliability classes).
+- [x] Per-topic `reliability` / `history_depth` / `durability`
+      parameters honored end-to-end (subscriber side and publisher
+      side). **Landed in commit 4**; 14 unit-test cases in
+      `test_qos_resolution.cpp` cover defaults, explicit values,
+      unrecognized strings, transient_local, varying depth, and the
+      mismatched-pair (old-sender) compatibility case.
+- [x] `udp_bridge/doc/qos_design.md` documents the package's QoS
+      contract. **Landed in commits 2 + 2b**: mental model,
+      `BEST_AVAILABLE` mechanics with full matching table,
+      per-dimension policy, configuration mechanics, mismatched-pair
+      compatibility, CAMP worked example, future-work pointers.
+- [ ] Reproduction attempt for #10 under the new executor — confirm
+      whether the `Recv-Q` symptom is gone even without fixing the
+      root cause. **Deferred to next field deployment under
+      `rmw_zenoh_cpp`**: the dev rmw is `rmw_cyclonedds_cpp` which
+      doesn't exhibit the wedge, so an in-process reproduction is not
+      meaningful here. `recv_q_trace.py` shipped in commit 5 is the
+      tool for capturing the trace at deployment time. See commit 5's
+      mininet-refresh README for the full reasoning.
+
+## Final validation
+
+- `colcon build --packages-select udp_bridge_interfaces udp_bridge`:
+  **clean** (only pre-existing pedantic warnings about flexible array
+  members in `packet.h`, unrelated to this PR).
+- `colcon test --packages-select udp_bridge`: **29 tests, 0 errors,
+  0 failures, 0 skipped**.
+- Downstream consumer audit: `rqt_udp_bridge`
+  (`layers/main/ui_ws/src/rqt_udp_bridge/`) and `bag_analysis`
+  (`layers/main/sensors_ws/src/marine_tools/bag_analysis/`) consume
+  `BridgeInfo` and `DataRates`, neither of which this PR modifies.
+  `MessageInternal` (the only schema this PR extends) is not
+  referenced by either consumer — `grep -rn
+  "MessageInternal\|message_internal"` in both directories returns
+  zero matches. The `Remote.msg` extension for `resend_giveup_count`
+  belongs to a different PR (#9, which rebases onto this one); no
+  downstream impact in this PR.
+- The full `make build` / `make test` workspace-level pass is
+  appropriate to run **after merge** rather than from inside the
+  worktree: the worktree's other layers (`ui_ws`, `sensors_ws`, etc.)
+  are symlinks to main, and rebuilding them from the worktree mixes
+  worktree state with main's install tree. Reviewer is invited to run
+  that pass before merging if any cross-package concerns arise.
 
 ## Updates from review-plan
 
