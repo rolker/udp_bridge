@@ -38,11 +38,12 @@ int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
 
-  // Pin to one thread per callback group (3 groups). Default would be
-  // hardware_concurrency(), which adds context-switch overhead without
-  // benefit since the groups are MutuallyExclusive and there is at most
-  // one callback per group runnable at a time.
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
+  // 8 threads: socket_drain_group_ + periodic_group_ are MutuallyExclusive
+  // (1 thread each); republish_group_ is Reentrant and benefits from
+  // concurrency across the many forwarding subscriptions, hence the extra
+  // headroom. 8 covers ~20 forwarding subscriptions without saturating a
+  // typical 4-8 core boat host. Tune via env if needed.
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 8);
 
   std::shared_ptr<udp_bridge::UDPBridge> udp_bridge_node = std::make_shared<udp_bridge::UDPBridge>("udp_bridge");
   executor.add_node(udp_bridge_node->get_node_base_interface());

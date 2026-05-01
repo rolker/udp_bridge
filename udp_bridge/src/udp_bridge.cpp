@@ -179,8 +179,11 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   RCLCPP_INFO_STREAM(get_logger(), "send buffer size set to:" << buffer_size);
 
   // Callback groups — invariants documented in udp_bridge_node.cpp.
+  // republish_group_ is Reentrant so multiple forwarding-subscription
+  // callbacks can run concurrently. Required for high-rate camera
+  // throughput; the lock audit in PR #12 already protects shared state.
   socket_drain_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  republish_group_    = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  republish_group_    = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   periodic_group_     = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
   std::string node_name = get_name();
