@@ -22,8 +22,6 @@ Press ``Ctrl-C`` to finish writing the trace.
 import argparse
 import csv
 import signal
-import socket
-import struct
 import sys
 import time
 from pathlib import Path

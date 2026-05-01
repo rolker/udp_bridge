@@ -1,28 +1,32 @@
 #ifndef UDP_BRIDGE_UDP_BRIDGE_H
 #define UDP_BRIDGE_UDP_BRIDGE_H
 
+// C system headers
+#include <netinet/in.h>
+
+// C++ standard library
+#include <atomic>
+#include <mutex>
+#include <set>
+
+// Other library / project includes
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "rclcpp/generic_publisher.hpp"
 #include "rclcpp/generic_subscription.hpp"
 #include "diagnostic_updater/diagnostic_updater.hpp"
 
-#include <atomic>
-#include <mutex>
-#include <set>
-
 #include "udp_bridge_interfaces/srv/subscribe.hpp"
 #include "udp_bridge_interfaces/srv/add_remote.hpp"
 #include "udp_bridge_interfaces/srv/list_remotes.hpp"
+#include "udp_bridge_interfaces/msg/connection_internal.hpp"
+#include "udp_bridge_interfaces/msg/bridge_info.hpp"
+#include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 
-#include <netinet/in.h>
 #include "connection.h"
 #include "packet.h"
 #include "defragmenter.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
-#include "udp_bridge_interfaces/msg/connection_internal.hpp"
-#include "udp_bridge_interfaces/msg/bridge_info.hpp"
-#include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 //#include "std_msgs/msg/int32.hpp"
 
 namespace udp_bridge

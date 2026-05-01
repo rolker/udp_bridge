@@ -993,9 +993,9 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
     }
   }
 
-  for(auto& entry: connections_by_remote)
+  for(const auto& entry: connections_by_remote)
   {
-    for(auto connection: entry.second)
+    for(const auto& connection: entry.second)
       if(connection)
       {
         auto result = connection->send(wrapped_packets, socket_, name_, is_overhead, now);
@@ -1406,7 +1406,7 @@ void UDPBridge::syncDiagnosticTasks()
       }
     }
   }
-  for(auto& pair: remote_connection_pairs)
+  for(const auto& pair: remote_connection_pairs)
   {
     const std::string& remote_name = pair.first;
     const std::string& connection_id = pair.second;
