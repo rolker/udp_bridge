@@ -52,22 +52,15 @@ CSV columns: `t_seconds_since_start`, `recv_q_bytes`, `send_q_bytes`,
 This is independently useful for field debugging (no mininet required) and
 documents whatever recv-queue behavior the deployed bridge actually shows.
 
-### `subscriber_death_scenario.bash` — local two-terminal repro of #10
+### Local two-terminal repro of #10
 
-Runs two `udp_bridge` instances on `127.0.0.1` with different ports, has
-one forward a high-rate topic to the other, then kills the operator-side
-subscriber mid-stream. Asserts:
-
-- The bridge's `Recv-Q` stays bounded (via `recv_q_trace.py`).
-- The bridge's `bridge_info` heartbeat keeps publishing on the *other*
-  topics it serves.
-- The bridge process does not need a SIGTERM + respawn to recover when a
-  new subscriber on the same topic comes back online.
-
-This is the local equivalent of the mininet wedge reproduction — runs in
-two terminals, no netns required. It does NOT exercise lossy-link
-behavior; for that, the original mininet path is the right tool once the
-ROS-2 port is done.
+There is currently no checked-in local repro script for
+[issue #10](https://github.com/rolker/udp_bridge/issues/10) in this
+directory. The plan for issue #11 originally proposed a
+`subscriber_death_scenario.bash` here; that script is deferred to
+field-deployment validation under the active rmw (see
+`.agent/work-plans/PLAN_ISSUE-11.md`). If/when such a script is added,
+document it here alongside the script that implements it.
 
 ## Mininet (legacy / not currently working)
 

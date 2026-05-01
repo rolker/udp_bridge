@@ -49,10 +49,15 @@ bool publish_and_observe(const std::string& reliability,
                          const rclcpp::QoS& subscriber_qos)
 {
   static int test_counter = 0;
-  std::string topic = "/udp_bridge_qos_test_" + std::to_string(++test_counter);
+  const int test_id = ++test_counter;
+  // Per-test unique names so repeated create/destroy cycles don't hit
+  // DDS graph collisions or delayed teardown that flake discovery.
+  std::string topic = "/udp_bridge_qos_test_" + std::to_string(test_id);
+  std::string pub_node_name = "qos_match_pub_" + std::to_string(test_id);
+  std::string sub_node_name = "qos_match_sub_" + std::to_string(test_id);
 
-  auto pub_node = std::make_shared<rclcpp::Node>("qos_match_pub");
-  auto sub_node = std::make_shared<rclcpp::Node>("qos_match_sub");
+  auto pub_node = std::make_shared<rclcpp::Node>(pub_node_name);
+  auto sub_node = std::make_shared<rclcpp::Node>(sub_node_name);
 
   auto pub_qos = resolveDestinationPublisherQos(reliability, durability, depth);
   auto publisher = pub_node->create_publisher<std_msgs::msg::String>(topic, pub_qos);
