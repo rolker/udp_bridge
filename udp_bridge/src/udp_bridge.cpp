@@ -7,14 +7,36 @@
 //     std::scoped_lock to acquire them deadlock-free in one shot. No
 //     manual lock-ordering required.
 //   - Pattern: lock briefly, copy out shared_ptrs / values needed, then
-//     release the lock before slow operations (publish, sendto, recvfrom).
+//     release the lock before slow operations (publish, sendto, recvfrom,
+//     create_generic_publisher, get_publishers_info_by_topic,
+//     create_generic_subscription). For check-then-create patterns
+//     (decodeData, updateLocalSubscriptions), use a three-phase
+//     lookup: phase 1 check map under lock, phase 2 do the slow rmw
+//     call without lock, phase 3 re-acquire and try-emplace with
+//     race-guard.
 //   - Helpers in this file (sendBridgeInfo, allRemotes, sendConnectionRequests,
 //     addSubscriberConnection, the send() template specialization) acquire
 //     their own locks; callers do NOT pre-lock. Each entry-point caller
 //     (timer, subscription, service handler, decode handler) is otherwise
 //     responsible for taking locks before touching the maps directly.
-//   - Connection has its own per-instance mutexes (sent_packets_mutex_ and
-//     sent_packet_statistics_mutex_) for state owned by the Connection.
+//   - Connection has its own per-instance mutexes (sent_packets_mutex_,
+//     sent_packet_statistics_mutex_, receive_history_mutex_) for state
+//     owned by the Connection.
+//   - RemoteNode has its own state_mutex_ (recursive_mutex) guarding
+//     connections_, received_packet_times_, resend_request_times_,
+//     next_packet_number_, last_packet_time_. Its public methods acquire
+//     the lock; some call other public methods, hence recursive_mutex.
+//     defragmenter_ is intentionally NOT guarded — by contract it's only
+//     touched from socket_drain_group_ (UDPBridge::decode for Fragment
+//     packets and the spin_once tail cleanup loop).
+//   - Protocol counters next_packet_number_, next_fragmented_packet_id_,
+//     next_connection_internal_message_sequence_number_, and
+//     last_packet_number_assign_time_ns_ are std::atomic. Each is read
+//     and written from multiple callback groups via send<>(); fetch_add(1)
+//     gives a unique value per call. Duplicate packet numbers would
+//     corrupt the resend protocol, so atomicity is load-bearing here.
+//   - name_, port_, max_packet_size_ are set once in on_configure and
+//     read-only afterward — no synchronization needed.
 
 #include "udp_bridge/udp_bridge.h"
 #include "udp_bridge/qos_resolution.h"
@@ -519,27 +541,41 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   if(topic.empty())
     topic = outer_message.source_topic;
 
+  // Three-phase lookup so create_generic_publisher() runs WITHOUT
+  // publishers_mutex_ held. Holding the lock across rmw discovery /
+  // type-support resolution would block every other receive-decode
+  // path on first-arrival creation — exactly the wedge mechanism this
+  // commit is hardening against.
   rclcpp::GenericPublisher::SharedPtr publisher;
   bool first_arrival = false;
+
+  // Phase 1: check map under lock.
   {
     std::lock_guard<std::mutex> lock(publishers_mutex_);
     auto it = publishers_.find(topic);
-    if(it == publishers_.end())
-    {
-      // Resolve per-topic QoS from MessageInternal (sender-advertised),
-      // falling back to package defaults when fields are empty/zero —
-      // see udp_bridge/doc/qos_design.md for the contract.
-      auto qos = resolveDestinationPublisherQos(
-        outer_message.reliability,
-        outer_message.durability,
-        outer_message.history_depth);
-      publisher = create_generic_publisher(topic, outer_message.datatype, qos);
-      publishers_[topic] = publisher;
-      first_arrival = true;
-    }
-    else
-    {
+    if(it != publishers_.end())
       publisher = it->second;
+  }
+
+  // Phase 2: if missing, do the slow rmw call without holding the lock.
+  if(!publisher)
+  {
+    // Resolve per-topic QoS from MessageInternal (sender-advertised),
+    // falling back to package defaults when fields are empty/zero —
+    // see udp_bridge/doc/qos_design.md for the contract.
+    auto qos = resolveDestinationPublisherQos(
+      outer_message.reliability,
+      outer_message.durability,
+      outer_message.history_depth);
+    auto new_publisher = create_generic_publisher(topic, outer_message.datatype, qos);
+
+    // Phase 3: re-acquire and try-emplace. If another thread beat us
+    // (raced and inserted first), we use theirs and discard ours.
+    {
+      std::lock_guard<std::mutex> lock(publishers_mutex_);
+      auto [it, inserted] = publishers_.try_emplace(topic, new_publisher);
+      publisher = it->second;
+      first_arrival = inserted;
     }
   }
 
@@ -647,37 +683,63 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
 
 void UDPBridge::updateLocalSubscriptions()
 {
-  std::lock_guard<std::mutex> lock(subscribers_mutex_);
-  for (auto& subscriber: subscribers_)
+  // Three-phase lookup so get_publishers_info_by_topic() and
+  // create_generic_subscription() (both slow rmw calls) run WITHOUT
+  // subscribers_mutex_ held. Holding the lock across them would block
+  // callback() (republish-group reader) and statsReportCallback /
+  // bridgeInfoCallback (periodic-group readers).
+  struct PendingCreate
   {
-    if(!subscriber.second.subscription)
+    std::string source_topic;
+    std::string durability;
+    uint32_t queue_size;
+  };
+
+  // Phase 1: snapshot which topics need a new subscription, under lock.
+  std::vector<PendingCreate> pending;
+  {
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    for(auto& subscriber: subscribers_)
+      if(!subscriber.second.subscription)
+        pending.push_back({subscriber.first,
+                           subscriber.second.durability,
+                           subscriber.second.queue_size});
+  }
+
+  // Phase 2: do the slow rmw work for each, without the lock.
+  for(const auto& p: pending)
+  {
+    auto info = get_publishers_info_by_topic(p.source_topic);
+    if(info.empty())
+      continue;
+    std::string topic_type = info.front().topic_type();
+    auto source_topic = p.source_topic;
+    auto cb = [this, source_topic, topic_type](std::shared_ptr<rclcpp::SerializedMessage> message)
     {
-      const auto& source_topic = subscriber.first;
-      auto info = get_publishers_info_by_topic(source_topic);
-      if(!info.empty())
-      {
-        std::string topic_type = info.front().topic_type();
+      this->callback(source_topic, topic_type, message);
+    };
 
-        auto cb = [this, source_topic, topic_type](std::shared_ptr<rclcpp::SerializedMessage> message)
-        {
-          this->callback(source_topic, topic_type, message);
-        };
+    // Source-side QoS: best_effort (accepts any publisher) plus
+    // per-topic durability (transient_local when configured, so latched
+    // source values reach the bridge). See qos_design.md.
+    auto qos = resolveSourceSubscriptionQos(p.durability, p.queue_size);
 
-        // Source-side QoS: best_effort (accepts any publisher) plus
-        // per-topic durability (transient_local when configured, so
-        // latched source values reach the bridge). See qos_design.md.
-        auto qos = resolveSourceSubscriptionQos(
-          subscriber.second.durability,
-          subscriber.second.queue_size);
+    rclcpp::SubscriptionOptions options;
+    options.ignore_local_publications = true;
+    // Forwarding subscriptions run in republish_group_ so a stalled
+    // remote publisher cannot starve the socket-drain group.
+    options.callback_group = republish_group_;
+    auto subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
 
-        rclcpp::SubscriptionOptions options;
-        options.ignore_local_publications = true;
-        // Forwarding subscriptions run in republish_group_ so a stalled
-        // remote publisher cannot starve the socket-drain group.
-        options.callback_group = republish_group_;
-        subscribers_[source_topic].subscription = create_generic_subscription(source_topic, topic_type, qos, cb, options);
-
-      }
+    // Phase 3: re-acquire and assign — but only if no one beat us. Race
+    // guard: a concurrent updateLocalSubscriptions tick or
+    // addSubscriberConnection could have already created the
+    // subscription; in that case we drop ours.
+    {
+      std::lock_guard<std::mutex> lock(subscribers_mutex_);
+      auto it = subscribers_.find(p.source_topic);
+      if(it != subscribers_.end() && !it->second.subscription)
+        it->second.subscription = subscription;
     }
   }
 }
@@ -866,8 +928,10 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
 
   for(auto packet: data)
   {
-    uint64_t packet_number = next_packet_number_++;
-    last_packet_number_assign_time_ = now;
+    // fetch_add(1) gives a unique packet number under concurrent calls
+    // from multiple callback groups (republish/socket-drain/periodic).
+    uint64_t packet_number = next_packet_number_.fetch_add(1);
+    last_packet_number_assign_time_ns_.store(now.nanoseconds());
     wrapped_packets.push_back(WrappedPacket(packet_number, packet, now));
     size_data.sent_size += wrapped_packets.back().packet.size();
   }
@@ -1019,19 +1083,24 @@ std::vector<std::vector<uint8_t> > UDPBridge::fragment(const std::vector<uint8_t
   unsigned long max_fragment_payload_size = max_packet_size_-(sizeof(FragmentHeader)+sizeof(SequencedPacketHeader));
   if(data.size()+sizeof(SequencedPacketHeader) > max_packet_size_)
   {
+    // Reserve a unique packet_id atomically. Under concurrent fragment()
+    // calls from multiple callback groups, two messages could otherwise
+    // both read N, both assign N to their fragments, and both increment —
+    // breaking defragmentation on the receiver. fetch_add(1) gives each
+    // call its own ID up front.
+    const uint32_t this_packet_id = next_fragmented_packet_id_.fetch_add(1);
     for(unsigned long i = 0; i < data.size(); i += max_fragment_payload_size)
     {
       unsigned long fragment_data_size = std::min(max_fragment_payload_size, data.size()-i);
       ret.push_back(std::vector<uint8_t>(sizeof(FragmentHeader)+fragment_data_size));
       Fragment * fragment_packet = reinterpret_cast<Fragment*>(ret.back().data());
       fragment_packet->type = PacketType::Fragment;
-      fragment_packet->packet_id = next_fragmented_packet_id_;
+      fragment_packet->packet_id = this_packet_id;
       fragment_packet->fragment_number = ret.size();
       memcpy(fragment_packet->fragment_data, &data.at(i), fragment_data_size);
     }
     for(auto & fragment_vector: ret)
-      reinterpret_cast<Fragment*>(fragment_vector.data())->fragment_count = ret.size(); 
-    next_fragmented_packet_id_++;
+      reinterpret_cast<Fragment*>(fragment_vector.data())->fragment_count = ret.size();
     if(ret.size() > std::numeric_limits<uint16_t>::max())
     {
       RCLCPP_WARN_STREAM(get_logger(), "Dropping " << ret.size() << " fragments, max frag count:" <<  std::numeric_limits<uint16_t>::max());
@@ -1125,8 +1194,12 @@ void UDPBridge::sendBridgeInfo()
       }
   }
 
-  bi.next_packet_number = next_packet_number_;
-  bi.last_packet_time = last_packet_number_assign_time_;
+  bi.next_packet_number = next_packet_number_.load();
+  // Reconstruct rclcpp::Time from the stored nanoseconds. The two atomic
+  // loads aren't synchronized; minor diagnostic skew between
+  // bi.next_packet_number and bi.last_packet_time is acceptable (both
+  // are advisory display).
+  bi.last_packet_time = rclcpp::Time(last_packet_number_assign_time_ns_.load());
   bi.local_port = port_;
   bi.maximum_packet_size = max_packet_size_;
 
@@ -1207,7 +1280,9 @@ void UDPBridge::addRemote(
     ConnectionInternal connection_internal_message;
     {
       std::lock_guard<std::mutex> lock(pending_connections_mutex_);
-      auto sequence_number = next_connection_internal_message_sequence_number_++;
+      // fetch_add(1) gives a unique sequence_number under concurrent
+      // service-handler invocations.
+      auto sequence_number = next_connection_internal_message_sequence_number_.fetch_add(1);
       auto& connection_internal = pending_connections_[sequence_number];
       connection_internal.message.connection_id = connection_id;
       connection_internal.message.sequence_number = sequence_number;

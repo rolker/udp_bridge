@@ -6,6 +6,7 @@
 #include "rclcpp/generic_subscription.hpp"
 #include "diagnostic_updater/diagnostic_updater.hpp"
 
+#include <atomic>
 #include <mutex>
 #include <set>
 
@@ -221,10 +222,16 @@ private:
   /// Name used to identify this node to other udp_bridge nodes
   std::string name_;
 
+  // socket_, port_, max_packet_size_ are set once in on_configure and
+  // are read-only afterward — no synchronization needed.
   int socket_;
   uint16_t port_ {4200};
   int max_packet_size_ {65500};
-  uint32_t next_fragmented_packet_id_ {0};
+
+  // Protocol counters — incremented from multiple callback groups via
+  // send<>(), so atomic is required. fetch_add(1) gives a unique value
+  // per call.
+  std::atomic<uint32_t> next_fragmented_packet_id_ {0};
 
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr subscribe_service_;
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr advertise_service_;
@@ -259,10 +266,18 @@ private:
   /// remotes/connections appear.
   std::set<std::string> diagnostic_task_names_;
 
-  uint64_t next_packet_number_ = 0;
-  rclcpp::Time last_packet_number_assign_time_;
+  // Protocol counters touched from multiple callback groups; atomic is
+  // required to prevent duplicate packet numbers from corrupting the
+  // resend protocol. last_packet_number_assign_time_ is stored as
+  // nanoseconds so it can be a primitive atomic; readers reconstruct
+  // an rclcpp::Time on access. The two writes (next_packet_number_++
+  // and the time stamp) aren't atomic together — diagnostic skew
+  // between bi.next_packet_number and bi.last_packet_time is acceptable
+  // (both are diagnostic display).
+  std::atomic<uint64_t> next_packet_number_ {0};
+  std::atomic<int64_t> last_packet_number_assign_time_ns_ {0};
 
-  uint64_t next_connection_internal_message_sequence_number_ = 0;
+  std::atomic<uint64_t> next_connection_internal_message_sequence_number_ {0};
 
   struct PendingConnection
   {

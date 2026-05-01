@@ -26,6 +26,7 @@ RemoteNode::RemoteNode(std::string remote_name, std::string local_name, NodeInte
 void RemoteNode::update(const Remote& remote_message)
 {
   assert(name_ == remote_message.name);
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   for(auto c: remote_message.connections)
   {
     auto connection = connections_[c.connection_id];
@@ -38,7 +39,13 @@ void RemoteNode::update(const Remote& remote_message)
 
 void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_info)
 {
+  // Publish first, without the lock — bridge_info_publisher_ is set once
+  // at construction and rclcpp publishers are thread-safe; holding our
+  // mutex across publish() would violate the "no slow operations under
+  // lock" discipline.
   bridge_info_publisher_->publish(bridge_info);
+
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   for(auto remote: bridge_info.remotes)
     if(remote.name == local_name_)
     {
@@ -86,6 +93,7 @@ std::string RemoteNode::topicName() const
 
 std::shared_ptr<Connection> RemoteNode::connection(std::string connection_id)
 {
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   if(connections_.find(connection_id) != connections_.end())
     return connections_[connection_id];
   return {};
@@ -93,6 +101,7 @@ std::shared_ptr<Connection> RemoteNode::connection(std::string connection_id)
 
 std::vector<std::shared_ptr<Connection> > RemoteNode::connections()
 {
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   std::vector<std::shared_ptr<Connection> > ret;
   for(auto connection: connections_)
     if(connection.second)
@@ -102,6 +111,7 @@ std::vector<std::shared_ptr<Connection> > RemoteNode::connections()
 
 std::shared_ptr<Connection> RemoteNode::newConnection(std::string connection_id, std::string host, uint16_t port)
 {
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   connections_[connection_id] = std::make_shared<Connection>(connection_id, host, port);
   return connections_[connection_id];
 }
@@ -114,29 +124,38 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
     RCLCPP_ERROR_STREAM(logger_, "Can't unwrap packet of size " << message.size());
     if(message.size() >= sizeof(SequencedPacketHeader))
       RCLCPP_ERROR_STREAM(logger_, "Packet reports size: " << reinterpret_cast<const SequencedPacketHeader*>(message.data())->packet_size);
+    return {};
   }
-  else
+
+  auto packet = reinterpret_cast<const SequencedPacket*>(message.data());
+  std::shared_ptr<Connection> c;
+  bool duplicate = false;
   {
-    auto packet = reinterpret_cast<const SequencedPacket*>(message.data());
-    bool duplicate = received_packet_times_.find(packet->packet_number) != received_packet_times_.end();
-    auto c = connection(packet->connection_id);
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    duplicate = received_packet_times_.find(packet->packet_number) != received_packet_times_.end();
+    c = connection(packet->connection_id);  // re-enters mutex (recursive)
     if(!c)
       c = newConnection(packet->connection_id, source_info.host, source_info.port);
     auto now = clock_->now();
-    c->update_last_receive_time(now.seconds(), message.size(), duplicate);
     if(!duplicate)
-    {
       received_packet_times_[packet->packet_number] = now;
-      try
-      {
-        return std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end());
-      }
-      catch(const std::exception& e)
-      {
-        RCLCPP_ERROR_STREAM(logger_, "problem decoding packet: " << e.what());
-      }
+  }
+
+  // update_last_receive_time uses Connection's own mutex; safe to call
+  // outside our state_mutex_.
+  c->update_last_receive_time(clock_->now().seconds(), message.size(), duplicate);
+
+  if(!duplicate)
+  {
+    try
+    {
+      return std::vector<uint8_t>(message.begin()+sizeof(SequencedPacketHeader), message.end());
     }
-  }  
+    catch(const std::exception& e)
+    {
+      RCLCPP_ERROR_STREAM(logger_, "problem decoding packet: " << e.what());
+    }
+  }
   return {};
 }
 
@@ -152,6 +171,7 @@ void RemoteNode::publishTopicStatistics(const TopicStatisticsArray& statistics)
 
 void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
 {
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   std::vector<uint64_t> expired;
   for(auto pt: received_packet_times_)
     if(pt.second < time)
@@ -170,29 +190,29 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
 ResendRequest RemoteNode::getMissingPackets()
 {
   auto now = clock_->now();
-  if(now.nanoseconds() != 0)
-  {
-    auto too_old = now - rclcpp::Duration::from_seconds(5.0);
-    clearReceivedPacketTimesBefore(too_old);
-    auto can_resend_time = now - rclcpp::Duration::from_seconds(0.2);
+  if(now.nanoseconds() == 0)
+    return {};
 
-    std::vector<uint64_t> missing;
-    if(!received_packet_times_.empty())
-      for(auto i = received_packet_times_.begin()->first+1; i < received_packet_times_.rbegin()->first; i++)
-        if(received_packet_times_.find(i) == received_packet_times_.end())
-          missing.push_back(i);
-    ResendRequest rr;
-    for(auto m: missing)
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  auto too_old = now - rclcpp::Duration::from_seconds(5.0);
+  clearReceivedPacketTimesBefore(too_old);  // re-enters mutex (recursive)
+  auto can_resend_time = now - rclcpp::Duration::from_seconds(0.2);
+
+  std::vector<uint64_t> missing;
+  if(!received_packet_times_.empty())
+    for(auto i = received_packet_times_.begin()->first+1; i < received_packet_times_.rbegin()->first; i++)
+      if(received_packet_times_.find(i) == received_packet_times_.end())
+        missing.push_back(i);
+  ResendRequest rr;
+  for(auto m: missing)
+  {
+    if(resend_request_times_[m].nanoseconds() == 0 || resend_request_times_[m] < can_resend_time)
     {
-      if(resend_request_times_[m].nanoseconds() == 0 || resend_request_times_[m] < can_resend_time)
-      {
-        rr.missing_packets.push_back(m);
-        resend_request_times_[m] = now;
-      }
+      rr.missing_packets.push_back(m);
+      resend_request_times_[m] = now;
     }
-    return rr;
   }
-  return {};
+  return rr;
 }
 
 } // namespace udp_bridge

@@ -324,6 +324,48 @@ integration), all passing.
   worktree state with main's install tree. Reviewer is invited to run
   that pass before merging if any cross-package concerns arise.
 
+## Updates from review-code
+
+PR-#12 review-code (run after the validation pass) found three must-fix
+items that the 3a/3b thread-safety audit missed; all three absorbed in
+commit 7:
+
+1. **Atomic protocol counters.** `next_packet_number_`,
+   `next_fragmented_packet_id_`, and
+   `next_connection_internal_message_sequence_number_` were touched from
+   multiple callback groups via `send<>()` but unguarded. Two concurrent
+   sends could produce duplicate packet numbers — silently corrupting
+   the resend protocol. Now `std::atomic`; `fetch_add(1)` gives a unique
+   value per call. `last_packet_number_assign_time_` is now stored as
+   `std::atomic<int64_t>` nanoseconds (rclcpp::Time isn't trivially
+   atomic). The two diagnostic atomics aren't synchronized together;
+   minor display skew between bi.next_packet_number and bi.last_packet_time
+   is acceptable.
+2. **Per-RemoteNode mutex.** The 3b audit guarded the outer
+   `remote_nodes_` map but stopped at the `shared_ptr<RemoteNode>`
+   boundary. RemoteNode methods (`update`, `unwrap`, `getMissingPackets`,
+   `clearReceivedPacketTimesBefore`, etc.) are now called concurrently
+   from multiple groups. Added `mutable std::recursive_mutex state_mutex_`
+   to RemoteNode and a lock at every public method that touches mutable
+   state. recursive_mutex chosen because some public methods call other
+   public methods (e.g., update(BridgeInfo) → connection() / newConnection();
+   getMissingPackets() → clearReceivedPacketTimesBefore()).
+   `defragmenter_` intentionally NOT guarded — by contract it's only
+   touched from socket_drain_group_; documented in the header.
+3. **Release-before-rmw refactor.** `decodeData` and
+   `updateLocalSubscriptions` were holding a UDPBridge map mutex across
+   `create_generic_publisher` / `get_publishers_info_by_topic` /
+   `create_generic_subscription` — exactly the pattern the executor
+   split is meant to prevent. Both now use a three-phase lookup:
+   (1) check map under lock; (2) do the slow rmw call without the lock;
+   (3) re-acquire and `try_emplace` with race guard (if another thread
+   beat us, we drop our newly-created object and use theirs).
+
+The locking-convention block at `udp_bridge.cpp:1-17` was extended to
+document the three-phase pattern, the per-RemoteNode mutex, the atomic
+counters, and the "set-once-at-configure" invariant for `name_` /
+`port_` / `max_packet_size_`.
+
 ## Updates from review-plan
 
 PR-#12 review (https://github.com/rolker/udp_bridge/pull/12#issuecomment-4356543190)

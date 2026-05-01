@@ -9,6 +9,8 @@
 #include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge/types.h"
 
+#include <mutex>
+
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/node_interfaces/node_interfaces.hpp"
 
@@ -65,6 +67,28 @@ private:
 
   // name of the local udp_bridge node;
   std::string local_name_;
+
+  // Guards all mutable state below: connections_, received_packet_times_,
+  // resend_request_times_, next_packet_number_, last_packet_time_. Under
+  // MultiThreadedExecutor, public methods on RemoteNode are reachable from
+  // multiple callback groups (socket-drain via decode/unwrap; periodic via
+  // bridge_info / stats / diagnostic timers; service handlers in periodic
+  // group).
+  //
+  // recursive_mutex chosen because some public methods call each other —
+  // update(BridgeInfo) calls connection() and newConnection(); unwrap()
+  // calls connection() and newConnection(); getMissingPackets() calls
+  // clearReceivedPacketTimesBefore(). recursive_mutex avoids the
+  // boilerplate of inner non-locking helpers.
+  //
+  // defragmenter_ is intentionally NOT guarded by this mutex: it is
+  // accessed via defragmenter() which returns a reference. Concurrency
+  // contract: defragmenter_ is only touched from socket-drain callbacks
+  // (UDPBridge::decode for Fragment packets and the spin_once tail
+  // cleanup loop), which are mutually-exclusive within socket_drain_group_
+  // by construction. If a future caller reaches defragmenter() from a
+  // different group, that contract breaks; document and lock then.
+  mutable std::recursive_mutex state_mutex_;
 
   std::map<std::string, std::shared_ptr<Connection> > connections_;
 
