@@ -165,30 +165,38 @@ durability so it actually receives latched messages.
 
 ### Mismatched-pair compatibility
 
-`MessageInternal` historically did not carry QoS fields. New senders and
-old receivers, or vice versa, may run on opposite sides of the bridge
-during a partial deployment.
+`MessageInternal` historically did not carry QoS fields. The PR that
+added them extends the on-wire schema with three trailing fields
+(`reliability`, `durability`, `history_depth`). New senders and old
+receivers, or vice versa, may briefly run on opposite sides of the
+bridge during a partial deployment or a field-mode hotfix on one host.
 
-- **New sender → old receiver**: ROS 2 message deserialization tolerates
-  trailing-field absence in CDR (the schema mismatch is detected via
-  type hashes, but practical compatibility for appended primitive fields
-  is preserved by `rosidl` defaults). The old receiver simply ignores
-  the QoS fields and continues to use its hardcoded `RELIABLE` /
-  `KEEP_LAST(1)` defaults — which is the pre-PR behavior. This is a
-  graceful degradation.
-- **Old sender → new receiver**: missing fields deserialize as empty
-  strings and `0`. The receiver's QoS-resolution logic treats empty
-  strings as "default" and `history_depth == 0` as "default 1", so the
-  receiver applies its `BEST_AVAILABLE` / `VOLATILE` / `KEEP_LAST(1)`
-  defaults. This is also a graceful degradation.
+The package's official supported configuration is **coordinated
+redeploy**: when `MessageInternal` changes, both endpoints must be
+redeployed together. The schema does not guarantee wire-level
+interoperability across the two versions — `rclcpp::Serialization` may
+fail to deserialize a buffer whose type hash, encapsulation header, or
+field layout doesn't match what the receiver expects, and the exact
+behavior depends on the active rmw / CDR implementation. We have not
+verified the trailing-field-tolerance behavior under any specific rmw
+in this package's CI.
 
-The receiver MUST treat missing/empty/zero values as defaults rather
-than rejecting the message. This is enforced in the resolver helper
-exercised by `test_qos_resolution.cpp`.
+What the package *does* guarantee:
 
-In normal operation, both endpoints come from the same source tree and
-are deployed together; the mismatched-pair case is a fallback for partial
-deployments and field hotfixes.
+- The receiver's resolver (`resolveDestinationPublisherQos`) treats
+  empty/zero values as "use the package defaults", so a successfully-
+  deserialized message from any version produces a coherent QoS — that
+  is what `test_qos_resolution.cpp::OldSenderAllFieldsMissing*`
+  exercises. This test exercises the resolver in isolation; it does
+  NOT assert anything about wire-level cross-version interoperability.
+- `UDPBridge::decode()` catches `std::exception` from any per-packet
+  decoder and logs + drops the bad packet. So a transient mismatched-
+  pair scenario produces logged decode errors and dropped messages,
+  not a crashed bridge process.
+
+Operators bringing one endpoint forward without the other should expect
+elevated `decoding error` log lines and missed traffic until both sides
+match.
 
 ## A worked example: the CAMP RELIABLE-subscriber concern
 

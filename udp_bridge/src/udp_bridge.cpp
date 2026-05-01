@@ -550,40 +550,57 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& so
     if(remote_node_iterator != remote_nodes_.end())
       remote_node = remote_node_iterator->second;
   }
-  switch(packet->type)
+  // Catch-all so a deserialization throw on a stale/mismatched-schema
+  // buffer (e.g. a partial cross-version deployment of MessageInternal
+  // — see udp_bridge/doc/qos_design.md "Mismatched-pair compatibility")
+  // is logged and dropped instead of propagating up the spin_once timer
+  // callback and tearing the executor down.
+  try
   {
-    case PacketType::Data:
-      decodeData(message, source_info);
-      break;
-    case PacketType::Compressed:
-      decode(uncompress(message), source_info);
-      break;
-    case PacketType::SubscribeRequest:
-      decodeSubscribeRequest(message, source_info);
-      break;
-    case PacketType::Fragment:
-      if(remote_node)
-        if(remote_node->defragmenter().addFragment(message, get_clock()->now()))
-          for(auto p: remote_node->defragmenter().getPackets())
-            decode(p, source_info);
-      break;
-    case PacketType::BridgeInfo:
-        decodeBridgeInfo(message, source_info);
+    switch(packet->type)
+    {
+      case PacketType::Data:
+        decodeData(message, source_info);
         break;
-    case PacketType::TopicStatistics:
-        decodeTopicStatistics(message, source_info);
+      case PacketType::Compressed:
+        decode(uncompress(message), source_info);
         break;
-    case PacketType::WrappedPacket:
-      unwrap(message, source_info);
-      break;
-    case PacketType::ResendRequest:
-      decodeResendRequest(message, source_info);
-      break;
-    case PacketType::Connection:
-      decodeConnection(message, source_info);
-      break;
-    default:
-        RCLCPP_WARN_STREAM(get_logger(), "Unknown packet type: " << int(packet->type) << " from: " << source_info.node_name << " " << source_info.host << ":" << source_info.port);
+      case PacketType::SubscribeRequest:
+        decodeSubscribeRequest(message, source_info);
+        break;
+      case PacketType::Fragment:
+        if(remote_node)
+          if(remote_node->defragmenter().addFragment(message, get_clock()->now()))
+            for(auto p: remote_node->defragmenter().getPackets())
+              decode(p, source_info);
+        break;
+      case PacketType::BridgeInfo:
+          decodeBridgeInfo(message, source_info);
+          break;
+      case PacketType::TopicStatistics:
+          decodeTopicStatistics(message, source_info);
+          break;
+      case PacketType::WrappedPacket:
+        unwrap(message, source_info);
+        break;
+      case PacketType::ResendRequest:
+        decodeResendRequest(message, source_info);
+        break;
+      case PacketType::Connection:
+        decodeConnection(message, source_info);
+        break;
+      default:
+          RCLCPP_WARN_STREAM(get_logger(), "Unknown packet type: " << int(packet->type) << " from: " << source_info.node_name << " " << source_info.host << ":" << source_info.port);
+    }
+  }
+  catch(const std::exception& e)
+  {
+    RCLCPP_ERROR_STREAM(get_logger(),
+      "decoding error on packet of type " << int(packet->type)
+      << " size " << message.size()
+      << " from '" << source_info.node_name
+      << "' (" << source_info.host << ":" << source_info.port << "): "
+      << e.what());
   }
 }
 
