@@ -49,6 +49,12 @@ class RemoteNode
 
   std::shared_ptr<Connection> newConnection(std::string connection_id, std::string host, uint16_t port);
 
+  // Insert an externally-constructed Connection (e.g. one created on the
+  // outbound CONNECT path before the remote acknowledged) into this
+  // RemoteNode's connections_ map. No-op if a connection with the same
+  // id is already registered.
+  void adoptConnection(std::shared_ptr<Connection> connection);
+
   std::vector<uint8_t> unwrap(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
   std::vector<std::vector<uint8_t> > getPacketsToResend(const udp_bridge_interfaces::msg::ResendRequest& resend_request);

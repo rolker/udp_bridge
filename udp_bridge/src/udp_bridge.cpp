@@ -87,11 +87,52 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
 
   declare_parameter("port", port_);
-  port_ = get_parameter("port").as_int();
-  RCLCPP_INFO_STREAM(get_logger(), "port: " << port_); 
+  // ROS 2 parameters are int64. port_ is uint16_t; out-of-range values
+  // would silently wrap and bind to an unintended port. Clamp + warn.
+  {
+    int64_t configured_port = get_parameter("port").as_int();
+    if(configured_port < 0)
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "port " << configured_port << " is below 0; clamping to 0");
+      configured_port = 0;
+    }
+    else if(configured_port > 65535)
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "port " << configured_port << " is above 65535; clamping to 65535");
+      configured_port = 65535;
+    }
+    port_ = static_cast<uint16_t>(configured_port);
+  }
+  RCLCPP_INFO_STREAM(get_logger(), "port: " << port_);
 
   declare_parameter("maximum_packet_size", max_packet_size_);
-  max_packet_size_ = get_parameter("maximum_packet_size").as_int();
+  // Bound the packet size to a sensible UDP range. Lower bound is the
+  // minimum that still leaves room for a Packet header + a meaningful
+  // payload after fragmentation; upper bound is the IPv4/UDP maximum.
+  // A negative or huge value would propagate into fragment() and
+  // buffer resizes, causing bad allocations.
+  {
+    constexpr int64_t kMinPacketSize = 256;
+    constexpr int64_t kMaxPacketSize = 65500;
+    int64_t configured_packet_size = get_parameter("maximum_packet_size").as_int();
+    if(configured_packet_size < kMinPacketSize)
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "maximum_packet_size " << configured_packet_size
+        << " is below " << kMinPacketSize << "; clamping to " << kMinPacketSize);
+      configured_packet_size = kMinPacketSize;
+    }
+    else if(configured_packet_size > kMaxPacketSize)
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "maximum_packet_size " << configured_packet_size
+        << " is above " << kMaxPacketSize << "; clamping to " << kMaxPacketSize);
+      configured_packet_size = kMaxPacketSize;
+    }
+    max_packet_size_ = static_cast<int>(configured_packet_size);
+  }
   RCLCPP_INFO_STREAM(get_logger(), "maximum_packet_size: " << max_packet_size_);
 
   //maximum_packet_size_subscriber_ = ros::NodeHandle("~").subscribe("maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
@@ -821,34 +862,40 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
   {
     case ConnectionInternal::OPERATION_CONNECT:
       {
+        // Resolve / create the RemoteNode under remote_nodes_mutex_ only.
+        // Per-remote work (newConnection -> getaddrinfo, setHostAndPort,
+        // setRateLimit) is done outside the lock and is serialized by
+        // RemoteNode::state_mutex_ / Connection::config_mutex_. Holding
+        // remote_nodes_mutex_ across blocking DNS would let a single
+        // CONNECT-decode stall every other path that touches
+        // remote_nodes_ — including the socket-drain group's own lookups
+        // — re-introducing the wedge this PR is meant to fix.
+        std::shared_ptr<RemoteNode> remote;
         {
           std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-          auto remote = remote_nodes_[source_info.node_name];
+          remote = remote_nodes_[source_info.node_name];
           if(!remote)
           {
             remote = std::make_shared<RemoteNode>(source_info.node_name, name_, *this);
             remote_nodes_[source_info.node_name] = remote;
           }
-          uint16_t port = source_info.port;
-          if(connection_internal.return_port != 0)
-            port = connection_internal.return_port;
-          auto host = source_info.host;
-          if(!connection_internal.return_host.empty())
-            host = connection_internal.return_host;
-          auto connection = remote->connection(connection_internal.connection_id);
-          if(!connection)
-          {
-            connection = remote->newConnection(connection_internal.connection_id, host, port);
-            remote->connections().push_back(connection);
-          }
-          else
-            connection->setHostAndPort(host, port);
-          if(connection_internal.return_maximum_bytes_per_second > 0)
-            connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
-          connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
-          connection_internal.return_host = connection->returnHost();
-          connection_internal.return_port = connection->returnPort();
         }
+        uint16_t port = source_info.port;
+        if(connection_internal.return_port != 0)
+          port = connection_internal.return_port;
+        auto host = source_info.host;
+        if(!connection_internal.return_host.empty())
+          host = connection_internal.return_host;
+        auto connection = remote->connection(connection_internal.connection_id);
+        if(!connection)
+          connection = remote->newConnection(connection_internal.connection_id, host, port);
+        else
+          connection->setHostAndPort(host, port);
+        if(connection_internal.return_maximum_bytes_per_second > 0)
+          connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
+        connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
+        connection_internal.return_host = connection->returnHost();
+        connection_internal.return_port = connection->returnPort();
         // send() acquires its own locks; call without remote_nodes_mutex_.
         send(connection_internal, source_info.node_name, true);
       }
@@ -870,8 +917,12 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
           {
             if(!connection)
             {
+              // adoptConnection registers the pending Connection on the
+              // RemoteNode under its state_mutex_; without it, the
+              // pending_connection would be discarded here and later
+              // remote->connection(id) lookups would return nullptr.
+              remote->adoptConnection(pending_connection);
               connection = pending_connection;
-              remote->connections().push_back(connection);
             }
           }
           pending_connections_.erase(connection_internal.sequence_number);
@@ -1260,36 +1311,38 @@ void UDPBridge::addRemote(
   bool should_send_bridge_info = false;
   if(!request->name.empty())
   {
+    // Resolve / create the RemoteNode under remote_nodes_mutex_; do all
+    // per-remote work (DNS via newConnection, setHostAndPort,
+    // setReturnHostAndPort, setRateLimit) outside the lock so service
+    // handlers don't stall the socket-drain group.
+    std::shared_ptr<RemoteNode> remote;
     {
       std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-      auto remote = remote_nodes_[request->name];
+      remote = remote_nodes_[request->name];
       if(!remote)
       {
         remote = std::make_shared<RemoteNode>(request->name, name_, *this);
         remote_nodes_[request->name] = remote;
       }
+    }
 
-      uint16_t port = 4200;
-      if (request->port != 0)
-        port = request->port;
+    uint16_t port = 4200;
+    if (request->port != 0)
+      port = request->port;
 
-      auto connection = remote->connection(connection_id);
-      if(!request->address.empty())
-      {
-        if(!connection)
-        {
-          connection = remote->newConnection(connection_id, request->address, port);
-          remote->connections().push_back(connection);
-        }
-        else
-          connection->setHostAndPort(request->address, port);
-      }
-      if(connection)
-      {
-        connection->setReturnHostAndPort(request->return_address, request->return_port);
-        connection->setRateLimit(request->maximum_bytes_per_second);
-        should_send_bridge_info = true;
-      }
+    auto connection = remote->connection(connection_id);
+    if(!request->address.empty())
+    {
+      if(!connection)
+        connection = remote->newConnection(connection_id, request->address, port);
+      else
+        connection->setHostAndPort(request->address, port);
+    }
+    if(connection)
+    {
+      connection->setReturnHostAndPort(request->return_address, request->return_port);
+      connection->setRateLimit(request->maximum_bytes_per_second);
+      should_send_bridge_info = true;
     }
     if(should_send_bridge_info)
       sendBridgeInfo();

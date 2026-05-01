@@ -116,6 +116,16 @@ std::shared_ptr<Connection> RemoteNode::newConnection(std::string connection_id,
   return connections_[connection_id];
 }
 
+void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)
+{
+  if(!connection)
+    return;
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  auto& slot = connections_[connection->id()];
+  if(!slot)
+    slot = connection;
+}
+
 
 std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
