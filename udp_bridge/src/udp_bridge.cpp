@@ -247,7 +247,27 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
         std::string history_depth_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".history_depth";
         declare_parameter(history_depth_param, 0);
-        uint32_t history_depth = static_cast<uint32_t>(get_parameter(history_depth_param).as_int());
+        // ROS 2 parameters are int64; an unchecked static_cast<uint32_t>
+        // of a negative or out-of-range value wraps to a billions-large
+        // depth and triggers a huge KEEP_LAST allocation in the rmw
+        // layer. Validate and clamp before casting.
+        constexpr int64_t kMaxHistoryDepth = 10000;
+        int64_t history_depth_value = get_parameter(history_depth_param).as_int();
+        if(history_depth_value < 0)
+        {
+          RCLCPP_WARN_STREAM(get_logger(),
+            "history_depth for " << remote_name << "/" << connection_name << "/" << topic
+            << " is " << history_depth_value << "; treating as default (0)");
+          history_depth_value = 0;
+        }
+        else if(history_depth_value > kMaxHistoryDepth)
+        {
+          RCLCPP_WARN_STREAM(get_logger(),
+            "history_depth for " << remote_name << "/" << connection_name << "/" << topic
+            << " is " << history_depth_value << "; clamping to " << kMaxHistoryDepth);
+          history_depth_value = kMaxHistoryDepth;
+        }
+        uint32_t history_depth = static_cast<uint32_t>(history_depth_value);
 
         addSubscriberConnection(source, destination, queue_size, period,
                                 remote_info.name, connection.connection_id,

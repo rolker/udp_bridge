@@ -6,6 +6,7 @@
 // downstream consumers like CAMP. This test exercises that assumption
 // against the live rmw layer (whatever rmw is in use at test time).
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
