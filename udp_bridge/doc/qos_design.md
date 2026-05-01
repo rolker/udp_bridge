@@ -5,6 +5,17 @@ on its publishers and subscribers. It exists so the next maintainer doesn't have
 to re-derive the trade-offs from scratch — every QoS question in this package
 should have a written answer here.
 
+> **Operational note (2026-05-01)**: the destination publisher's reliability
+> default has been temporarily switched from `BEST_AVAILABLE` to `RELIABLE`
+> in `qos_resolution.h` because `rmw_zenoh_cpp` 0.2.9 fails to encode
+> `BEST_AVAILABLE` into its liveliness keyexpr, leaving the publisher
+> invisible to graph-discovery clients (e.g. CAMP's `NavSource`, which
+> gates on `get_topic_names_and_types`). The rest of this document
+> describes the *design intent*; the operational default flips back to
+> `BEST_AVAILABLE` once the rmw issue is resolved. To opt into
+> `BEST_AVAILABLE` per topic before then, set `reliability:
+> best_available` explicitly in the connection config.
+
 ## Mental model: the bridge is a UDP transport
 
 The bridge sits between two ROS 2 graphs and carries serialized ROS 2
