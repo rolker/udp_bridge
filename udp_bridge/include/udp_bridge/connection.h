@@ -43,23 +43,31 @@ public:
   const std::string &id() const;
 
   // Used to tell the remote host the address to get back to us.
-  const std::string& returnHost() const;
+  // Returns by value (config_mutex_ guard would otherwise dangle a reference).
+  std::string returnHost() const;
   uint16_t returnPort() const;
   void setReturnHostAndPort(const std::string &return_host, uint16_t return_port);
 
   // IP address and port from incoming packets. May differ from where packets are sent depending
-  // on network architecture.
-  const std::string& sourceIPAddress() const;
+  // on network architecture. Returns by value (config_mutex_ guard).
+  std::string sourceIPAddress() const;
   uint16_t sourcePort() const;
   void setSourceIPAndPort(const std::string &source_ip, uint16_t source_port);
 
 
-  const std::string& host() const;
+  // host(), port(), ip_address(), ip_address_with_port() return by value
+  // because the underlying fields are guarded by config_mutex_; a
+  // reference would dangle after lock release.
+  std::string host() const;
   uint16_t port() const;
-  const std::string& ip_address() const;
+  std::string ip_address() const;
   std::string ip_address_with_port() const;
 
-  const sockaddr_in* socket_address() const;
+  // Note: a previous socket_address() returning `const sockaddr_in*`
+  // into the addresses_ vector was removed. That pointer would dangle
+  // if a concurrent setHostAndPort() → resolveHost() cleared the
+  // vector. There were no callers, and Connection::send() now snapshots
+  // the destination address internally under config_mutex_.
 
   /// Returns the time (seconds since epoch) the last packet was received
   /// on this connection, or 0.0 if no packet has been received yet.
@@ -92,11 +100,25 @@ public:
   void cleanup_sent_packets(rclcpp::Time cutoff_time);
 
 private:
+  // Caller must hold config_mutex_; resolveHost mutates addresses_ and
+  // ip_address_. Called from the constructor and from setHostAndPort.
   void resolveHost();
 
   /// connection_id of the connection
   std::string id_;
 
+  // The fields below are guarded by config_mutex_ — written by
+  // setHostAndPort / setReturnHostAndPort / setSourceIPAndPort /
+  // setRateLimit (reachable from socket-drain via decode handlers AND
+  // from periodic via the addRemote service handler), read by getters
+  // and by Connection::send. Without the mutex, a concurrent
+  // resolveHost() could clear+repopulate addresses_ while
+  // Connection::send was reading addresses_.data() to hand to sendto()
+  // — a use-after-free hazard.
+  //
+  // recursive_mutex chosen because Connection's ctor + setHostAndPort
+  // call resolveHost() while already holding the lock.
+  mutable std::recursive_mutex config_mutex_;
   std::string host_;
   std::string ip_address_; ///< resolved ip address
   uint16_t port_;

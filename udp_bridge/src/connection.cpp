@@ -16,37 +16,43 @@ using namespace udp_bridge_interfaces::msg;
 Connection::Connection(std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
   id_(id), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
 {
-  resolveHost();
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  resolveHost();  // re-enters mutex (recursive)
 }
 
 void Connection::setHostAndPort(const std::string &host, uint16_t port)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   if(host != host_ || port != port_)
   {
     host_ = host;
     port_ = port;
-    resolveHost();
+    resolveHost();  // re-enters mutex (recursive)
   }
 }
 
-const std::string& Connection::sourceIPAddress() const
+std::string Connection::sourceIPAddress() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return source_ip_address_;
 }
 
 uint16_t Connection::sourcePort() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return source_port_;
 }
 
 void Connection::setSourceIPAndPort(const std::string &source_ip, uint16_t source_port)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   source_ip_address_ = source_ip;
   source_port_ = source_port;
 }
 
 void Connection::setRateLimit(uint32_t maximum_bytes_per_second)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   if(maximum_bytes_per_second == 0)
     data_rate_limit_ = default_rate_limit;
   else
@@ -55,24 +61,26 @@ void Connection::setRateLimit(uint32_t maximum_bytes_per_second)
 
 uint32_t Connection::rateLimit() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return data_rate_limit_;
 }
 
 void Connection::resolveHost()
 {
+  // Caller (ctor or setHostAndPort) holds config_mutex_.
   addresses_.clear();
 
   if(host_.empty() || port_ == 0)
     return;
 
   struct addrinfo hints = {0}, *addresses;
-  
+
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_protocol = IPPROTO_UDP;
-  
+
   std::string port_string = std::to_string(port_);
-  
+
   int ret = getaddrinfo(host_.c_str(), port_string.c_str(), &hints, &addresses);
   if(ret != 0)
     throw std::runtime_error(gai_strerror(ret));
@@ -86,15 +94,9 @@ void Connection::resolveHost()
   freeaddrinfo(addresses);
 }
 
-const sockaddr_in* Connection::socket_address() const
-{
-  if(addresses_.empty())
-    return nullptr;
-  return &addresses_.front();
-}
-
 std::string Connection::str() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   std::stringstream ret;
   ret << host_ << ":" << port_;
   return ret.str();
@@ -105,39 +107,46 @@ const std::string& Connection::id() const
   return id_;
 }
 
-const std::string& Connection::returnHost() const
+std::string Connection::returnHost() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return return_host_;
 }
 
 void Connection::setReturnHostAndPort(const std::string &return_host, uint16_t return_port)
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return_host_ = return_host;
   return_port_ = return_port;
 }
 
 uint16_t Connection::returnPort() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return return_port_;
 }
 
-const std::string& Connection::host() const
+std::string Connection::host() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return host_;
 }
 
 uint16_t Connection::port() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return port_;
 }
 
-const std::string& Connection::ip_address() const
+std::string Connection::ip_address() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return ip_address_;
 }
 
 std::string Connection::ip_address_with_port() const
 {
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return ip_address_+":"+std::to_string(port_);
 }
 
@@ -164,10 +173,18 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   for(const auto& p: packets)
     total_size += p.packet_size;
 
+  // Snapshot rate_limit under config_mutex_; the can_send check then
+  // uses the snapshot under sent_packet_statistics_mutex_ separately.
+  uint32_t rate_limit;
+  {
+    std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+    rate_limit = data_rate_limit_;
+  }
+
   bool can_send;
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    can_send = sent_packet_statistics_.can_send(total_size, data_rate_limit_, now);
+    can_send = sent_packet_statistics_.can_send(total_size, rate_limit, now);
   }
   if(!can_send)
   {
@@ -214,7 +231,23 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   ret.size = data.size();
   ret.category = category;
   ret.send_result = SendResult::failed;
-  if(addresses_.empty())
+
+  // Snapshot the destination address + rate limit under config_mutex_
+  // before doing any network I/O. We must NOT pass &addresses_.front()
+  // across the unlock — a concurrent setHostAndPort() → resolveHost()
+  // would clear() then push_back(), and the pointer in flight could
+  // dangle by the time sendto() reads it.
+  sockaddr_in destination;
+  uint32_t rate_limit;
+  bool no_address;
+  {
+    std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+    no_address = addresses_.empty();
+    if(!no_address)
+      destination = addresses_.front();
+    rate_limit = data_rate_limit_;
+  }
+  if(no_address)
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
@@ -224,7 +257,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   bool can_send;
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    can_send = sent_packet_statistics_.can_send(data.size(), data_rate_limit_, ret.timestamp);
+    can_send = sent_packet_statistics_.can_send(data.size(), rate_limit, ret.timestamp);
   }
   if(!can_send)
   {
@@ -246,7 +279,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
       int poll_ret = poll(&p, 1, 10);
       if(poll_ret > 0 && p.revents & POLLOUT)
       {
-        bytes_sent = sendto(socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(addresses_.data()), sizeof(sockaddr_in));
+        bytes_sent = sendto(socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
         if(bytes_sent == -1)
           switch(errno)
           {
