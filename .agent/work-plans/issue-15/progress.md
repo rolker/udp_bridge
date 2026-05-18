@@ -55,3 +55,16 @@ issue: 15
 - [x] **P1 (blocking sendto under mutex)** — My B1 fix at `connection.cpp:269` holds `sent_packet_statistics_mutex_` across `sendto()` on the bridge socket. The rationale comment claimed the socket was non-blocking but it isn't — only `SO_RCVTIMEO` is set. Passed `MSG_DONTWAIT` to the `sendto()` call so the existing `EAGAIN` retry path handles buffer-full state; worst-case mutex hold is now bounded by the poll loop's ~200 ms budget. Rationale comment at `connection.cpp:259-273` rewritten to describe the actual mechanism. **→ commit 6e9ffdd**
 - [x] **P2 (test: rclcpp shutdown)** — Added custom `main()` to `test_connection_rate_limit.cpp` matching `test_qos_matching_integration.cpp:158-165`. **→ commit d34a0eb**
 - [x] **P3 (test: missing includes)** — Added explicit `<cerrno>` and `<cstring>` includes. **→ commit d34a0eb**
+
+## External Review
+**Status**: complete
+**When**: 2026-05-18 18:55
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #16 — 4 review(s) total (4th fresh Copilot @ `efec6c8`), 3 fresh inline comments, 3 valid, 0 false positives
+**CI**: all-pass (4 checks)
+
+### Actions
+- [ ] **Q1 (regression from P1)** — `MSG_DONTWAIT` activated a previously-unreached EAGAIN path that's structurally broken. `case EAGAIN: tries+=1; break;` exits the switch and falls through to `if(bytes_sent < data.size())` — but `bytes_sent == -1` (signed int) vs `data.size()` (size_t) promotes `-1` to ~UINT_MAX, comparison is **false**, success-recording else branch runs. **Result: under buffer pressure, the code records SUCCESS for a packet that wasn't sent.** Fix: replace `break;` with `continue;` in the EAGAIN case so the outer `while(true)` restarts. Also defensively guard the `bytes_sent < data.size()` comparison so a `-1` can't be mistaken for "all sent".
+- [ ] **Q2 (wedge reintroduction via sent_packet_statistics_mutex_)** — Holding `sent_packet_statistics_mutex_` across the poll/sendto loop (up to ~200 ms) can stall `sendBridgeInfo` (`udp_bridge.cpp:1220`) which calls `data_sent_rate()` while holding `subscribers_mutex_` + `remote_nodes_mutex_` (`:1233`). The blocked `sendBridgeInfo` then stalls the socket-drain path's `remote_nodes_mutex_` lookups (`:425/554/680/698/849/898/928`) — same mechanism as the #10 wedge. Fix: reserve-then-record pattern. Add `uint32_t reserved_bytes_in_flight_` to `Connection` (guarded by `sent_packet_statistics_mutex_`); extend `PacketSendStatistics::can_send` to include reserved bytes in its sum. Under the mutex briefly: check can_send including reserved, then increment reservation OR record dropped + return. Release mutex. Do sendto outside the mutex. Re-acquire mutex briefly: decrement reservation, add real record. RAII guard for throw-safety. Mutex hold becomes microseconds, not 200 ms.
+- [ ] **Q3 (test socket fd leak under ASSERT)** — `test_connection_rate_limit.cpp` owns raw socket fds and closes them only at the happy-path end. If `send_sock` creation fails after `listener_sock` opened, the listener fd leaks. Wrap each in a tiny RAII helper.
