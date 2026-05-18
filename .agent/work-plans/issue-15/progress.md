@@ -81,3 +81,15 @@ issue: 15
 - [x] **R1 (Q2 broke can_send's monotone-order assumption)** — Replaced the skip-prefix walk with a per-entry timestamp filter over the whole deque. Bounded to ~10 s of records by Statistics::add eviction; correct regardless of insertion order. **→ commit 47c7106**
 - [x] **R2 (test passes on drop-everything regression)** — Added `EXPECT_GT(success, 0)` and `EXPECT_GE(success, 0.5 * cap)` to `ConcurrentSendsStayUnderLimit`. Test now catches both under-throttle (already covered) and over-throttle (new) regressions. **→ commit 47c7106**
 - [x] **R3 (Q2 comment misrepresents call-site behavior)** — Reworded `connection.cpp:288-300` to acknowledge no caller catches `ConnectionException` (throw terminates the node via the executor); reframed `ReservationGuard`'s value as consistent accounting before process death rather than reporting delegation. Pre-existing throw behavior unchanged; follow-up to add a catch at the call site is noted. **→ commit 47c7106**
+
+## External Review
+**Status**: complete
+**When**: 2026-05-18 20:05
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #16 — 6 review(s) total (6th fresh Copilot @ `6f132a3`), 2 fresh inline comments, 2 valid, 0 false positives
+**CI**: all-pass (4 checks)
+
+### Actions
+- [ ] **S1 (test file describes superseded contract)** — `test_connection_rate_limit.cpp` header (lines 1-23) and the assertion-failure message at lines 174-177 describe the pre-Q2 "moved into a single sent_packet_statistics_mutex_ critical section" design. After Q2 the implementation uses reserve-then-record with sendto OUTSIDE the mutex. A future debugger reading the failure message would be pointed at the wrong invariant. Rewrite both spots to describe the reservation contract: brief lock for can_send + reservation bump; sendto unlocked; brief lock to release reservation + add record. Point the assertion message at the reservation invariant (`reserved_bytes_in_flight_` must be visible to `can_send` for concurrent senders).
+- [ ] **S2 (PR body stale on locking design + commit list)** — Body's commit list stops at `2b7241a` and the `1489cfb` description still claims "Holds sent_packet_statistics_mutex_ across can_send + sendto + result-add" — the Q2 restructure (`0c8b75f`) replaced that design. Five subsequent commits are missing entirely. Test count "29" is stale (now 34). Refresh via `gh api PATCH` (gh pr edit blocked by classic-Projects deprecation per `reference_gh_pr_edit_workaround.md`): add missing commits, supersede the `1489cfb` mutex-across-sendto claim, update the "Risks to verify" bullet, update test count.
