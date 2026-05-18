@@ -141,6 +141,49 @@ TEST_F(QosMatchingIntegration, BestEffortPublisher_MatchesBestEffortSubscriber)
   EXPECT_TRUE(publish_and_observe("best_effort", "", 1, sub_qos));
 }
 
+// --- The operational RELIABLE default --------------------------------------
+// Mirrors the BEST_AVAILABLE matching cases above against the current
+// operational default. resolveDestinationPublisherQos treats an empty
+// reliability string as RELIABLE while the rmw_zenoh_cpp 0.2.9
+// graph-visibility workaround is in effect (see qos_resolution.h).
+// These cases lock in that the empty-default + RELIABLE-publisher
+// matching surface is what the operational default delivers — they
+// would have caught a silent regression in either choice.
+
+TEST_F(QosMatchingIntegration, DefaultPublisher_MatchesReliableSubscriber)
+{
+  rclcpp::QoS sub_qos(1);
+  sub_qos.reliable();
+  EXPECT_TRUE(publish_and_observe("", "", 1, sub_qos))
+    << "Default-reliability publisher failed to match a RELIABLE subscriber. "
+       "Operational default should be RELIABLE; if this fails the resolver "
+       "is producing something else.";
+}
+
+TEST_F(QosMatchingIntegration, DefaultPublisher_MatchesBestEffortSubscriber)
+{
+  rclcpp::QoS sub_qos(1);
+  sub_qos.best_effort();
+  EXPECT_TRUE(publish_and_observe("", "", 1, sub_qos))
+    << "Default-reliability publisher failed to match a BEST_EFFORT subscriber. "
+       "RELIABLE publishers must match BEST_EFFORT subscribers per ROS 2 QoS "
+       "rules; if this fails the rmw is rejecting the asymmetric match.";
+}
+
+TEST_F(QosMatchingIntegration, ReliablePublisher_MatchesBestEffortSubscriber)
+{
+  // The "publisher offers more than subscriber requires" matching case.
+  // qos_design.md's reliability table claims this is yes/match; this test
+  // pins that claim against the live rmw so a future rmw change can't
+  // silently invalidate it.
+  rclcpp::QoS sub_qos(1);
+  sub_qos.best_effort();
+  EXPECT_TRUE(publish_and_observe("reliable", "", 1, sub_qos))
+    << "RELIABLE publisher failed to match a BEST_EFFORT subscriber. "
+       "This contradicts the QoS-matching rules in qos_design.md and would "
+       "invalidate the operational RELIABLE default's compatibility claim.";
+}
+
 // --- Negative case: confirms the matching mechanism exists ----------------
 // Without this the all-pass result above could be a false positive
 // (any-to-any). A BEST_EFFORT publisher must NOT match a RELIABLE subscriber.
