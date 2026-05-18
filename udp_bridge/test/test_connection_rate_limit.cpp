@@ -1,20 +1,36 @@
 // Concurrency test for Connection::send rate-limit accounting.
 //
-// PR #16 (commit 1489cfb) moved the per-packet can_send / sendto /
-// result-add into a single sent_packet_statistics_mutex_ critical
-// section, closing a check-then-record TOCTOU that PR #12's audit
-// had left split. Without that fix, multiple forwarding callbacks
-// running concurrently (the republish_group_ became Reentrant in
-// PR #12) could all observe capacity in their separate check critical
-// sections and collectively exceed maximum_bytes_per_second.
+// PR #16 fixed a check-then-record TOCTOU in Connection::send's
+// rate-limit path. The fix evolved across two commits:
 //
-// This test exercises that contention by spinning many threads calling
+//   commit 1489cfb (B1): held sent_packet_statistics_mutex_ across the
+//     can_send check, the sendto, and the result-add. Closed the
+//     TOCTOU but stalled stats readers and the periodic path under
+//     back-pressure (~200 ms mutex hold), which could cascade through
+//     sendBridgeInfo's remote_nodes_mutex_ and wedge the socket-drain
+//     path.
+//
+//   commit 0c8b75f (Q2): replaced the single-critical-section design
+//     with a reserve-then-record pattern. A brief first lock checks
+//     can_send(data.size, reserved_bytes_in_flight_, ...) and bumps
+//     reserved_bytes_in_flight_; sendto runs OUTSIDE the mutex; a
+//     brief second lock atomically releases the reservation and adds
+//     the real record. Concurrent senders see each other's in-flight
+//     bytes via reserved_bytes_in_flight_ in can_send's sum, so the
+//     rate-limit invariant holds without holding the mutex across
+//     blocking I/O.
+//
+// Without that fix, multiple forwarding callbacks running concurrently
+// (the republish_group_ is Reentrant) could all observe capacity in
+// their separate check critical sections and collectively exceed
+// maximum_bytes_per_second.
+//
+// This test exercises the contention by spinning many threads calling
 // Connection::send on a single rate-limited Connection with a fixed
-// timestamp (so the per-second window is well-defined). With the fix
-// in place, the post-run accounting shows success_bytes_per_second
-// strictly below the configured rate limit. Without the fix, a
-// regression to separated check/record critical sections would let
-// the success total exceed the limit under load.
+// timestamp (so the per-second window is well-defined). The post-run
+// accounting must show success_bytes_per_second strictly below the
+// configured rate limit (cap not exceeded) AND not far below it
+// (capacity actually used — catches over-conservative regressions).
 //
 // Note: this is a stress test for a race window. It cannot prove the
 // absence of the race — it can only catch a regression once the
@@ -172,9 +188,11 @@ TEST_F(ConnectionRateLimit, ConcurrentSendsStayUnderLimit)
     << "Concurrent Connection::send invocations exceeded the per-second rate "
        "limit (" << rates.success_bytes_per_second << " bytes vs cap "
     << kRateLimitBytesPerSec << "). Suspected regression in the "
-       "sent_packet_statistics_mutex_ contract — check that the can_send "
-       "check, the sendto, and the result-add all happen under one lock "
-       "acquisition in Connection::send.";
+       "reserve-then-record contract — verify that Connection::send "
+       "increments reserved_bytes_in_flight_ under sent_packet_statistics_mutex_ "
+       "before releasing the mutex for the sendto loop, and that "
+       "PacketSendStatistics::can_send includes reserved_bytes in its "
+       "per-second sum so concurrent senders cannot collectively exceed the cap.";
 
   // Sanity: the drop counter accounts for the overflow. With kNumThreads
   // * kPacketsPerThread = 1600 attempts and ~9 expected successes, the
