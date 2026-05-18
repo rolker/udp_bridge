@@ -64,15 +64,23 @@ Six commits on `feature/issue-9`:
      `kSentPacketTTL = 5.0s` (sender-side eviction cutoff) and
      `kReceiveHistoryWindow = kSentPacketTTL` (receiver-side
      consideration window). `cleanupSentPackets` (post-#11/12 currently
-     at `udp_bridge.cpp:1077-1082`) uses `kSentPacketTTL`;
+     at `udp_bridge.cpp:1082`) uses `kSentPacketTTL`;
      `clearReceivedPacketTimesBefore` (post-#11/12 at `remote_node.cpp:182`)
      and the gap-scan in `getMissingPackets` (`remote_node.cpp:200`,
-     line 207) use `kReceiveHistoryWindow`. The receiver-window must be
-     `>=` the sender-TTL for the give-up math to be sound; pin the
-     relationship at compile time with `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)`.
-     Defaulting `kReceiveHistoryWindow` to `kSentPacketTTL` makes the
-     two equal today (the original design intent) while leaving room
-     for a future relaxation without re-auditing the assert.
+     line 207) use `kReceiveHistoryWindow`. The per-remote defragmenter
+     cleanup cutoff at `udp_bridge.cpp:431` (currently a literal `5`s)
+     is in the same semantic family — receiver-side intake window — and
+     also moves to `kReceiveHistoryWindow`.
+     The bug-prevention invariant goes one way: the receiver-window must
+     be `<=` the sender-TTL so the receiver can never request packets the
+     sender has already forgotten (failure mode D from the issue: receiver
+     5 s > sender 3 s lets the receiver legally request forgotten
+     packets). Pin this at compile time with
+     `static_assert(kReceiveHistoryWindow <= kSentPacketTTL)`.
+     Defaulting `kReceiveHistoryWindow` to `kSentPacketTTL` makes the two
+     equal today (the original design intent) while leaving room for a
+     future narrowing of the receiver window without re-auditing the
+     assert.
    - Extend `udp_bridge_interfaces/msg/Remote.msg` with
      `uint32 resend_giveup_count` (per-remote, populated by the receiver
      when it gives up on missing packets from that remote). Placed on
@@ -83,35 +91,52 @@ Six commits on `feature/issue-9`:
      consumers ignore it; new consumers see 0 from old senders.
      `rqt_udp_bridge` and bag-replay tooling can surface it with a
      small addition.
+   - The per-remote getter exposed on `RemoteNode` is called from
+     `sendBridgeInfo()` (`udp_bridge.cpp:1263-1290`) inside the existing
+     `scoped_lock(subscribers_mutex_, remote_nodes_mutex_)`. The getter
+     internally takes the recursive `state_mutex_` and does NOT
+     re-acquire `remote_nodes_mutex_`, so the existing lock order is
+     preserved.
    - Rationale on TTL: the `bridge_info`-advertised-TTL alternative is
      more flexible but adds a wire-format dependency that doesn't earn
      its complexity at this phase. Single shared constant is the boring
      right answer; revisit advertisement if Phase 2 needs per-connection
      tuning.
-3. **A — Debounce.** Add a fixed 100 ms debounce hold to
-   `getMissingPackets`: a packet is only considered "missing" if the
-   newest received packet's timestamp is at least 100 ms newer than the
-   gap. Implementation: track `received_packet_times_.rbegin()->second`
-   (already available); when scanning for gaps, skip any number whose
-   slot's expected arrival time (interpolated as
-   `prev_received_time + 100ms` or simpler: just compare against the
-   newest packet's time) is within the debounce window. Concrete check:
-   `if (newest_received_time - now_minus_debounce < 0) continue;` —
-   refined during implementation. 100 ms hold is the issue-suggested
+3. **A — Debounce.** Add a `kResendDebounceHold = 100 ms` hold to
+   `getMissingPackets`. **Pinned formulation**: a gap at packet number
+   K is considered "missing" only if
+   `now - received_time_of_K's_previous_known_neighbor > kResendDebounceHold`,
+   where `previous_known_neighbor` is the highest packet number < K
+   that is present in `received_packet_times_`. Use `now` (the spin
+   tick time) as the upper bound rather than `newest_received_time` —
+   the latter would never fire when the stream goes idle right after a
+   loss (a real-world scenario), since `newest_received_time` stops
+   advancing while the gap persists. 100 ms hold is the issue-suggested
    fixed value (RTT-aware is Phase 2).
 4. **B — Exponential backoff with TTL-bounded give-up.** Replace the flat
    0.2 s re-request cooldown with: track `attempt_count_[packet_number]`
    alongside `resend_request_times_`. Cooldown =
-   `min(base * 2^(attempts-1), cap)` where `base = 0.2 s`,
-   `cap = 1.6 s` (8× base — issue suggests "0.2 → 0.4 → 0.8 → …, capped").
-   **Give-up condition: TTL only.** When a missing packet's first-request
-   time is older than `kSentPacketTTL`, stop requesting it (the sender has
-   forgotten it; further requests are pointless). No separate
-   `max_attempts` cap — TTL is one principled boundary instead of two
-   redundant magic numbers. Under the cap-1.6-s schedule, this gives ~6
-   request attempts in the 5 s window. Log at WARN + bump
-   `resend_giveup_count` (see commit 2 below for schema location) so
-   silent loss is visible.
+   `min(base * 2^(attempts-1), cap)` where `base = kResendBackoffBase = 0.2 s`,
+   `cap = kResendBackoffCap = 1.6 s` (8× base — issue suggests
+   "0.2 → 0.4 → 0.8 → …, capped"). **Give-up condition: TTL only.** When
+   a missing packet's first-request time is older than `kSentPacketTTL`,
+   stop requesting it (the sender has forgotten it; further requests
+   are pointless). No separate `max_attempts` cap — TTL is one principled
+   boundary instead of two redundant magic numbers. Under the cap-1.6-s
+   schedule, this gives ~6 request attempts in the 5 s window. Log at
+   WARN + bump `resend_giveup_count` (see commit 2 below for schema
+   location) so silent loss is visible.
+   - **Eviction**: extend `clearReceivedPacketTimesBefore`
+     (`remote_node.cpp:182`) to also evict from
+     `attempt_count_` and `resend_request_times_` any entries whose
+     packet numbers fall outside the retained window. The existing code
+     already clears `received_packet_times_` and
+     `resend_request_times_`; the new `attempt_count_` map must follow
+     the same lifecycle or it grows unbounded under sustained loss.
+   - **Invariant** (preserve in commentary): when multiple missing
+     packets cross their backoff boundary in the same `resendMissingPackets`
+     tick, they bundle into a single `ResendRequest`. This is by design —
+     a future "simplify" pass should not split into per-packet requests.
 5. **Tests.** Five cases — four in a new
    `udp_bridge/test/test_remote_node_resend.cpp` exercising
    `getMissingPackets` directly, plus one in
@@ -145,7 +170,9 @@ Six commits on `feature/issue-9`:
 6. **Validation.** Build + run `colcon test --packages-select udp_bridge`.
    Manual sanity: verify `make build` from workspace root still passes,
    no compile-time regressions in dependent packages (`rqt_udp_bridge`).
-   PR description includes before/after expectations: "WiFi resend rate
+   Run `/review-code` against the pre-push diff per AGENTS.md
+   "Post-Task Verification" before marking ready-for-review. PR
+   description includes before/after expectations: "WiFi resend rate
    should drop closer to actual loss rate; VPN rx_duplicate should
    approach 0." Field validation deferred to next BizzyBoat deployment.
 
@@ -153,9 +180,9 @@ Six commits on `feature/issue-9`:
 
 | File | Change |
 |------|--------|
-| `udp_bridge/include/udp_bridge/resend_constants.h` | New: `kSentPacketTTL`, `kReceiveHistoryWindow` (defaulted to `kSentPacketTTL`), `kResendDebounceHold`, `kResendBackoffBase`, `kResendBackoffCap` (no `kResendMaxAttempts` — TTL is the sole give-up condition). `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)` pins the relationship at compile time. |
-| `udp_bridge/src/udp_bridge.cpp` | `cleanupSentPackets` uses `kSentPacketTTL`; in `sendBridgeInfo()`, populate each `Remote.resend_giveup_count` by reading the corresponding `RemoteNode` counter via its public getter (no aggregate field on `BridgeInfo` itself — placement is per-Remote per `Decisions made during planning`) |
-| `udp_bridge/src/remote_node.cpp` | `getMissingPackets` uses constants header; debounce check; backoff + TTL-bounded give-up; bump `resend_giveup_count_`; WARN log on give-up |
+| `udp_bridge/include/udp_bridge/resend_constants.h` | New: `kSentPacketTTL`, `kReceiveHistoryWindow` (defaulted to `kSentPacketTTL`), `kResendDebounceHold`, `kResendBackoffBase`, `kResendBackoffCap` (no `kResendMaxAttempts` — TTL is the sole give-up condition). `static_assert(kReceiveHistoryWindow <= kSentPacketTTL)` pins the relationship at compile time so the receiver can't widen beyond the sender's memory and re-introduce failure mode D. |
+| `udp_bridge/src/udp_bridge.cpp` | `cleanupSentPackets` (line 1082) uses `kSentPacketTTL`; defragmenter cleanup cutoff (line 431) uses `kReceiveHistoryWindow` (same receiver-side intake-window family); in `sendBridgeInfo()`, populate each `Remote.resend_giveup_count` by reading the corresponding `RemoteNode` counter via its public getter (no aggregate field on `BridgeInfo` itself — placement is per-Remote per `Decisions made during planning`) |
+| `udp_bridge/src/remote_node.cpp` | `getMissingPackets` uses constants header; debounce check (`now - prev_neighbor_receive_time > kResendDebounceHold`); backoff + TTL-bounded give-up; bump `resend_giveup_count_`; WARN log on give-up. `clearReceivedPacketTimesBefore` extended to also evict `attempt_count_` (new) entries whose packet numbers fall outside the retained window. |
 | `udp_bridge/include/udp_bridge/remote_node.h` | New `attempt_count_` map; `resend_giveup_count_` counter; getter for the counter so `udp_bridge.cpp` can populate `BridgeInfo` |
 | `udp_bridge_interfaces/msg/Remote.msg` | Append `uint32 resend_giveup_count` (per-remote cardinality, see commit 2) |
 | `udp_bridge/test/test_remote_node_resend.cpp` | New gtest with 4 cases on `getMissingPackets` |
@@ -186,7 +213,7 @@ Six commits on `feature/issue-9`:
 | If we change... | Also update... | Included in plan? |
 |---|---|---|
 | `getMissingPackets` algorithm | Tests for the new behavior | Yes — commit 5 |
-| Sender TTL constant | Receiver window (must remain ≥ TTL) | Yes — two named constants (`kSentPacketTTL`, `kReceiveHistoryWindow`) in commit 2 with `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)` pinning the relationship at compile time. Receiver-window defaults to `kSentPacketTTL` today (equal) but the assert leaves room for a future relaxation. |
+| Sender TTL constant | Receiver window (must remain ≤ TTL — otherwise re-introduces failure mode D) | Yes — two named constants (`kSentPacketTTL`, `kReceiveHistoryWindow`) in commit 2 with `static_assert(kReceiveHistoryWindow <= kSentPacketTTL)` pinning the relationship at compile time. Receiver-window defaults to `kSentPacketTTL` today (equal) but the assert leaves room for a future narrowing without re-auditing. |
 | `Remote.msg` schema (append `resend_giveup_count`) | Downstream consumers that introspect `Remote` (`bag_analysis/extractors/udp_bridge.py` in `layers/main/sensors_ws/src/marine_tools/bag_analysis/`, `rqt_udp_bridge` in `layers/main/ui_ws/src/rqt_udp_bridge/`) | Yes — both consumers introspect message fields rather than hard-code, so appended fields surface automatically. No code change required in either consumer; the field becomes available for plotting/dashboard surfacing whenever that's prioritized as a follow-up. |
 | `Remote.msg` schema (bag-replay / mixed-version-discovery) | ROS 2 Jazzy type-hash semantics for recorded `bridge_info` topics and mixed-version bridge pairs | Yes — call out in commit 2's message and in `qos_design.md` (alongside the existing `MessageInternal` coordinated-redeploy note). Bag-replay: `rosbag2` records the stored type hash, so playing an old bag against new code emits a type-hash mismatch warning; introspection-based consumers (`bag_analysis`, `rqt_udp_bridge`) read the bag's own type definition and stay forward-compatible. Mixed-version bridges on one DDS graph: subscribers with the old type hash will not discover publishers with the new hash, so `bridge_info` momentarily goes dark during a partial deployment — same coordinated-redeploy expectation as `MessageInternal`. No code change required in this PR; document the operational caveat. |
 | `data_rates.msg` schema | `rqt_udp_bridge` consumer | Not changed — `data_rates.msg` field names preserved by this PR |
@@ -258,12 +285,61 @@ four items; absorbed inline:
    sites use `kSentPacketTTL` directly, which would have made the
    assert `kSentPacketTTL >= kSentPacketTTL` — always true. The
    resolved design: two named constants, with `kReceiveHistoryWindow`
-   defaulted to `kSentPacketTTL` so the assert pins the meaningful
-   relationship (`kReceiveHistoryWindow >= kSentPacketTTL`) at compile
-   time while leaving room for a future relaxation.
+   defaulted to `kSentPacketTTL`. (Direction of the assert was wrong
+   in this round's first draft; corrected in the third round below.)
 4. **Plan file migrated** from legacy `PLAN_ISSUE-9.md` to the new
    `.agent/work-plans/issue-9/plan.md` convention as part of this
    rebase.
+
+## Updates from sub-agent review (2026-05-18 third round)
+
+After the second-round edits landed, an independent sub-agent review
+caught seven issues. Seven absorbed inline; the first is the most
+important because it would have left the original bug latent.
+
+1. **`static_assert` direction was inverted.** The round-2 edit wrote
+   `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)`. Failure
+   mode D from the issue is "receiver-window > sender-TTL", so the
+   bug-prevention invariant runs the other way: receiver-window must
+   be `<=` sender-TTL. With both constants defaulted to the same
+   value, the wrong direction passes today, but a future widening of
+   `kReceiveHistoryWindow` (the natural change someone might make if
+   the receiver isn't seeing enough history) would re-introduce
+   exactly the bug this plan is meant to close. Corrected throughout
+   the plan to `<=`.
+2. **Third 5.0 s magic number added to Files-to-Change.**
+   `udp_bridge.cpp:431` — `defragmenter().cleanup(cleanup_cutoff)`
+   uses a literal `5` in the same semantic family as the receiver-side
+   intake window. Now also uses `kReceiveHistoryWindow`. Without this,
+   the plan would have replaced two of three sites and left one
+   floating literal that could drift later.
+3. **`attempt_count_` eviction.** The plan adds a new
+   `attempt_count_[packet_number]` map in commit 4, but
+   `clearReceivedPacketTimesBefore` (which clears the sibling
+   `received_packet_times_` and `resend_request_times_`) was not
+   extended. Under sustained loss the map would grow without bound.
+   Commit 4 now explicitly extends the eviction.
+4. **Debounce policy pinned.** Round 2 left the formulation open
+   ("`prev_received_time + 100ms` or simpler: just compare against
+   the newest packet's time"). Pinned to
+   `now - received_time_of_previous_neighbor > kResendDebounceHold`
+   using `now` (the spin tick time) as the upper bound — the
+   alternative `newest_received_time` would never fire when the
+   stream goes idle after a loss.
+5. **Spin-rate bundling invariant.** Multiple missing packets
+   crossing their backoff boundary in the same `resendMissingPackets`
+   tick bundle into one `ResendRequest`. By design, but easy to
+   "simplify" away in a future refactor — added as a one-line
+   commentary invariant in commit 4.
+6. **`sendBridgeInfo` lock interaction.** The new per-Remote getter
+   exposed by `RemoteNode` is called inside the existing
+   `scoped_lock(subscribers_mutex_, remote_nodes_mutex_)` at
+   `udp_bridge.cpp:1233`. The getter takes only the recursive
+   `state_mutex_` and does not re-acquire `remote_nodes_mutex_`, so
+   the existing lock order is preserved. Recorded as a one-line note
+   in commit 2 so the next reader doesn't have to re-derive it.
+7. **`/review-code` pre-push step added to Validation (commit 6)**
+   per AGENTS.md "Post-Task Verification".
 
 ## Decisions made during planning
 
