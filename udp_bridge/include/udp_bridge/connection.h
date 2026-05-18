@@ -167,10 +167,20 @@ private:
   mutable std::mutex sent_packets_mutex_;
 
   PacketSendStatistics sent_packet_statistics_;
-  /// Guards sent_packet_statistics_. Updated on every send (republish
-  /// or socket-drain group) and read by stats / diagnostic timers
-  /// (periodic group).
+  /// Guards sent_packet_statistics_ and reserved_bytes_in_flight_.
+  /// Updated on every send (republish or socket-drain group) and read
+  /// by stats / diagnostic timers (periodic group). The mutex is held
+  /// only for the bookkeeping operations (check + reserve, or release +
+  /// add); the blocking sendto() runs outside it via the reserve-then-
+  /// record pattern in Connection::send.
   mutable std::mutex sent_packet_statistics_mutex_;
+
+  /// Bytes reserved by in-flight Connection::send() calls that have
+  /// passed the can_send check but not yet finalized their record. Read
+  /// by can_send so concurrent senders see each other's pending
+  /// reservations and cannot collectively exceed maximum_bytes_per_second.
+  /// Guarded by sent_packet_statistics_mutex_.
+  uint32_t reserved_bytes_in_flight_ = 0;
 };
 
 

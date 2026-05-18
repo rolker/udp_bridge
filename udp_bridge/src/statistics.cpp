@@ -154,7 +154,7 @@ udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get(PacketSendCatego
   return ret;
 }
 
-bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t bytes_per_second_limit, rclcpp::Time time) const
+bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const
 {
   auto one_second_ago = time - rclcpp::Duration::from_seconds(1.0);
   auto start = data_.begin();
@@ -167,7 +167,7 @@ bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t bytes_per_secon
       total_sent += start->size;
     start++;
   }
-  return (total_sent+data_size) < bytes_per_second_limit;
+  return (total_sent+reserved_bytes+data_size) < bytes_per_second_limit;
 }
 
 

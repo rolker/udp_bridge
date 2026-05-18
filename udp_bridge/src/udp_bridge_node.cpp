@@ -32,10 +32,15 @@
 //     sent_packet_statistics_mutex_, config_mutex_,
 //     receive_history_mutex_) plus subscribers_mutex_ in the bridge.
 //     PR #12 introduced and audited those locks; PR #16 then closed a
-//     check-then-record TOCTOU that #12's audit had left in the
-//     rate-limit critical section, so the sent_packet_statistics_mutex_
-//     contract is now "the check, the sendto, and the result-add all
-//     happen under one acquisition" (see Connection::send).
+//     check-then-record TOCTOU in the rate-limit critical section via
+//     a reserve-then-record pattern: a brief lock holds the can_send
+//     check + reservation bump; sendto runs outside the lock; a brief
+//     second lock atomically releases the reservation and adds the
+//     real record. This keeps sent_packet_statistics_mutex_ hold time
+//     to microseconds even under buffer back-pressure, so the periodic
+//     path's sendBridgeInfo (which calls data_sent_rate while holding
+//     remote_nodes_mutex_) cannot wedge the socket-drain path's
+//     remote_nodes_mutex_ lookups.
 //     Isolating these from socket_drain_group_ keeps a stalled outbound
 //     send (rate-limit, blocked send buffer) from blocking the
 //     socket-drain group.

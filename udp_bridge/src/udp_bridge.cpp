@@ -182,9 +182,12 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // republish_group_ is Reentrant so multiple forwarding-subscription
   // callbacks can run concurrently. Required for high-rate camera
   // throughput; shared state is protected by the PR #12 lock audit
-  // plus PR #16's sent_packet_statistics_mutex_ atomicity fix in
-  // Connection::send (which closes a check-then-record TOCTOU that
-  // #12's audit had left in the rate-limit critical section).
+  // plus PR #16's reserve-then-record pattern in Connection::send
+  // (which closes a check-then-record TOCTOU in the rate-limit path
+  // without holding sent_packet_statistics_mutex_ across sendto — the
+  // mutex hold would have stalled sendBridgeInfo, which holds
+  // remote_nodes_mutex_, which in turn would have stalled the
+  // socket-drain path).
   socket_drain_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   republish_group_    = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   periodic_group_     = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

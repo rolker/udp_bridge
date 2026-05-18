@@ -180,20 +180,23 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   }
 
   // Aggregate pre-check is a fast-path optimization: if the batch as a
-  // whole won't fit in the per-second budget, drop all packets at once
+  // whole won't fit in the per-second budget (including bytes already
+  // reserved by concurrent in-flight sends), drop all packets at once
   // rather than partial-send-then-drop. The single lock acquisition
   // below covers ONLY the over-budget path — check + per-packet
   // drop-records happen under one lock so concurrent forwarding
   // callbacks (the republish_group_ is Reentrant) can't double-account
   // drops against an inconsistent capacity snapshot. On the success
-  // path the lock is released without reserving any bytes, so two
-  // concurrent callbacks can both observe capacity here and both
-  // proceed; this is intentional. The per-packet inner send() below
-  // is the sole atomic boundary that actually enforces
-  // maximum_bytes_per_second.
+  // path the lock is released without reserving any bytes here, so two
+  // concurrent callbacks can both observe capacity at this layer and
+  // both proceed into the per-packet send() below; this is intentional.
+  // The per-packet inner send() is the sole atomic enforcement point —
+  // it uses a reserve-then-record pattern (see Q2 in
+  // .agent/work-plans/issue-15/progress.md) so concurrent senders see
+  // each other's in-flight bytes via reserved_bytes_in_flight_.
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    if(!sent_packet_statistics_.can_send(total_size, rate_limit, now))
+    if(!sent_packet_statistics_.can_send(total_size, reserved_bytes_in_flight_, rate_limit, now))
     {
       for(const auto& p: packets)
       {
@@ -260,93 +263,129 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
     return ret;
   }
 
-  // Hold sent_packet_statistics_mutex_ across the can_send check, the
-  // sendto loop, and the final result-add. Splitting these into separate
-  // critical sections was a TOCTOU under the Reentrant republish_group_
-  // (forwarding callbacks running concurrently could all observe capacity
-  // and collectively exceed maximum_bytes_per_second). The lock is
-  // per-Connection, so the Reentrant benefit — parallel sends across
-  // *different* Connections — is preserved; only intra-Connection sends
-  // serialize. The sendto call below passes MSG_DONTWAIT so it never
-  // blocks under kernel-send-buffer back-pressure (the bridge socket
-  // itself is blocking — only SO_RCVTIMEO is set at construction); a
-  // buffer-full state surfaces as EAGAIN and is retried via the poll
-  // loop. Worst-case mutex hold is therefore bounded by the poll loop's
-  // 20-tries × 10 ms budget (~200 ms), not by the kernel deciding when
-  // to drain. Pre-Reentrant code already serialized this path through
-  // the executor; the bound is no worse now.
-  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-  if(!sent_packet_statistics_.can_send(data.size(), rate_limit, ret.timestamp))
+  // Reserve-then-record pattern. The mutex is held only for the two
+  // bookkeeping operations (check + reserve, then release + add); the
+  // blocking-capable sendto() runs OUTSIDE it. Holding the mutex across
+  // the sendto poll loop (the original B1/P1 design) could stall a
+  // periodic-group caller (UDPBridge::sendBridgeInfo) which holds
+  // remote_nodes_mutex_ while calling data_sent_rate(); a blocked
+  // sendBridgeInfo then stalls the socket-drain path's
+  // remote_nodes_mutex_ lookups, reintroducing the wedge mechanism the
+  // callback-group split is meant to prevent.
+  //
+  // Under this pattern:
+  //   1. Lock briefly: can_send(data.size, reserved_bytes_in_flight_,
+  //      rate_limit, now). On fail → record dropped + return. On pass →
+  //      reserved_bytes_in_flight_ += data.size().
+  //   2. Release lock.
+  //   3. Run the sendto poll loop (no lock held). MSG_DONTWAIT bounds the
+  //      worst case to the 20-tries × 10 ms poll budget. Any return path
+  //      (success, ECONNREFUSED, throw) must release the reservation.
+  //   4. Lock briefly: add the final record + decrement
+  //      reserved_bytes_in_flight_. Both happen under the same lock so
+  //      another sender's can_send sees a consistent snapshot
+  //      (released_reservation ↔ added_record).
+  //
+  // The ReservationGuard RAII helper handles throw-paths: if the sendto
+  // loop throws (Timeout, partial-send, etc.), the destructor releases
+  // the reservation but does NOT add a record. Stats readers see no
+  // record for that packet — correct, because the caller is going to
+  // observe the exception and decide what to do.
+  struct ReservationGuard
   {
-    ret.send_result = SendResult::dropped;
-    sent_packet_statistics_.add(ret);
-    return ret;
+    std::mutex& mutex;
+    uint32_t& reservation;
+    uint32_t bytes;
+    bool armed = true;
+    ~ReservationGuard()
+    {
+      if(armed)
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        reservation -= bytes;
+      }
+    }
+  };
+
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    if(!sent_packet_statistics_.can_send(data.size(), reserved_bytes_in_flight_, rate_limit, ret.timestamp))
+    {
+      ret.send_result = SendResult::dropped;
+      sent_packet_statistics_.add(ret);
+      return ret;
+    }
+    reserved_bytes_in_flight_ += data.size();
   }
+
+  ReservationGuard reservation_guard{sent_packet_statistics_mutex_, reserved_bytes_in_flight_, static_cast<uint32_t>(data.size())};
+
+  // Record the actual outcome AND release the reservation under one
+  // lock so concurrent senders see them atomically. Marks the guard
+  // disarmed so its destructor doesn't double-release.
+  auto record_and_release = [&]()
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    sent_packet_statistics_.add(ret);
+    reserved_bytes_in_flight_ -= data.size();
+    reservation_guard.armed = false;
+  };
 
   int bytes_sent = 0;
-  //try
+  int tries = 0;
+  while (true)
   {
-    int tries = 0;
-    while (true)
+    pollfd p;
+    p.fd = socket;
+    p.events = POLLOUT;
+    int poll_ret = poll(&p, 1, 10);
+    if(poll_ret > 0 && p.revents & POLLOUT)
     {
-      pollfd p;
-      p.fd = socket;
-      p.events = POLLOUT;
-      int poll_ret = poll(&p, 1, 10);
-      if(poll_ret > 0 && p.revents & POLLOUT)
+      bytes_sent = sendto(socket, data.data(), data.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+      if(bytes_sent == -1)
       {
-        bytes_sent = sendto(socket, data.data(), data.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
-        if(bytes_sent == -1)
+        if(errno == EAGAIN || errno == EWOULDBLOCK)
         {
-          if(errno == EAGAIN || errno == EWOULDBLOCK)
-          {
-            // Kernel send buffer can't accept the packet right now. Bump
-            // the retry counter and fall through to the tries-budget check
-            // at the bottom of this loop iteration. Do NOT fall through to
-            // the bytes_sent / data.size() comparison below — bytes_sent
-            // is -1, and comparing it against a size_t promotes -1 to a
-            // huge unsigned, which previously masked the failure as
-            // "all sent" (recorded SUCCESS for a packet that never left
-            // the host).
-            tries+=1;
-          }
-          else if(errno == ECONNREFUSED)
-          {
-            sent_packet_statistics_.add(ret);
-            return ret;
-          }
-          else
-          {
-            throw(ConnectionException(strerror(errno)));
-          }
+          // Kernel send buffer can't accept the packet right now. Bump
+          // the retry counter and fall through to the tries-budget check
+          // at the bottom of this loop iteration. Do NOT fall through to
+          // the bytes_sent / data.size() comparison below — bytes_sent
+          // is -1, and comparing it against a size_t promotes -1 to a
+          // huge unsigned, which previously masked the failure as
+          // "all sent" (recorded SUCCESS for a packet that never left
+          // the host).
+          tries+=1;
         }
-        else if(static_cast<size_t>(bytes_sent) < data.size())
+        else if(errno == ECONNREFUSED)
         {
-          throw(ConnectionException("only "+std::to_string(bytes_sent) +" of " +std::to_string(data.size()) + " sent"));
-        }
-        else
-        {
-          ret.send_result = SendResult::success;
-          sent_packet_statistics_.add(ret);
+          record_and_release();
           return ret;
         }
+        else
+        {
+          throw(ConnectionException(strerror(errno)));
+        }
+      }
+      else if(static_cast<size_t>(bytes_sent) < data.size())
+      {
+        throw(ConnectionException("only "+std::to_string(bytes_sent) +" of " +std::to_string(data.size()) + " sent"));
       }
       else
-        tries+=1;
-
-      if(tries >= 20)
-        if(poll_ret == 0)
-          throw(ConnectionException("Timeout"));
-        else
-          throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
+      {
+        ret.send_result = SendResult::success;
+        record_and_release();
+        return ret;
+      }
     }
+    else
+      tries+=1;
+
+    if(tries >= 20)
+      if(poll_ret == 0)
+        throw(ConnectionException("Timeout"));
+      else
+        throw(ConnectionException(std::to_string(errno) +": "+ strerror(errno)));
   }
-  // catch(const ConnectionException& e)
-  // {
-  //     ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
-  // }
-  sent_packet_statistics_.add(ret);
-  return ret;
 }
 
 std::pair<double, double> Connection::data_receive_rate(double time)
