@@ -93,3 +93,14 @@ issue: 15
 ### Actions
 - [x] **S1 (test file describes superseded contract)** — Rewrote `test_connection_rate_limit.cpp` header (lines 1-23) to walk through both stages of the concurrency-fix evolution (`1489cfb` closed the TOCTOU; `0c8b75f` moved sendto outside the mutex via reservations). Assertion-failure message at lines 174-177 now points at the reservation contract (`reserved_bytes_in_flight_` visible to `can_send`). **→ commit 901a766**
 - [x] **S2 (PR body stale on locking design + commit list)** — Updated via `gh api PATCH`. Body now lists all post-`2b7241a` commits organized by theme; explicitly marks `0c8b75f` as superseding `1489cfb`'s locking design; updates "Risks to verify" to reflect the post-Q2 final shape; updates test count to 34. **→ PATCH on `repos/rolker/udp_bridge/pulls/16`**
+
+## External Review
+**Status**: complete
+**When**: 2026-05-18 20:40
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #16 — 7 review(s) total (7th fresh Copilot @ `da5c285`), 1 fresh inline comment, 1 valid, 0 false positives
+**CI**: all-pass (4 checks)
+
+### Actions
+- [ ] **T1 (defensive overflow widening in can_send)** — `(total_sent + reserved_bytes + data_size) < bytes_per_second_limit` arithmetic is all `uint32_t`. Not reachable today (deque holds ≤10 s of `uint16_t`-sized entries; sum stays well below UINT32_MAX even at multi-Gbps), but trivially defensive against future config changes (raised default_rate_limit, jumbo-frame data_size). Promote operands to `uint64_t` before summing. One-line change in `statistics.cpp:180`.
