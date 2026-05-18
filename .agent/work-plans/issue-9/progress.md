@@ -63,6 +63,6 @@ re-locate before editing:
 
 ### Recommended Actions (in order)
 
-- [ ] Rebase `feature/issue-9` onto current `origin/jazzy`. Verify `m_*` rename completeness in touched files via `git grep "m_[a-z]"` afterwards. Migrate plan file from `PLAN_ISSUE-9.md` to `issue-9/plan.md` as part of this commit.
-- [ ] Update the plan: add bag-replay consequences row (finding 1), fix the `BridgeInfo` aggregate wording (finding 2), and pick a static_assert resolution (finding 3).
+- [x] Rebase `feature/issue-9` onto current `origin/jazzy` (2026-05-18, post-PR-#16-merge). 4 plan commits replayed cleanly; no conflicts. Build + tests verified after cleaning the stale `udp_bridge_interfaces` install. `git grep "m_[a-z]"` in `udp_bridge/` returns zero hits — the rename completed during #11 / #12 / #16; no rename work remains for #9. Plan file migrated to `.agent/work-plans/issue-9/plan.md` via `git mv`.
+- [x] Update the plan: bag-replay consequences row added; `BridgeInfo` aggregate wording fixed to per-`Remote` populate; static_assert resolved by introducing a separate `kReceiveHistoryWindow` constant (defaulted to `kSentPacketTTL`, with `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)` pinning the relationship). Also refreshed stale line numbers in the Context block to current post-#16 lines.
 - [ ] Begin implementation per the 5-commit plan (TTL constants → `Remote.msg` schema → debounce → backoff + give-up → tests).

@@ -12,20 +12,21 @@ WiFi had link outages. VPN's `rx_duplicate_bytes/s` was 126% of `rx_bytes/s` —
 multiple copies of the same data arriving where one would suffice. The resend
 algorithm is amplifying rather than tracking loss.
 
-Three concrete failure modes pinned in the issue body:
+Three concrete failure modes pinned in the issue body (line refs are
+against current jazzy post-#16):
 
-- **A. No debounce.** `RemoteNode::getMissingPackets` (`remote_node.cpp:170`)
+- **A. No debounce.** `RemoteNode::getMissingPackets` (`remote_node.cpp:200`)
   fires a resend request the same `spin_once` tick a gap is observed.
   Legitimate reordering — common over cellular/VPN — triggers spurious
   resends.
-- **B. No backoff.** `remote_node.cpp:177` uses a flat `0.2 s` re-request
+- **B. No backoff.** `remote_node.cpp:209` uses a flat `0.2 s` re-request
   cooldown. When a real RTT spikes to 10+ s during a dropout, the receiver
   re-requests the same packets ~50× before the first response arrives.
   This is the mechanism behind VPN's 126% rx_duplicate.
 - **D. TTL/window mismatch.** Sender cleans `sent_packets_` at 3 s
-  (`udp_bridge.cpp:742`); receiver windows at 5 s (`remote_node.cpp:175`).
-  Receiver can request packet numbers the sender has already forgotten,
-  silently lost.
+  (`udp_bridge.cpp:1082`); receiver windows at 5 s
+  (`remote_node.cpp:207`). Receiver can request packet numbers the
+  sender has already forgotten, silently lost.
 
 Phase 2 items (C: RTT-aware cooldown, E: separate budget, F: per-topic
 no_resend) are explicitly deferred.
@@ -58,13 +59,20 @@ Six commits on `feature/issue-9`:
 
 1. **Plan commit** — this file.
 2. **D — TTL/window alignment + `Remote.msg` schema extension.**
-   - Single shared constant `kSentPacketTTL = 5.0s` in a new
-     `udp_bridge/include/udp_bridge/resend_constants.h` header. Both
-     `cleanupSentPackets` (`udp_bridge.cpp:742`) and
-     `clearReceivedPacketTimesBefore` (`remote_node.cpp:175`) reference
-     it. Receiver-window > sender-TTL becomes structurally impossible.
-     Add a `static_assert` (or runtime check at startup) that the
-     receiver's window is `>=` `kSentPacketTTL` to lock in the contract.
+   - Two named constants in a new
+     `udp_bridge/include/udp_bridge/resend_constants.h` header:
+     `kSentPacketTTL = 5.0s` (sender-side eviction cutoff) and
+     `kReceiveHistoryWindow = kSentPacketTTL` (receiver-side
+     consideration window). `cleanupSentPackets` (post-#11/12 currently
+     at `udp_bridge.cpp:1077-1082`) uses `kSentPacketTTL`;
+     `clearReceivedPacketTimesBefore` (post-#11/12 at `remote_node.cpp:182`)
+     and the gap-scan in `getMissingPackets` (`remote_node.cpp:200`,
+     line 207) use `kReceiveHistoryWindow`. The receiver-window must be
+     `>=` the sender-TTL for the give-up math to be sound; pin the
+     relationship at compile time with `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)`.
+     Defaulting `kReceiveHistoryWindow` to `kSentPacketTTL` makes the
+     two equal today (the original design intent) while leaving room
+     for a future relaxation without re-auditing the assert.
    - Extend `udp_bridge_interfaces/msg/Remote.msg` with
      `uint32 resend_giveup_count` (per-remote, populated by the receiver
      when it gives up on missing packets from that remote). Placed on
@@ -145,8 +153,8 @@ Six commits on `feature/issue-9`:
 
 | File | Change |
 |------|--------|
-| `udp_bridge/include/udp_bridge/resend_constants.h` | New: `kSentPacketTTL`, `kResendDebounceHold`, `kResendBackoffBase`, `kResendBackoffCap` (no `kResendMaxAttempts` — TTL is the sole give-up condition) |
-| `udp_bridge/src/udp_bridge.cpp` | `cleanupSentPackets` uses `kSentPacketTTL`; populate `BridgeInfo.resend_giveup_count` aggregate before publishing |
+| `udp_bridge/include/udp_bridge/resend_constants.h` | New: `kSentPacketTTL`, `kReceiveHistoryWindow` (defaulted to `kSentPacketTTL`), `kResendDebounceHold`, `kResendBackoffBase`, `kResendBackoffCap` (no `kResendMaxAttempts` — TTL is the sole give-up condition). `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)` pins the relationship at compile time. |
+| `udp_bridge/src/udp_bridge.cpp` | `cleanupSentPackets` uses `kSentPacketTTL`; in `sendBridgeInfo()`, populate each `Remote.resend_giveup_count` by reading the corresponding `RemoteNode` counter via its public getter (no aggregate field on `BridgeInfo` itself — placement is per-Remote per `Decisions made during planning`) |
 | `udp_bridge/src/remote_node.cpp` | `getMissingPackets` uses constants header; debounce check; backoff + TTL-bounded give-up; bump `resend_giveup_count_`; WARN log on give-up |
 | `udp_bridge/include/udp_bridge/remote_node.h` | New `attempt_count_` map; `resend_giveup_count_` counter; getter for the counter so `udp_bridge.cpp` can populate `BridgeInfo` |
 | `udp_bridge_interfaces/msg/Remote.msg` | Append `uint32 resend_giveup_count` (per-remote cardinality, see commit 2) |
@@ -178,10 +186,11 @@ Six commits on `feature/issue-9`:
 | If we change... | Also update... | Included in plan? |
 |---|---|---|
 | `getMissingPackets` algorithm | Tests for the new behavior | Yes — commit 5 |
-| Sender TTL constant | Receiver window (must remain ≥ TTL) | Yes — single shared constant in commit 2 makes this structural; static_assert pins the contract |
+| Sender TTL constant | Receiver window (must remain ≥ TTL) | Yes — two named constants (`kSentPacketTTL`, `kReceiveHistoryWindow`) in commit 2 with `static_assert(kReceiveHistoryWindow >= kSentPacketTTL)` pinning the relationship at compile time. Receiver-window defaults to `kSentPacketTTL` today (equal) but the assert leaves room for a future relaxation. |
 | `Remote.msg` schema (append `resend_giveup_count`) | Downstream consumers that introspect `Remote` (`bag_analysis/extractors/udp_bridge.py` in `layers/main/sensors_ws/src/marine_tools/bag_analysis/`, `rqt_udp_bridge` in `layers/main/ui_ws/src/rqt_udp_bridge/`) | Yes — both consumers introspect message fields rather than hard-code, so appended fields surface automatically. No code change required in either consumer; the field becomes available for plotting/dashboard surfacing whenever that's prioritized as a follow-up. |
+| `Remote.msg` schema (bag-replay / mixed-version-discovery) | ROS 2 Jazzy type-hash semantics for recorded `bridge_info` topics and mixed-version bridge pairs | Yes — call out in commit 2's message and in `qos_design.md` (alongside the existing `MessageInternal` coordinated-redeploy note). Bag-replay: `rosbag2` records the stored type hash, so playing an old bag against new code emits a type-hash mismatch warning; introspection-based consumers (`bag_analysis`, `rqt_udp_bridge`) read the bag's own type definition and stay forward-compatible. Mixed-version bridges on one DDS graph: subscribers with the old type hash will not discover publishers with the new hash, so `bridge_info` momentarily goes dark during a partial deployment — same coordinated-redeploy expectation as `MessageInternal`. No code change required in this PR; document the operational caveat. |
 | `data_rates.msg` schema | `rqt_udp_bridge` consumer | Not changed — `data_rates.msg` field names preserved by this PR |
-| Algorithm constants | `QOS_DESIGN.md` (in #11) | No — these are resend-loop tuning constants, not part of the QoS contract |
+| Algorithm constants | `qos_design.md` | No — these are resend-loop tuning constants, not part of the QoS contract |
 
 ## Open Questions
 
@@ -191,8 +200,10 @@ None remaining at plan time. All three questions resolved during planning
 ## Estimated Scope
 
 Single PR, six commits. ~150-250 lines of code change plus ~200-300 lines
-of new tests. Smaller than #11. Some additional churn from `m_*` → `*_`
-renames in any file touched.
+of new tests. Smaller than #11. After the post-merge-of-#16 rebase
+(2026-05-18), `git grep "m_[a-z]"` in `udp_bridge/` returns zero hits, so
+the originally-anticipated `m_*` → `*_` rename churn is empty for this
+PR — the rename completed during #11 / #12.
 
 ## Updates from review-plan
 
@@ -221,6 +232,38 @@ flagged five items; absorbed inline:
    sequencing decision (#11 lands first, renames `m_*` in
    `udp_bridge.cpp`; #9 rebases onto a file with no `m_*` left, so
    nothing for this PR to rename in that file).
+
+## Updates from review-plan (2026-05-18 second round)
+
+After PR #16 merged, ran a second `/review-plan` pass that flagged
+four items; absorbed inline:
+
+1. **`BridgeInfo.resend_giveup_count` aggregate wording fixed** in
+   the "Files to Change" table. The original row said "populate
+   `BridgeInfo.resend_giveup_count` aggregate" — but the agreed
+   placement (`Decisions made during planning`) is per-`Remote.msg`
+   with no top-level aggregate. Reworded to "in `sendBridgeInfo()`,
+   populate each `Remote.resend_giveup_count` from the corresponding
+   RemoteNode counter".
+2. **Bag-replay consequences row added.** ROS 2 Jazzy uses strict
+   type-hash discovery, so appending a field to `Remote.msg` changes
+   the hash. Bag-replay against old captures emits a type-hash warning;
+   mixed-version bridges momentarily go dark on `bridge_info` during a
+   partial deployment. Both behaviors mirror the existing `MessageInternal`
+   coordinated-redeploy expectation. Introspection-based consumers
+   (`bag_analysis`, `rqt_udp_bridge`) stay forward-compatible because
+   they read the bag's own type definition.
+3. **`static_assert` tautology resolved by introducing a separate
+   `kReceiveHistoryWindow` constant.** The original plan said both
+   sites use `kSentPacketTTL` directly, which would have made the
+   assert `kSentPacketTTL >= kSentPacketTTL` — always true. The
+   resolved design: two named constants, with `kReceiveHistoryWindow`
+   defaulted to `kSentPacketTTL` so the assert pins the meaningful
+   relationship (`kReceiveHistoryWindow >= kSentPacketTTL`) at compile
+   time while leaving room for a future relaxation.
+4. **Plan file migrated** from legacy `PLAN_ISSUE-9.md` to the new
+   `.agent/work-plans/issue-9/plan.md` convention as part of this
+   rebase.
 
 ## Decisions made during planning
 
