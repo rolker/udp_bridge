@@ -28,6 +28,8 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -150,4 +152,13 @@ TEST_F(ConnectionRateLimit, ConcurrentSendsStayUnderLimit)
 
   close(listener_sock);
   close(send_sock);
+}
+
+int main(int argc, char** argv)
+{
+  testing::InitGoogleTest(&argc, argv);
+  int rc = RUN_ALL_TESTS();
+  if(rclcpp::ok())
+    rclcpp::shutdown();
+  return rc;
 }
