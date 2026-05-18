@@ -103,11 +103,17 @@ across a UDP wire. The package's policy per dimension:
 ### Reliability
 
 - **Destination publisher** (`udp_bridge.cpp::decodeData`, where messages
-  arriving over UDP are republished into the local ROS 2 graph): uses
-  `BEST_AVAILABLE`. The publisher matches whatever the local subscriber
-  declares — RELIABLE subscribers connect, BEST_EFFORT subscribers
-  connect, and the destination side's reliability is owned by the
-  subscriber rather than asserted by the bridge.
+  arriving over UDP are republished into the local ROS 2 graph): design
+  intent is `BEST_AVAILABLE`, so the publisher matches whatever the local
+  subscriber declares — RELIABLE subscribers connect, BEST_EFFORT
+  subscribers connect, and the destination side's reliability is owned by
+  the subscriber rather than asserted by the bridge.
+  > **Current operational default: `RELIABLE`** — see the operational
+  > note at the top of this document for the rmw_zenoh_cpp 0.2.9
+  > graph-visibility workaround. RELIABLE matches both RELIABLE and
+  > BEST_EFFORT subscribers, so the matching outcomes described in the
+  > rest of this section remain correct; only the "publisher behavior"
+  > column collapses to RELIABLE rather than being subscriber-driven.
 - **Source-side subscription** (`udp_bridge.cpp::updateLocalSubscriptions`,
   where the bridge subscribes locally to topics it forwards): uses
   `BEST_EFFORT`. A `BEST_EFFORT` subscriber accepts both `RELIABLE` and
@@ -157,8 +163,9 @@ across a UDP wire. The package's policy per dimension:
 QoS is communicated end-to-end via three fields on
 `udp_bridge_interfaces/msg/MessageInternal`:
 
-- `string reliability` — `"best_available"` (default), `"reliable"`,
-  `"best_effort"`.
+- `string reliability` — `"reliable"` (current operational default — see
+  the operational note at the top of this document; design intent is
+  `"best_available"`), `"best_effort"`, or explicit `"best_available"`.
 - `string durability` — `"volatile"` (default), `"transient_local"`.
 - `uint32 history_depth` — defaults to 1 if unset (zero is treated as
   default).
@@ -229,6 +236,15 @@ on every topic that came through the bridge. With
 **`BEST_AVAILABLE` on the destination publisher**, the publisher
 matches whatever the subscriber asks for, including `RELIABLE`, and
 the connection succeeds.
+
+> **Operationally today**: the destination publisher defaults to
+> `RELIABLE` (per the note at the top of this document). RELIABLE
+> matches both RELIABLE and BEST_EFFORT subscribers, so CAMP's
+> default-`rclcpp::QoS(N)` subscribers still connect; the matching
+> guarantee is preserved by the temporary default. The trade-off is
+> the "transparency lie" on UDP-fed publishers (publisher reports
+> write-success on data dropped on the wire), accepted while the
+> rmw_zenoh_cpp graph-visibility issue is in effect.
 
 This package ships **no per-topic `reliability: reliable` overrides** in
 the initial deployment of this design. The CAMP-style mitigation is
