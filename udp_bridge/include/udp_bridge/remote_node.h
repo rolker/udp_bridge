@@ -110,7 +110,21 @@ private:
   Defragmenter defragmenter_;
 
   std::map<uint64_t, rclcpp::Time> received_packet_times_;
-  std::map<uint64_t, rclcpp::Time> resend_request_times_;
+
+  // Per-missing-packet state used by getMissingPackets to apply
+  // exponential backoff and the TTL-bounded give-up condition (issue
+  // #9 failure modes B and the give-up gap). Entries are created when
+  // a packet is first observed missing; cleared by
+  // clearReceivedPacketTimesBefore when first_request_time falls
+  // outside kReceiveHistoryWindow OR by update(BridgeInfo) on remote
+  // restart.
+  struct ResendState
+  {
+    rclcpp::Time first_request_time;
+    rclcpp::Time last_request_time;
+    uint32_t attempts = 0;
+  };
+  std::map<uint64_t, ResendState> resend_state_;
 
   // Per-remote count of resend give-ups (sender TTL expired before the
   // packet arrived). Bumped in getMissingPackets when a missing
