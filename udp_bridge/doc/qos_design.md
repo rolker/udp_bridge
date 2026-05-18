@@ -247,13 +247,19 @@ the connection succeeds.
 > rmw_zenoh_cpp graph-visibility issue is in effect.
 
 This package ships **no per-topic `reliability: reliable` overrides** in
-the initial deployment of this design. The CAMP-style mitigation is
-entirely subsumed by `BEST_AVAILABLE` matching. If a future use case
-emerges that genuinely requires the destination publisher to assert
-`RELIABLE` semantics on the destination side (independent of what the
-subscriber declares), the per-topic `reliability: reliable` override is
-the right knob — but the bar is high, because asserting RELIABLE on a
-UDP-fed publisher is the lie this design avoids.
+the initial deployment of this design. Under the **design-intent default**
+(`BEST_AVAILABLE`), the CAMP-style mitigation is entirely subsumed by
+`BEST_AVAILABLE` matching. Under the **current operational default**
+(`RELIABLE`, per the operational note at the top of this document), every
+destination publisher already asserts RELIABLE for the rmw_zenoh_cpp
+graph-visibility reason — so the "no overrides" claim above is about the
+post-workaround design state, not the current operational reality. If a
+future use case emerges that genuinely requires the destination publisher
+to assert `RELIABLE` semantics on the destination side (independent of
+what the subscriber declares, and independent of the current workaround),
+the per-topic `reliability: reliable` override is the right knob — but
+the bar is high, because asserting RELIABLE on a UDP-fed publisher is the
+lie this design avoids.
 
 ## Future work (deliberately out of scope)
 

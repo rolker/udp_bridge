@@ -181,12 +181,16 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
 
   // Aggregate pre-check is a fast-path optimization: if the batch as a
   // whole won't fit in the per-second budget, drop all packets at once
-  // rather than partial-send-then-drop. Check + drop-records happen under
-  // a single lock acquisition so concurrent forwarding callbacks (the
-  // republish_group_ is Reentrant) cannot both observe capacity and then
-  // both drop — they observe a coherent snapshot. The per-packet inner
-  // send() below is the atomic boundary that actually enforces the limit;
-  // this check just trims work when batches are obviously over budget.
+  // rather than partial-send-then-drop. The single lock acquisition
+  // below covers ONLY the over-budget path — check + per-packet
+  // drop-records happen under one lock so concurrent forwarding
+  // callbacks (the republish_group_ is Reentrant) can't double-account
+  // drops against an inconsistent capacity snapshot. On the success
+  // path the lock is released without reserving any bytes, so two
+  // concurrent callbacks can both observe capacity here and both
+  // proceed; this is intentional. The per-packet inner send() below
+  // is the sole atomic boundary that actually enforces
+  // maximum_bytes_per_second.
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     if(!sent_packet_statistics_.can_send(total_size, rate_limit, now))

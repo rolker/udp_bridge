@@ -9,11 +9,14 @@
 //     destination-side publishes currently happen on this hot path — if
 //     a destination publisher stalls under back-pressure, the socket
 //     drain stalls with it. A future change can move the publish work
-//     to a separate group via an internal queue; see qos_design.md for
-//     the current destination-publisher reliability policy that bounds
-//     this exposure (operationally RELIABLE under rmw_zenoh_cpp 0.2.9
-//     while a graph-visibility workaround is in effect; design intent
-//     is BEST_AVAILABLE).
+//     to a separate group via an internal queue; see qos_design.md
+//     for the destination-publisher reliability policy that bounds
+//     this exposure under the BEST_AVAILABLE design intent. The
+//     current operational default is RELIABLE (rmw_zenoh_cpp 0.2.9
+//     graph-visibility workaround) which does NOT bound this exposure
+//     — a RELIABLE destination publisher stalled on a dead subscriber
+//     buffers and can wedge the drain path. The risk is accepted
+//     until BEST_AVAILABLE returns.
 //     Invariant: this group must never be starved. Anything that runs
 //     here is hot-path; if it blocks, the kernel SO_RCVBUF (500 KB) fills
 //     and packets are silently dropped — the wedge symptom in #10.
@@ -25,9 +28,14 @@
 //     (different topics, or the same topic at high rate) can call
 //     Connection::send concurrently; required for the high-rate camera
 //     throughput restored in PR #16. Shared state on this path is
-//     guarded by the per-Connection locks audited in PR #12
-//     (sent_packets_mutex_, sent_packet_statistics_mutex_, config_mutex_,
+//     guarded by the per-Connection locks (sent_packets_mutex_,
+//     sent_packet_statistics_mutex_, config_mutex_,
 //     receive_history_mutex_) plus subscribers_mutex_ in the bridge.
+//     PR #12 introduced and audited those locks; PR #16 then closed a
+//     check-then-record TOCTOU that #12's audit had left in the
+//     rate-limit critical section, so the sent_packet_statistics_mutex_
+//     contract is now "the check, the sendto, and the result-add all
+//     happen under one acquisition" (see Connection::send).
 //     Isolating these from socket_drain_group_ keeps a stalled outbound
 //     send (rate-limit, blocked send buffer) from blocking the
 //     socket-drain group.
