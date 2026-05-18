@@ -214,12 +214,35 @@ ResendRequest RemoteNode::getMissingPackets()
   auto too_old = now - rclcpp::Duration::from_seconds(seconds(kReceiveHistoryWindow));
   clearReceivedPacketTimesBefore(too_old);  // re-enters mutex (recursive)
   auto can_resend_time = now - rclcpp::Duration::from_seconds(0.2);
+  auto debounce_cutoff = now - rclcpp::Duration::from_seconds(seconds(kResendDebounceHold));
 
+  // Walk packet numbers in [first+1, last-1] of the known-received range
+  // and flag gaps as missing. Each gap is debounced against the receive
+  // time of its previous known neighbor: a reordered late-arriving
+  // packet within kResendDebounceHold of its neighbor is given time to
+  // arrive before we request a resend. prev_received_time tracks the
+  // most recent receive time as we walk forward; for runs of consecutive
+  // gaps it stays pinned to the packet just before the run, which is
+  // the right anchor since those gaps were sent at roughly the same
+  // wall-clock time.
   std::vector<uint64_t> missing;
   if(!received_packet_times_.empty())
+  {
+    rclcpp::Time prev_received_time = received_packet_times_.begin()->second;
     for(auto i = received_packet_times_.begin()->first+1; i < received_packet_times_.rbegin()->first; i++)
-      if(received_packet_times_.find(i) == received_packet_times_.end())
-        missing.push_back(i);
+    {
+      auto it = received_packet_times_.find(i);
+      if(it == received_packet_times_.end())
+      {
+        if(prev_received_time < debounce_cutoff)
+          missing.push_back(i);
+      }
+      else
+      {
+        prev_received_time = it->second;
+      }
+    }
+  }
   ResendRequest rr;
   for(auto m: missing)
   {
