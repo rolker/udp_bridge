@@ -297,21 +297,33 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
       {
         bytes_sent = sendto(socket, data.data(), data.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
         if(bytes_sent == -1)
-          switch(errno)
+        {
+          if(errno == EAGAIN || errno == EWOULDBLOCK)
           {
-            case EAGAIN:
-              tries+=1;
-              break;
-            case ECONNREFUSED:
-            {
-              sent_packet_statistics_.add(ret);
-              return ret;
-            }
-            default:
-              throw(ConnectionException(strerror(errno)));
+            // Kernel send buffer can't accept the packet right now. Bump
+            // the retry counter and fall through to the tries-budget check
+            // at the bottom of this loop iteration. Do NOT fall through to
+            // the bytes_sent / data.size() comparison below — bytes_sent
+            // is -1, and comparing it against a size_t promotes -1 to a
+            // huge unsigned, which previously masked the failure as
+            // "all sent" (recorded SUCCESS for a packet that never left
+            // the host).
+            tries+=1;
           }
-        if(bytes_sent < data.size())
+          else if(errno == ECONNREFUSED)
+          {
+            sent_packet_statistics_.add(ret);
+            return ret;
+          }
+          else
+          {
+            throw(ConnectionException(strerror(errno)));
+          }
+        }
+        else if(static_cast<size_t>(bytes_sent) < data.size())
+        {
           throw(ConnectionException("only "+std::to_string(bytes_sent) +" of " +std::to_string(data.size()) + " sent"));
+        }
         else
         {
           ret.send_result = SendResult::success;
