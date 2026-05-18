@@ -42,3 +42,16 @@ issue: 15
   - **→ commit 37a9903**
 - [x] **N3 (concurrent-send test)** — Added `ConnectionRateLimit.ConcurrentSendsStayUnderLimit` in new `test/test_connection_rate_limit.cpp`. 8 threads × 200 sends contending on one rate-limited Connection (10 KB/sec), shared go-flag for max contention. Asserts `success_bytes_per_second < rate_limit` AND `dropped_bytes_per_second > 0` (so the test cannot silently pass on a degenerate setup). Locks in B1 against future check-then-record regression. 33 tests now pass; 0 failures.
   - **→ commit 0016362**
+
+## External Review
+**Status**: complete
+**When**: 2026-05-18 18:15
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #16 — 3 review(s) total (3rd fresh Copilot @ `d35badb`), 3 fresh inline comments, 3 valid, 0 false positives
+**CI**: all-pass (4 checks)
+
+### Actions
+- [ ] **P1 (blocking sendto under mutex)** — My B1 fix at `connection.cpp:269` holds `sent_packet_statistics_mutex_` across `sendto()` on the bridge socket. The rationale comment claims the socket is non-blocking but it isn't — only `SO_RCVTIMEO` is set (`udp_bridge.cpp:159-162`), nothing makes the send-side non-blocking. UDP doesn't do partial writes, so if the kernel send buffer can't accept our full packet, `sendto()` blocks indefinitely, holding the mutex and stalling all same-Connection forwarding callbacks + stats readers. The `poll(POLLOUT, 10ms)` guard only confirms *some* space, not "enough for our packet". Fix: pass `MSG_DONTWAIT` to `sendto()` (`connection.cpp:293`); existing `EAGAIN` retry path handles the buffer-full case. Worst-case mutex hold becomes bounded by the 20-tries × 10ms poll budget (~200ms). Also update the rationale comment at `connection.cpp:259-268` to describe the actual non-blocking mechanism (`MSG_DONTWAIT` on the syscall) rather than claiming the socket is non-blocking.
+- [ ] **P2 (test: rclcpp shutdown)** — `test_connection_rate_limit.cpp` initializes `rclcpp` in fixture `SetUp` but uses default gtest main, so `rclcpp::shutdown()` never runs. Match `test_qos_matching_integration.cpp:158-165` pattern: custom `main()` that calls `testing::InitGoogleTest`, `RUN_ALL_TESTS`, and `rclcpp::shutdown()` if `rclcpp::ok()`.
+- [ ] **P3 (test: missing includes)** — `test_connection_rate_limit.cpp` uses `errno` and `strerror()` without explicit `<cerrno>` / `<cstring>` includes; compiles today via transitive pulls but should declare its dependencies. Add both.
