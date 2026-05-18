@@ -87,10 +87,10 @@ re-locate before editing:
 **Must-fix**: 2 | **Suggestions**: 5
 
 ### Findings
-- [ ] (must-fix) Re-request after give-up via `operator[]` default-construct — `remote_node.cpp:293` (Suggestion #6 is the matching regression test)
-- [ ] (must-fix) `1u << (attempts - 1)` UB at attempts >= 33 — `remote_node.cpp:302`
-- [ ] (suggestion) Drop dead `resend_state_` sweep in `clearReceivedPacketTimesBefore` — `remote_node.cpp:251`
-- [ ] (suggestion) Document lock-ordering invariant on `RemoteNode::state_mutex_` — `remote_node.h:116-122`
-- [ ] (suggestion) Document `resend_giveup_count` cumulative semantics (survives remote restart) — `Remote.msg:28`
-- [ ] (suggestion) Regression test for must-fix 1: gap kept visible past TTL, counter must not climb — `test_remote_node_resend.cpp`
-- [ ] (suggestion) Rename `seconds()` to `to_seconds()` to avoid ADL collisions — `resend_constants.h:76`
+- [x] (must-fix) Re-request after give-up via `operator[]` default-construct — `remote_node.cpp:293`. **→ commit 8c9b21d** added `given_up_packet_numbers_` set; backoff loop skips members; pruning runs in `clearReceivedPacketTimesBefore` once packet number falls below `received_packet_times_.begin()->first`.
+- [x] (must-fix) `1u << (attempts - 1)` UB at attempts >= 33 — `remote_node.cpp:302`. **→ commit 8c9b21d** clamps `shift = min(state.attempts - 1, 7)` before the shift.
+- [x] (suggestion) Regression test for must-fix 1: gap kept visible past TTL, counter must not climb. **→ commit 8c9b21d** added `GiveUpIsNotReArmedByOngoingArrivals` test case.
+- [ ] (suggestion) Drop dead `resend_state_` sweep in `clearReceivedPacketTimesBefore` — `remote_node.cpp:251`. Now non-dead: pass 1 erases the resend_state_ entry but the sweep here still runs and is a no-op for the give-up case. Worth removing or asserting; deferred to a follow-up.
+- [ ] (suggestion) Document lock-ordering invariant on `RemoteNode::state_mutex_` — `remote_node.h:116-122`. Deferred.
+- [x] (suggestion) Document `resend_giveup_count` cumulative semantics (survives remote restart) — `Remote.msg:28`. **→ commit 8c9b21d** added the cumulative-semantics note alongside the new given_up tracking comment in `remote_node.h`. (Remote.msg's existing field comment already says "Cumulative per remote since the receiver started.")
+- [ ] (suggestion) Rename `seconds()` to `to_seconds()` to avoid ADL collisions — `resend_constants.h:76`. Deferred.
