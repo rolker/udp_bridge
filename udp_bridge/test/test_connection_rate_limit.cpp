@@ -42,28 +42,63 @@
 namespace
 {
 
-// Bind a UDP socket on 127.0.0.1 to an ephemeral port. Returns the fd
-// (caller closes) and writes the port into *port.
-int bind_localhost_listener(uint16_t* port)
+// RAII wrapper around a socket fd. Closes the descriptor on destruction
+// so a failed ASSERT in the middle of test setup cannot leak it for the
+// rest of the test process.
+class SocketFd
 {
-  int sock = socket(AF_INET, SOCK_DGRAM, 0);
-  if(sock < 0)
-    return -1;
+public:
+  SocketFd() = default;
+  explicit SocketFd(int fd) : fd_(fd) {}
+  ~SocketFd() { reset(); }
+
+  SocketFd(const SocketFd&) = delete;
+  SocketFd& operator=(const SocketFd&) = delete;
+
+  SocketFd(SocketFd&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+  SocketFd& operator=(SocketFd&& other) noexcept
+  {
+    if(this != &other)
+    {
+      reset();
+      fd_ = other.fd_;
+      other.fd_ = -1;
+    }
+    return *this;
+  }
+
+  int get() const { return fd_; }
+  bool valid() const { return fd_ >= 0; }
+  void reset()
+  {
+    if(fd_ >= 0)
+    {
+      close(fd_);
+      fd_ = -1;
+    }
+  }
+
+private:
+  int fd_ = -1;
+};
+
+// Bind a UDP socket on 127.0.0.1 to an ephemeral port. Returns the
+// SocketFd (which owns/closes the descriptor) and writes the port into
+// *port. On failure the returned SocketFd is invalid (fd_ == -1).
+SocketFd bind_localhost_listener(uint16_t* port)
+{
+  SocketFd sock(socket(AF_INET, SOCK_DGRAM, 0));
+  if(!sock.valid())
+    return sock;
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;
-  if(bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-  {
-    close(sock);
-    return -1;
-  }
+  if(bind(sock.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+    return SocketFd{};  // RAII closes the partial socket
   socklen_t addr_len = sizeof(addr);
-  if(getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &addr_len) < 0)
-  {
-    close(sock);
-    return -1;
-  }
+  if(getsockname(sock.get(), reinterpret_cast<sockaddr*>(&addr), &addr_len) < 0)
+    return SocketFd{};
   *port = ntohs(addr.sin_port);
   return sock;
 }
@@ -83,12 +118,12 @@ protected:
 TEST_F(ConnectionRateLimit, ConcurrentSendsStayUnderLimit)
 {
   uint16_t listener_port = 0;
-  int listener_sock = bind_localhost_listener(&listener_port);
-  ASSERT_GE(listener_sock, 0) << "Failed to bind listener socket: " << strerror(errno);
+  SocketFd listener_sock = bind_localhost_listener(&listener_port);
+  ASSERT_TRUE(listener_sock.valid()) << "Failed to bind listener socket: " << strerror(errno);
 
   // Source socket the Connection will sendto() from.
-  int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
-  ASSERT_GE(send_sock, 0) << "Failed to open send socket: " << strerror(errno);
+  SocketFd send_sock(socket(AF_INET, SOCK_DGRAM, 0));
+  ASSERT_TRUE(send_sock.valid()) << "Failed to open send socket: " << strerror(errno);
 
   udp_bridge::Connection conn("rate-limit-test", "127.0.0.1", listener_port, "", 0);
   constexpr uint32_t kRateLimitBytesPerSec = 10000;
@@ -115,7 +150,7 @@ TEST_F(ConnectionRateLimit, ConcurrentSendsStayUnderLimit)
       std::this_thread::yield();
     for(int i = 0; i < kPacketsPerThread; ++i)
     {
-      conn.send(data, send_sock, udp_bridge::PacketSendCategory::message, t0);
+      conn.send(data, send_sock.get(), udp_bridge::PacketSendCategory::message, t0);
     }
   };
 
@@ -150,8 +185,9 @@ TEST_F(ConnectionRateLimit, ConcurrentSendsStayUnderLimit)
     << "Test did not exercise the rate-limit path — no dropped packets "
        "recorded. Tune kRateLimitBytesPerSec or kPacketsPerThread.";
 
-  close(listener_sock);
-  close(send_sock);
+  // listener_sock and send_sock are SocketFd RAII wrappers — they close
+  // on scope exit, so no explicit close() is needed here, and a failed
+  // ASSERT earlier in the test cannot leak the descriptors.
 }
 
 int main(int argc, char** argv)
