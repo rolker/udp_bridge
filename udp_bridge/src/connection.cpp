@@ -173,36 +173,38 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   for(const auto& p: packets)
     total_size += p.packet_size;
 
-  // Snapshot rate_limit under config_mutex_; the can_send check then
-  // uses the snapshot under sent_packet_statistics_mutex_ separately.
   uint32_t rate_limit;
   {
     std::lock_guard<std::recursive_mutex> lock(config_mutex_);
     rate_limit = data_rate_limit_;
   }
 
-  bool can_send;
+  // Aggregate pre-check is a fast-path optimization: if the batch as a
+  // whole won't fit in the per-second budget, drop all packets at once
+  // rather than partial-send-then-drop. Check + drop-records happen under
+  // a single lock acquisition so concurrent forwarding callbacks (the
+  // republish_group_ is Reentrant) cannot both observe capacity and then
+  // both drop — they observe a coherent snapshot. The per-packet inner
+  // send() below is the atomic boundary that actually enforces the limit;
+  // this check just trims work when batches are obviously over budget.
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    can_send = sent_packet_statistics_.can_send(total_size, rate_limit, now);
-  }
-  if(!can_send)
-  {
-    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    for(const auto& p: packets)
+    if(!sent_packet_statistics_.can_send(total_size, rate_limit, now))
     {
-
-      PacketSizeData size_data;
-      size_data.timestamp = now;
-      size_data.size = p.packet_size;
-      if(is_overhead)
-        size_data.category = PacketSendCategory::overhead;
-      else
-        size_data.category = PacketSendCategory::message;
-      size_data.send_result = SendResult::dropped;
-      sent_packet_statistics_.add(size_data);
+      for(const auto& p: packets)
+      {
+        PacketSizeData size_data;
+        size_data.timestamp = now;
+        size_data.size = p.packet_size;
+        if(is_overhead)
+          size_data.category = PacketSendCategory::overhead;
+        else
+          size_data.category = PacketSendCategory::message;
+        size_data.send_result = SendResult::dropped;
+        sent_packet_statistics_.add(size_data);
+      }
+      return SendResult::dropped;
     }
-    return SendResult::dropped;
   }
 
   SendResult ret = SendResult::success;
@@ -254,15 +256,20 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
     return ret;
   }
 
-  bool can_send;
-  {
-    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    can_send = sent_packet_statistics_.can_send(data.size(), rate_limit, ret.timestamp);
-  }
-  if(!can_send)
+  // Hold sent_packet_statistics_mutex_ across the can_send check, the
+  // sendto loop, and the final result-add. Splitting these into separate
+  // critical sections was a TOCTOU under the Reentrant republish_group_
+  // (forwarding callbacks running concurrently could all observe capacity
+  // and collectively exceed maximum_bytes_per_second). The lock is
+  // per-Connection, so the Reentrant benefit — parallel sends across
+  // *different* Connections — is preserved; only intra-Connection sends
+  // serialize. sendto on a non-blocking UDP socket is microseconds in the
+  // happy path; the poll loop's 10ms*20-tries worst case (back-pressure)
+  // already implied serialization pre-Reentrant.
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+  if(!sent_packet_statistics_.can_send(data.size(), rate_limit, ret.timestamp))
   {
     ret.send_result = SendResult::dropped;
-    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
     return ret;
   }
@@ -288,7 +295,6 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
               break;
             case ECONNREFUSED:
             {
-              std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
               sent_packet_statistics_.add(ret);
               return ret;
             }
@@ -300,7 +306,6 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
         else
         {
           ret.send_result = SendResult::success;
-          std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
           sent_packet_statistics_.add(ret);
           return ret;
         }
@@ -319,7 +324,6 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   // {
   //     ROS_WARN_STREAM("error sending data of size " << data.size() << ": " << e.getMessage());
   // }
-  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   sent_packet_statistics_.add(ret);
   return ret;
 }
