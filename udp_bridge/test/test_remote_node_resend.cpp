@@ -196,6 +196,53 @@ TEST_F(ResendFixture, TtlGiveUpStopsRequestingAndIncrementsCounter)
   }
 }
 
+// Case 5 (regression for Must-Fix 1 from the 2026-05-18 sub-agent
+// review): after a packet is given up on, the receiver must NOT
+// re-request it just because subsequent arrivals keep the gap
+// visible in the scan range. Without the given_up_packet_numbers_
+// guard, the backoff loop's resend_state_[m] access would
+// operator[]-default-construct a fresh entry the next tick, hit the
+// "first observed" branch, and re-arm a full TTL window of attempts —
+// bumping the give-up counter once per TTL cycle.
+TEST_F(ResendFixture, GiveUpIsNotReArmedByOngoingArrivals)
+{
+  // Seed: packets 1, 3 around t=0 — gap at 2.
+  remote_->recordReceivedPacketTimeForTest(1, t_at(0.000));
+  remote_->recordReceivedPacketTimeForTest(3, t_at(0.200));
+
+  // Drive past kSentPacketTTL to trigger give-up, AND inject a fresh
+  // arrival at each tick so received_packet_times_ never empties out
+  // (which would otherwise let clearReceivedPacketTimesBefore evict
+  // the neighbors and remove gap 2 from the scan range entirely).
+  // The new arrivals at higher packet numbers keep gap 2 visible:
+  // begin()->first stays at 1 (or shifts upward) for as long as the
+  // receive history retains a packet with number < 2.
+  //
+  // After the first give-up (one increment of resendGiveupCount()),
+  // the counter must NOT keep climbing — the receiver must remember
+  // it gave up on packet 2.
+  uint64_t next_pn = 4;
+  for(double t = 0.300; t < 0.300 + 2.5 * udp_bridge::seconds(udp_bridge::kSentPacketTTL); t += 0.050)
+  {
+    // Inject a new neighbor at packet number above 3, so gap 2 stays
+    // bounded on both sides (1 below, the new arrival above).
+    remote_->recordReceivedPacketTimeForTest(next_pn, t_at(t));
+    ++next_pn;
+    remote_->getMissingPackets(t_at(t));
+  }
+
+  // Across 2.5 TTL windows we'd expect ~2-3 give-up cycles if the bug
+  // were present. With the fix, the counter increments exactly once
+  // for packet 2 and stays there.
+  EXPECT_EQ(remote_->resendGiveupCount(), 1u)
+    << "Give-up counter climbed past 1 — packet 2 was given up "
+       "multiple times. The given_up_packet_numbers_ guard in "
+       "getMissingPackets is missing or broken: the backoff loop's "
+       "resend_state_[m] access is re-creating a fresh entry after "
+       "the give-up sweep erased it, re-arming a full TTL window of "
+       "attempts.";
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);

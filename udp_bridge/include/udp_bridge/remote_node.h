@@ -10,6 +10,7 @@
 #include "udp_bridge/types.h"
 
 #include <mutex>
+#include <set>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/node_interfaces/node_interfaces.hpp"
@@ -138,11 +139,27 @@ private:
   };
   std::map<uint64_t, ResendState> resend_state_;
 
+  // Packet numbers we have already given up on (sender TTL expired
+  // before the packet arrived). Prevents the backoff loop's
+  // resend_state_[m] access — which uses operator[] and would
+  // default-construct a fresh entry — from re-requesting a packet we
+  // already gave up on. Entries are added by the give-up sweep at the
+  // top of getMissingPackets and pruned by
+  // clearReceivedPacketTimesBefore when the packet number falls below
+  // received_packet_times_.begin()->first (no longer in the gap-scan
+  // range, so no future getMissingPackets call can re-flag it). Also
+  // cleared by update(BridgeInfo)'s remote-restart detection, since
+  // the remote's packet number space resets.
+  std::set<uint64_t> given_up_packet_numbers_;
+
   // Per-remote count of resend give-ups (sender TTL expired before the
   // packet arrived). Bumped in getMissingPackets when a missing
   // packet's first-request time is older than kSentPacketTTL. Exposed
   // via resendGiveupCount(). Cumulative since RemoteNode construction;
-  // never decreases.
+  // survives remote-restart detection (the counter is operator-facing
+  // and meant to be read as "loss across this RemoteNode's lifetime").
+  // ~225 days at 220 give-ups/s before uint32 wraparound; not a
+  // realistic concern for any deployment.
   uint32_t resend_giveup_count_ = 0;
 
   rclcpp::Publisher<udp_bridge_interfaces::msg::BridgeInfo>::SharedPtr bridge_info_publisher_;

@@ -79,6 +79,7 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           RCLCPP_WARN_STREAM(logger_, "Assuming remote udp_bridge restart");
           received_packet_times_.clear();
           resend_state_.clear();
+          given_up_packet_numbers_.clear();
         }
       } 
       next_packet_number_ = bridge_info.next_packet_number;
@@ -196,6 +197,25 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
       expired.push_back(rs.first);
   for(auto e: expired)
     resend_state_.erase(e);
+
+  // Prune given-up packet numbers that have fallen out of the
+  // gap-scan range. The gap-scan walks [received_packet_times_.begin()
+  // + 1, rbegin()), so any given-up packet number strictly less than
+  // begin()->first can never be re-flagged as missing — drop it. If
+  // received_packet_times_ is empty after the eviction above, no
+  // future gap-scan in this call's lifetime can re-flag anything, so
+  // clear the whole set.
+  if(received_packet_times_.empty())
+  {
+    given_up_packet_numbers_.clear();
+  }
+  else
+  {
+    auto begin_packet = received_packet_times_.begin()->first;
+    auto it = given_up_packet_numbers_.begin();
+    while(it != given_up_packet_numbers_.end() && *it < begin_packet)
+      it = given_up_packet_numbers_.erase(it);
+  }
 }
 
 uint32_t RemoteNode::resendGiveupCount() const
@@ -228,8 +248,10 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
   // clearReceivedPacketTimesBefore — both use the same cutoff
   // (kReceiveHistoryWindow == kSentPacketTTL by static_assert), so
   // without this pass the eviction would silently drop the entry
-  // and the counter increment in the give-up branch below would
-  // never fire.
+  // and the counter increment in the give-up branch would never
+  // fire. The packet number is moved into given_up_packet_numbers_
+  // so the backoff loop below can't re-request it via
+  // operator[]-default-construct on the resend_state_ map.
   std::vector<uint64_t> giveup_now;
   for(auto& kv: resend_state_)
     if(kv.second.attempts > 0 && kv.second.first_request_time < giveup_cutoff)
@@ -244,6 +266,7 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
       << (now - s.first_request_time).seconds()
       << " s ago, sender TTL is " << seconds(kSentPacketTTL) << " s)");
     resend_state_.erase(m);
+    given_up_packet_numbers_.insert(m);
     ++resend_giveup_count_;
   }
 
@@ -290,6 +313,16 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
   ResendRequest rr;
   for(auto m: missing)
   {
+    // Skip packets we have already given up on. Without this guard,
+    // resend_state_[m] below would operator[]-default-construct a
+    // fresh entry (attempts=0), hit the "first observed missing"
+    // branch, and re-request the packet — re-arming a full
+    // kSentPacketTTL window of attempts for a packet the sender has
+    // already evicted. The given_up set is pruned by
+    // clearReceivedPacketTimesBefore once the packet number falls
+    // out of the gap-scan range.
+    if(given_up_packet_numbers_.count(m))
+      continue;
     auto& state = resend_state_[m];
     if(state.attempts == 0)
     {
@@ -299,7 +332,16 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
       state.attempts = 1;
       continue;
     }
-    double cooldown = seconds(kResendBackoffBase) * (1u << (state.attempts - 1));
+    // Clamp the shift so a stuck packet that somehow climbs past the
+    // attempts a normal kSentPacketTTL window admits (~6) cannot hit
+    // undefined behavior. 1u << 7 = 128, so 8 attempts is well above
+    // any realistic value once the cap clause below applies; clamping
+    // at the shift means a runaway attempts counter just pegs at
+    // kResendBackoffCap, which is the desired behavior anyway.
+    uint32_t shift = state.attempts - 1;
+    if(shift > 7)
+      shift = 7;
+    double cooldown = seconds(kResendBackoffBase) * (1u << shift);
     if(cooldown > seconds(kResendBackoffCap))
       cooldown = seconds(kResendBackoffCap);
     if((now - state.last_request_time).seconds() >= cooldown)
