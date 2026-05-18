@@ -67,6 +67,15 @@ class RemoteNode
 
   udp_bridge_interfaces::msg::ResendRequest getMissingPackets();
 
+  // Count of missing-packet resends this RemoteNode has given up on
+  // because the sender's TTL expired before the packet arrived. Read
+  // by UDPBridge::sendBridgeInfo() to populate
+  // Remote.msg.resend_giveup_count. Lock-friendly with
+  // sendBridgeInfo's scoped_lock(subscribers_, remote_nodes_): this
+  // getter takes only the recursive state_mutex_ and does NOT
+  // re-acquire remote_nodes_mutex_.
+  uint32_t resendGiveupCount() const;
+
 private:
   // name of the remote udp_bridge node
   std::string name_;
@@ -102,6 +111,13 @@ private:
 
   std::map<uint64_t, rclcpp::Time> received_packet_times_;
   std::map<uint64_t, rclcpp::Time> resend_request_times_;
+
+  // Per-remote count of resend give-ups (sender TTL expired before the
+  // packet arrived). Bumped in getMissingPackets when a missing
+  // packet's first-request time is older than kSentPacketTTL. Exposed
+  // via resendGiveupCount(). Cumulative since RemoteNode construction;
+  // never decreases.
+  uint32_t resend_giveup_count_ = 0;
 
   rclcpp::Publisher<udp_bridge_interfaces::msg::BridgeInfo>::SharedPtr bridge_info_publisher_;
   rclcpp::Publisher<udp_bridge_interfaces::msg::TopicStatisticsArray>::SharedPtr topic_statistics_publisher_;

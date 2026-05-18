@@ -1,6 +1,7 @@
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge/connection.h"
+#include "udp_bridge/resend_constants.h"
 #include "udp_bridge/utilities.h"
 #include "rmw/qos_profiles.h"
 
@@ -197,6 +198,12 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
     resend_request_times_.erase(e);
 }
 
+uint32_t RemoteNode::resendGiveupCount() const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return resend_giveup_count_;
+}
+
 ResendRequest RemoteNode::getMissingPackets()
 {
   auto now = clock_->now();
@@ -204,7 +211,7 @@ ResendRequest RemoteNode::getMissingPackets()
     return {};
 
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-  auto too_old = now - rclcpp::Duration::from_seconds(5.0);
+  auto too_old = now - rclcpp::Duration::from_seconds(seconds(kReceiveHistoryWindow));
   clearReceivedPacketTimesBefore(too_old);  // re-enters mutex (recursive)
   auto can_resend_time = now - rclcpp::Duration::from_seconds(0.2);
 
