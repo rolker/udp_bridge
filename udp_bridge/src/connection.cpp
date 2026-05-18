@@ -467,6 +467,21 @@ void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
     sent_packets_.erase(e);
 }
 
+void Connection::recordSentPacketForTest(uint64_t packet_number, rclcpp::Time timestamp)
+{
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+  WrappedPacket wp;
+  wp.packet_number = packet_number;
+  wp.timestamp = timestamp;
+  sent_packets_[packet_number] = wp;
+}
+
+std::size_t Connection::sentPacketCountForTest() const
+{
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+  return sent_packets_.size();
+}
+
 
 
 std::string addressToDotted(const sockaddr_in& address)

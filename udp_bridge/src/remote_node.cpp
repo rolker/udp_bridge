@@ -204,17 +204,52 @@ uint32_t RemoteNode::resendGiveupCount() const
   return resend_giveup_count_;
 }
 
+void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time)
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  received_packet_times_[packet_number] = time;
+}
+
 ResendRequest RemoteNode::getMissingPackets()
 {
   auto now = clock_->now();
   if(now.nanoseconds() == 0)
     return {};
+  return getMissingPackets(now);
+}
 
+ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
+{
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  auto giveup_cutoff = now - rclcpp::Duration::from_seconds(seconds(kSentPacketTTL));
+
+  // Pass 1: give-up sweep. Process resend_state_ entries whose
+  // first_request_time has aged past kSentPacketTTL BEFORE running
+  // clearReceivedPacketTimesBefore — both use the same cutoff
+  // (kReceiveHistoryWindow == kSentPacketTTL by static_assert), so
+  // without this pass the eviction would silently drop the entry
+  // and the counter increment in the give-up branch below would
+  // never fire.
+  std::vector<uint64_t> giveup_now;
+  for(auto& kv: resend_state_)
+    if(kv.second.attempts > 0 && kv.second.first_request_time < giveup_cutoff)
+      giveup_now.push_back(kv.first);
+  for(auto m: giveup_now)
+  {
+    auto& s = resend_state_[m];
+    RCLCPP_WARN_STREAM(logger_,
+      "Giving up on resend of packet " << m << " from remote '"
+      << name_ << "' after " << s.attempts
+      << " attempts (first requested "
+      << (now - s.first_request_time).seconds()
+      << " s ago, sender TTL is " << seconds(kSentPacketTTL) << " s)");
+    resend_state_.erase(m);
+    ++resend_giveup_count_;
+  }
+
   auto too_old = now - rclcpp::Duration::from_seconds(seconds(kReceiveHistoryWindow));
   clearReceivedPacketTimesBefore(too_old);  // re-enters mutex (recursive)
   auto debounce_cutoff = now - rclcpp::Duration::from_seconds(seconds(kResendDebounceHold));
-  auto giveup_cutoff = now - rclcpp::Duration::from_seconds(seconds(kSentPacketTTL));
 
   // Walk packet numbers in [first+1, last-1] of the known-received range
   // and flag gaps as missing. Each gap is debounced against the receive
@@ -244,15 +279,9 @@ ResendRequest RemoteNode::getMissingPackets()
     }
   }
 
-  // Backoff + TTL-bounded give-up. For each missing packet:
-  //   - If first observed missing, request immediately; record first +
-  //     last request time and attempts=1.
-  //   - On repeat: cooldown = min(base * 2^(attempts-1), cap). Only
-  //     request again if (now - last_request_time) > cooldown.
-  //   - Give-up: if first_request_time is older than kSentPacketTTL,
-  //     the sender has by then evicted the packet from sent_packets_;
-  //     further requests are pointless. Bump resend_giveup_count_,
-  //     remove from tracking, WARN log.
+  // Backoff for missing packets observed in the gap-scan above. The
+  // give-up case (first_request_time < giveup_cutoff) was already
+  // handled in pass 1 at the top of this function.
   //
   // Invariant: when multiple missing packets cross their backoff
   // boundary in the same tick, they bundle into one ResendRequest. By
@@ -268,18 +297,6 @@ ResendRequest RemoteNode::getMissingPackets()
       state.first_request_time = now;
       state.last_request_time = now;
       state.attempts = 1;
-      continue;
-    }
-    if(state.first_request_time < giveup_cutoff)
-    {
-      RCLCPP_WARN_STREAM(logger_,
-        "Giving up on resend of packet " << m << " from remote '"
-        << name_ << "' after " << state.attempts
-        << " attempts (first requested "
-        << (now - state.first_request_time).seconds()
-        << " s ago, sender TTL is " << seconds(kSentPacketTTL) << " s)");
-      resend_state_.erase(m);
-      ++resend_giveup_count_;
       continue;
     }
     double cooldown = seconds(kResendBackoffBase) * (1u << (state.attempts - 1));

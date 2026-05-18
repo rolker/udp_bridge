@@ -93,6 +93,12 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_connection_rate_limit test/test_connection_rate_limit.cpp)
   target_link_libraries(test_connection_rate_limit ${PROJECT_NAME})
+
+  ament_add_gtest(test_remote_node_resend test/test_remote_node_resend.cpp)
+  target_link_libraries(test_remote_node_resend ${PROJECT_NAME})
+
+  ament_add_gtest(test_connection_cleanup test/test_connection_cleanup.cpp)
+  target_link_libraries(test_connection_cleanup ${PROJECT_NAME})
 endif()
 
 ament_package()

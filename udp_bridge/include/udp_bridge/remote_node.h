@@ -67,6 +67,18 @@ class RemoteNode
 
   udp_bridge_interfaces::msg::ResendRequest getMissingPackets();
 
+  // Time-injection overload used by unit tests so the gap-scan and
+  // backoff logic can be exercised against a controlled clock without
+  // bringing up a sim-time-driven node. Production callers should use
+  // the no-arg variant above.
+  udp_bridge_interfaces::msg::ResendRequest getMissingPackets(rclcpp::Time now);
+
+  // Test helper: record a received packet at a caller-supplied time
+  // without going through unwrap(). Used by the gtest suite to seed
+  // received_packet_times_ at known times for the debounce / backoff /
+  // give-up scenarios.
+  void recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time);
+
   // Count of missing-packet resends this RemoteNode has given up on
   // because the sender's TTL expired before the packet arrived. Read
   // by UDPBridge::sendBridgeInfo() to populate
