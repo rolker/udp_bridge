@@ -103,4 +103,4 @@ issue: 15
 **CI**: all-pass (4 checks)
 
 ### Actions
-- [ ] **T1 (defensive overflow widening in can_send)** — `(total_sent + reserved_bytes + data_size) < bytes_per_second_limit` arithmetic is all `uint32_t`. Not reachable today (deque holds ≤10 s of `uint16_t`-sized entries; sum stays well below UINT32_MAX even at multi-Gbps), but trivially defensive against future config changes (raised default_rate_limit, jumbo-frame data_size). Promote operands to `uint64_t` before summing. One-line change in `statistics.cpp:180`.
+- [x] **T1 (defensive overflow widening in can_send)** — Promoted the running total and the three uint32 inputs to uint64 before summing and comparing. Comparison stays valid across the full uint32_t input range; no future audit needed at this site when rate-limit configs change. **→ commit f76f407**
