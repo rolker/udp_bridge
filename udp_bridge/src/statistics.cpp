@@ -168,7 +168,14 @@ bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes,
   // to ~10 s of records by Statistics::add's eviction, so the linear scan
   // is cheap and correct regardless of insertion order.
   auto one_second_ago = time - rclcpp::Duration::from_seconds(1.0);
-  uint32_t total_sent = 0;
+  // Use uint64_t for the sum and the comparison. Each operand is uint32_t,
+  // and on realistic configurations the sum stays well below UINT32_MAX
+  // (deque entries are uint16_t-sized PacketSizeData::size, bounded to
+  // ~10 s of records), but a future config raising default_rate_limit or
+  // moving to jumbo-frame data_size could push the arithmetic into wrap
+  // territory. Widening here means the comparison stays valid across the
+  // full uint32_t input range with no further audit required.
+  uint64_t total_sent = 0;
   for(const auto& entry : data_)
   {
     if(entry.timestamp < one_second_ago)
@@ -177,7 +184,10 @@ bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes,
       continue;
     total_sent += entry.size;
   }
-  return (total_sent+reserved_bytes+data_size) < bytes_per_second_limit;
+  return (total_sent
+          + static_cast<uint64_t>(reserved_bytes)
+          + static_cast<uint64_t>(data_size))
+         < static_cast<uint64_t>(bytes_per_second_limit);
 }
 
 
