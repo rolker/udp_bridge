@@ -267,9 +267,14 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   // and collectively exceed maximum_bytes_per_second). The lock is
   // per-Connection, so the Reentrant benefit — parallel sends across
   // *different* Connections — is preserved; only intra-Connection sends
-  // serialize. sendto on a non-blocking UDP socket is microseconds in the
-  // happy path; the poll loop's 10ms*20-tries worst case (back-pressure)
-  // already implied serialization pre-Reentrant.
+  // serialize. The sendto call below passes MSG_DONTWAIT so it never
+  // blocks under kernel-send-buffer back-pressure (the bridge socket
+  // itself is blocking — only SO_RCVTIMEO is set at construction); a
+  // buffer-full state surfaces as EAGAIN and is retried via the poll
+  // loop. Worst-case mutex hold is therefore bounded by the poll loop's
+  // 20-tries × 10 ms budget (~200 ms), not by the kernel deciding when
+  // to drain. Pre-Reentrant code already serialized this path through
+  // the executor; the bound is no worse now.
   std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
   if(!sent_packet_statistics_.can_send(data.size(), rate_limit, ret.timestamp))
   {
@@ -290,7 +295,7 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
       int poll_ret = poll(&p, 1, 10);
       if(poll_ret > 0 && p.revents & POLLOUT)
       {
-        bytes_sent = sendto(socket, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+        bytes_sent = sendto(socket, data.data(), data.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
         if(bytes_sent == -1)
           switch(errno)
           {
