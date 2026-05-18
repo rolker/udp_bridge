@@ -36,8 +36,12 @@ size_t depth_of(const rclcpp::QoS& qos)
 
 TEST(QosResolution, DestinationDefault_EmptyEmptyZero)
 {
+  // Default reliability is RELIABLE — see qos_resolution.h header comment
+  // for the rmw_zenoh_cpp 0.2.9 BEST_AVAILABLE-keyexpr issue that motivates
+  // it. To opt back into BEST_AVAILABLE, set reliability: best_available
+  // explicitly per topic.
   auto qos = resolveDestinationPublisherQos("", "", 0);
-  EXPECT_EQ(reliability_of(qos), RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE);
+  EXPECT_EQ(reliability_of(qos), RMW_QOS_POLICY_RELIABILITY_RELIABLE);
   EXPECT_EQ(durability_of(qos),  RMW_QOS_POLICY_DURABILITY_VOLATILE);
   EXPECT_EQ(history_of(qos),     RMW_QOS_POLICY_HISTORY_KEEP_LAST);
   EXPECT_EQ(depth_of(qos),       1u);
@@ -66,7 +70,7 @@ TEST(QosResolution, DestinationUnrecognizedReliabilityFallsBackToDefault)
   // Per the contract: unrecognized strings should fall through to defaults
   // rather than erroring. Preserves graceful interop with future versions.
   auto qos = resolveDestinationPublisherQos("garbage", "", 1);
-  EXPECT_EQ(reliability_of(qos), RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE);
+  EXPECT_EQ(reliability_of(qos), RMW_QOS_POLICY_RELIABILITY_RELIABLE);
 }
 
 TEST(QosResolution, DestinationTransientLocal)
@@ -108,7 +112,7 @@ TEST(QosResolution, OldSenderAllFieldsMissing_LooksLikeDefaults)
   // wire those deserialize as empty strings and 0. The receiver must
   // treat that as "use the package defaults" rather than failing.
   auto qos = resolveDestinationPublisherQos("", "", 0);
-  EXPECT_EQ(reliability_of(qos), RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE);
+  EXPECT_EQ(reliability_of(qos), RMW_QOS_POLICY_RELIABILITY_RELIABLE);
   EXPECT_EQ(durability_of(qos),  RMW_QOS_POLICY_DURABILITY_VOLATILE);
   EXPECT_EQ(depth_of(qos),       1u);
 }

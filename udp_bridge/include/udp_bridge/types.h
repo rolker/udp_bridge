@@ -24,8 +24,10 @@ struct RemoteDetails
 
   // Per-topic QoS that the receiver should apply to the destination
   // publisher. See udp_bridge/doc/qos_design.md. Empty strings and 0
-  // mean "use the package default" (best_available / volatile /
-  // KEEP_LAST(1)).
+  // mean "use the package default". The current operational default is
+  // RELIABLE / VOLATILE / KEEP_LAST(1) — RELIABLE is a temporary
+  // override for the rmw_zenoh_cpp 0.2.9 graph-visibility issue
+  // documented in qos_resolution.h; design intent is BEST_AVAILABLE.
   std::string reliability;
   std::string durability;
   uint32_t history_depth = 0;

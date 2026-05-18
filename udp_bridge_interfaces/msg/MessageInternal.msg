@@ -13,6 +13,6 @@ uint8[] data
 # changes. The receiver wraps decode in a try/catch and logs+drops on
 # deserialization failure rather than terminating, so a transient
 # mismatch does not crash the bridge.
-string reliability    # "best_available" (default), "reliable", or "best_effort"
+string reliability    # "reliable" (operational default; design intent is "best_available" — see qos_resolution.h), "best_effort", or "best_available"
 string durability     # "volatile" (default) or "transient_local"
 uint32 history_depth  # KEEP_LAST(N); 0 is treated as default 1

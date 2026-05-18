@@ -90,6 +90,9 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}
     ${std_msgs_TARGETS}
   )
+
+  ament_add_gtest(test_connection_rate_limit test/test_connection_rate_limit.cpp)
+  target_link_libraries(test_connection_rate_limit ${PROJECT_NAME})
 endif()
 
 ament_package()

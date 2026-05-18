@@ -204,7 +204,10 @@ private:
   /// @param remote_node destination udp_bridge
   /// @param connection_id  connection to remote to use
   /// @param reliability per-topic destination publisher reliability
-  ///                    ("best_available" default, "reliable", "best_effort")
+  ///                    ("reliable" default — see qos_resolution.h header
+  ///                    comment for the rmw_zenoh_cpp workaround; design
+  ///                    intent is "best_available". Also accepts
+  ///                    "best_effort" and explicit "best_available".)
   /// @param durability per-topic durability ("volatile" default, "transient_local")
   /// @param history_depth KEEP_LAST(N); 0 means default 1
   void addSubscriberConnection(std::string const &source_topic,

@@ -80,7 +80,12 @@ public:
   udp_bridge_interfaces::msg::DataRates get() const;
   udp_bridge_interfaces::msg::DataRates get(PacketSendCategory category) const;
 
-  bool can_send(uint32_t data_size, uint32_t bytes_per_second_limit, rclcpp::Time time) const;
+  /// @param data_size the prospective packet's byte count
+  /// @param reserved_bytes bytes already reserved by other in-flight
+  ///        Connection::send() calls that have not yet finalized their
+  ///        records (see Connection::reserved_bytes_in_flight_). Pass 0
+  ///        for callers that don't use the reservation pattern.
+  bool can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const;
 
 private:
   udp_bridge_interfaces::msg::DataRates get(PacketSendCategory *category) const;
