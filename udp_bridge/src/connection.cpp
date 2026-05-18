@@ -288,9 +288,17 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   //
   // The ReservationGuard RAII helper handles throw-paths: if the sendto
   // loop throws (Timeout, partial-send, etc.), the destructor releases
-  // the reservation but does NOT add a record. Stats readers see no
-  // record for that packet — correct, because the caller is going to
-  // observe the exception and decide what to do.
+  // the reservation so rate-limit accounting stays consistent for the
+  // next can_send call. No record is added in this case — and there is
+  // no caller in the workspace that catches ConnectionException, so the
+  // throw propagates up through UDPBridge::callback to the executor and
+  // the node terminates. That behavior predates the reservation pattern
+  // and isn't changed by it; the value of the guard here is purely
+  // keeping reserved_bytes_in_flight_ correct before the process dies,
+  // so a sibling Connection on the same node doesn't observe a phantom
+  // reservation in its own pre-shutdown logging window. Catching at the
+  // call site to keep the bridge alive across transient socket errors
+  // would be a separate follow-up.
   struct ReservationGuard
   {
     std::mutex& mutex;

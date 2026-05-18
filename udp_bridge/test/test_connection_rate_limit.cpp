@@ -185,6 +185,27 @@ TEST_F(ConnectionRateLimit, ConcurrentSendsStayUnderLimit)
     << "Test did not exercise the rate-limit path — no dropped packets "
        "recorded. Tune kRateLimitBytesPerSec or kPacketsPerThread.";
 
+  // Positive success — without this, an over-conservative regression
+  // that drops every packet would satisfy both expectations above
+  // (success=0 is < cap; dropped=1600*1000 is > 0). The rate limiter
+  // is supposed to USE the configured capacity, not just stay under it.
+  EXPECT_GT(rates.success_bytes_per_second, 0.0f)
+    << "No packets succeeded — rate limiter dropped 100% of attempts. "
+       "Either the resolver is broken or the can_send accounting is "
+       "over-counting (e.g., R1 from PR #16 review: stale entries in "
+       "the per-second window from non-monotone deque ordering).";
+
+  // Near-cap lower bound — catches subtler over-conservatism (e.g., a
+  // regression that drops 90% of allowed sends). Tolerance is generous
+  // (>= 50% of cap) because the actual achieved bandwidth varies with
+  // thread scheduling under contention; the bound is "much less
+  // throttled than a broken limiter would be", not "exactly the cap".
+  EXPECT_GE(rates.success_bytes_per_second, 0.5f * kRateLimitBytesPerSec)
+    << "Success bytes (" << rates.success_bytes_per_second
+    << ") are far below the cap (" << kRateLimitBytesPerSec
+    << "). Suspected over-conservative regression in can_send or the "
+       "reservation accounting.";
+
   // listener_sock and send_sock are SocketFd RAII wrappers — they close
   // on scope exit, so no explicit close() is needed here, and a failed
   // ASSERT earlier in the test cannot leak the descriptors.

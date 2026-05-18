@@ -156,16 +156,26 @@ udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get(PacketSendCatego
 
 bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const
 {
+  // Scan the whole deque rather than skip-prefix-then-sum. The earlier
+  // implementation walked forward past entries with `timestamp < one_second_ago`
+  // and then summed everything from that point on, which assumed the deque
+  // was monotone in timestamps. PR #16's reserve-then-record pattern in
+  // Connection::send breaks that assumption: with sendto running outside
+  // the mutex and varying in duration under contention/back-pressure, a
+  // slower thread can add its record (with an older start-timestamp) AFTER
+  // a faster thread's record, leaving an old entry sitting past the "first
+  // not-old" boundary and getting incorrectly summed. The deque is bounded
+  // to ~10 s of records by Statistics::add's eviction, so the linear scan
+  // is cheap and correct regardless of insertion order.
   auto one_second_ago = time - rclcpp::Duration::from_seconds(1.0);
-  auto start = data_.begin();
-  while(start != data_.end() && start->timestamp < one_second_ago)
-    start++;
   uint32_t total_sent = 0;
-  while(start != data_.end())
+  for(const auto& entry : data_)
   {
-    if(start->send_result != SendResult::dropped)
-      total_sent += start->size;
-    start++;
+    if(entry.timestamp < one_second_ago)
+      continue;
+    if(entry.send_result == SendResult::dropped)
+      continue;
+    total_sent += entry.size;
   }
   return (total_sent+reserved_bytes+data_size) < bytes_per_second_limit;
 }
