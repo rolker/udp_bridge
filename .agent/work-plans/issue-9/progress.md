@@ -69,4 +69,28 @@ re-locate before editing:
   - **Critical**: `static_assert` direction inverted (`>=` → `<=`). Failure mode D from the issue is "receiver > sender", so the bug-prevention invariant runs the other way. With both constants defaulted equal, the wrong direction passes today, but a future widening of `kReceiveHistoryWindow` would re-introduce the exact bug this plan is meant to close.
   - **Substantive**: third 5.0 s magic number at `udp_bridge.cpp:431` (defragmenter cleanup) added to Files-to-Change; `attempt_count_` map eviction wired into `clearReceivedPacketTimesBefore` so it doesn't leak under sustained loss; debounce formula pinned to `now - prev_neighbor_time > kResendDebounceHold` (avoiding the idle-stream pathology of `newest_received_time`).
   - **Polish**: spin-rate bundling invariant, `sendBridgeInfo` lock-interaction note, `/review-code` pre-push step.
-- [ ] Begin implementation per the 5-commit plan (TTL constants → `Remote.msg` schema → debounce → backoff + give-up → tests).
+- [x] **Implementation (4 commits, 2026-05-18)**:
+  - Commit 1 (`abdb3b0`): D — TTL alignment + Remote.msg schema + plumbing
+  - Commit 2 (`0eff305`): A — debounce in getMissingPackets
+  - Commit 3 (`00f282d`): B — backoff + TTL give-up (using `ResendState` struct in place of the plan's `attempt_count_` map; semantically equivalent, cleaner data model)
+  - Commit 4 (`74d53df`): tests + unreachable-give-up bug fix (test discovery surfaced that the give-up branch inside the backoff loop was unreachable; restructured into a give-up sweep at the top of `getMissingPackets`)
+
+## Local Review
+**Status**: complete
+**When**: 2026-05-18 22:30
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: changes-requested
+
+**Branch**: `feature/issue-9` at `74d53df`
+**Mode**: pre-push
+**Depth**: Deep (reason: ~580 LOC of mutex-protected concurrency logic across lifecycle paths)
+**Must-fix**: 2 | **Suggestions**: 5
+
+### Findings
+- [ ] (must-fix) Re-request after give-up via `operator[]` default-construct — `remote_node.cpp:293` (Suggestion #6 is the matching regression test)
+- [ ] (must-fix) `1u << (attempts - 1)` UB at attempts >= 33 — `remote_node.cpp:302`
+- [ ] (suggestion) Drop dead `resend_state_` sweep in `clearReceivedPacketTimesBefore` — `remote_node.cpp:251`
+- [ ] (suggestion) Document lock-ordering invariant on `RemoteNode::state_mutex_` — `remote_node.h:116-122`
+- [ ] (suggestion) Document `resend_giveup_count` cumulative semantics (survives remote restart) — `Remote.msg:28`
+- [ ] (suggestion) Regression test for must-fix 1: gap kept visible past TTL, counter must not climb — `test_remote_node_resend.cpp`
+- [ ] (suggestion) Rename `seconds()` to `to_seconds()` to avoid ADL collisions — `resend_constants.h:76`
