@@ -149,3 +149,20 @@ re-locate before editing:
 - **4/15 Copilot R3 comments** still apply: 1 intentionally-kept design choice (`assert(s.attempts > 0)` belt-and-suspenders, defended in code comment), 1 adequately-documented test-helper caveat (`record_sent_packet_for_test`), 2 cosmetic test-hygiene items.
 - **3 new findings** from this session's `/review-code 13` local review — all suggestions targeting test-coverage hardening + one small API-surface tightening. No must-fix.
 - Self plan-review conversation comment: all 7 findings absorbed into plan revisions pre-implementation.
+
+## External Review (R4 follow-up)
+**Status**: complete
+**When**: 2026-05-19 13:55
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 at `c9b5820` — Copilot R4 fired after the local-review-fixes push; 2 inline comments, 2 valid, 0 false positives
+**CI**: all-pass (4 checks at `c9b5820`)
+
+### Actions
+- [ ] (fix) Update `state_mutex_` doc comment to drop the stale `resend_request_times_` reference and list current guarded fields — `remote_node.h:110-111`
+- [ ] (fix) Update `resend_state_` member doc to reflect actual cleanup paths (give-up sweep + recordPacketArrival + remote restart; not `clearReceivedPacketTimesBefore` anymore) — `remote_node.h:138-144`
+- [ ] (optional) Dismiss 9 already-addressed Copilot R1/R2 inline comments for dashboard hygiene
+
+### Classification breakdown
+- Both R4 findings are doc-staleness from the C1/F1 fix landed in `ff32f58` (the `clearReceivedPacketTimesBefore` sweep removal and the field rename from `resend_request_times_` to `resend_state_` + `given_up_packet_numbers_`).
+- No new algorithmic or code-correctness findings — the local-review fixes (overload guard + 2 new test cases + cosmetic hygiene) didn't introduce new issues.
