@@ -217,3 +217,17 @@ re-locate before editing:
 - R7 #1–#3 are the same finding triplicated across the three files that use the macro. Real ODR hazard introduced by my R5 fix — `BUILD_TESTING` is a CMake/ament-standard name commonly defined by downstream packages.
 - R7 #4 is trivial stale-doc.
 - The pattern of "Copilot catches self-inflicted issues from prior rounds" continues — R5 introduced the ODR hazard, R7 caught it.
+
+## External Review (R8 — clean)
+**Status**: complete
+**When**: 2026-05-19 15:10
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 at `ae9b246` — Copilot R8 fired ~16 min after the R7 follow-up push; **0 inline comments** (first clean round)
+**CI**: all-pass (4 checks at `ae9b246`)
+
+### Actions
+None — PR is Copilot-clean. Ready to merge from the bot-review perspective.
+
+### Trajectory
+Across 8 review rounds the per-round finding count went: **6 → 5 → 4 → 2 → 4 → 3 → 4 → 0**. All 28 prior findings are either resolved in code, kept-by-design with documented rationale, or stale against the current HEAD. The PR is ready to merge.
