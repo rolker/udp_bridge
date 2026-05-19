@@ -259,6 +259,14 @@ ResendRequest RemoteNode::getMissingPackets()
 
 ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
 {
+  // Mirror the no-arg overload's guard: a pre-clock-sync zero-init
+  // rclcpp::Time would make `now - rclcpp::Duration(kSentPacketTTL)`
+  // construct a negative time, which rclcpp::Time throws on. The
+  // overload is documented as test-only but is public; this guard
+  // preserves the contract for any production caller that reaches it
+  // before the clock is initialized.
+  if(now.nanoseconds() == 0)
+    return {};
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   auto giveup_cutoff = now - rclcpp::Duration(kSentPacketTTL);
 
