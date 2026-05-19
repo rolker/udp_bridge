@@ -194,13 +194,18 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
     received_packet_times_.erase(e);
 
   // Eviction of resend_state_ entries by first_request_time used to
-  // live here too, but the give-up sweep at the top of
-  // getMissingPackets() already removes every entry whose
-  // first_request_time < (now - kSentPacketTTL), which equals the
-  // `time` cutoff passed by getMissingPackets()
-  // (kReceiveHistoryWindow == kSentPacketTTL). The previous sweep was
-  // dead code — pinning the invariant via the give-up pass alone is
-  // simpler and matches the intent.
+  // live here too. It's now handled by three other paths: the give-up
+  // sweep at the top of getMissingPackets() (removes entries whose
+  // first_request_time < now - kSentPacketTTL), recordPacketArrival
+  // (removes entries when the missing packet finally arrives), and
+  // the remote-restart clear in update(BridgeInfo). The previous
+  // sweep here was dead code under the current default
+  // (kReceiveHistoryWindow == kSentPacketTTL, so the `time` cutoff
+  // passed in matches the give-up cutoff exactly) and remains so
+  // under a future narrowing — the give-up cutoff is always >= this
+  // `time` cutoff (static_assert in resend_constants.h enforces
+  // kReceiveHistoryWindow <= kSentPacketTTL), so any entry the old
+  // sweep could have evicted was already evicted by the give-up pass.
 
   // Prune given-up packet numbers that have fallen out of the
   // gap-scan range. The gap-scan walks [received_packet_times_.begin()
@@ -228,11 +233,13 @@ uint32_t RemoteNode::resendGiveupCount() const
   return resend_giveup_count_;
 }
 
+#ifdef BUILD_TESTING
 void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time)
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   recordPacketArrival(packet_number, time);
 }
+#endif  // BUILD_TESTING
 
 void RemoteNode::recordPacketArrival(uint64_t packet_number, rclcpp::Time time)
 {
@@ -251,20 +258,24 @@ void RemoteNode::recordPacketArrival(uint64_t packet_number, rclcpp::Time time)
 
 ResendRequest RemoteNode::getMissingPackets()
 {
-  auto now = clock_->now();
-  if(now.nanoseconds() == 0)
-    return {};
-  return getMissingPackets(now);
+  return getMissingPacketsAt(clock_->now());
 }
 
+#ifdef BUILD_TESTING
 ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
 {
-  // Mirror the no-arg overload's guard: a pre-clock-sync zero-init
+  return getMissingPacketsAt(now);
+}
+#endif  // BUILD_TESTING
+
+ResendRequest RemoteNode::getMissingPacketsAt(rclcpp::Time now)
+{
+  // Zero-time guard for pre-clock-sync callers: a zero-init
   // rclcpp::Time would make `now - rclcpp::Duration(kSentPacketTTL)`
-  // construct a negative time, which rclcpp::Time throws on. The
-  // overload is documented as test-only but is public; this guard
-  // preserves the contract for any production caller that reaches it
-  // before the clock is initialized.
+  // construct a negative time, which rclcpp::Time throws on. Lives in
+  // the shared worker so both public entry points (the production
+  // no-arg variant and the BUILD_TESTING-gated time-injection
+  // overload) get the same safety contract from a single source.
   if(now.nanoseconds() == 0)
     return {};
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
@@ -272,12 +283,17 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
 
   // Pass 1: give-up sweep. Process resend_state_ entries whose
   // first_request_time has aged past kSentPacketTTL BEFORE running
-  // clearReceivedPacketTimesBefore — both use the same cutoff
-  // (kReceiveHistoryWindow == kSentPacketTTL by static_assert), so
-  // without this pass the eviction would silently drop the entry
-  // and the counter increment in the give-up branch would never
-  // fire. The packet number is moved into given_up_packet_numbers_
-  // so the backoff loop below can't re-request it via
+  // clearReceivedPacketTimesBefore. The static_assert in
+  // resend_constants.h enforces kReceiveHistoryWindow <=
+  // kSentPacketTTL — they're equal today by default but the assert
+  // allows the receive window to be narrowed. Even when the two
+  // cutoffs differ, the give-up sweep must run first: it would still
+  // be wrong to evict a state entry whose first_request_time is
+  // older than the eviction cutoff without counting the give-up
+  // (resend_giveup_count_ would stop tracking abandoned packets,
+  // breaking the operational-visibility contract on Remote.msg). The
+  // packet number is moved into given_up_packet_numbers_ so the
+  // backoff loop below can't re-request it via
   // operator[]-default-construct on the resend_state_ map.
   std::vector<uint64_t> giveup_now;
   for(auto& kv: resend_state_)

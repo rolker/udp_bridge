@@ -99,6 +99,7 @@ public:
   /// Remove saved sent packets older than cutoff_time.
   void cleanup_sent_packets(rclcpp::Time cutoff_time);
 
+#ifdef BUILD_TESTING
   /// Test helper: inject a sent-packet entry at a caller-supplied
   /// timestamp without going through the send() path. Used by the
   /// gtest suite to seed sent_packets_ for cleanup-boundary tests.
@@ -107,12 +108,19 @@ public:
   /// other fields are default-constructed. Not safe for tests that
   /// exercise `resend_packets` on the seeded data (those would send
   /// empty byte payloads).
+  ///
+  /// Gated behind BUILD_TESTING so it doesn't leak into the package's
+  /// installed public ABI — CMakeLists installs `include/`. The
+  /// library compiles this in only when CMake's BUILD_TESTING is on,
+  /// so downstream consumers don't see the declaration.
   void record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp);
 
   /// Test accessor: returns sent_packets_.size() under the buffer's
   /// own mutex. Used by the gtest cleanup-boundary test to verify
   /// what evicted vs what stayed. Not for production callers.
+  /// BUILD_TESTING-gated for the same reason as the helper above.
   std::size_t sent_packet_count_for_test() const;
+#endif  // BUILD_TESTING
 
 private:
   // Caller must hold config_mutex_; resolveHost mutates addresses_ and
