@@ -467,7 +467,7 @@ void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
     sent_packets_.erase(e);
 }
 
-#ifdef BUILD_TESTING
+#ifdef UDP_BRIDGE_BUILD_TESTING
 void Connection::record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp)
 {
   std::lock_guard<std::mutex> lock(sent_packets_mutex_);
@@ -487,7 +487,7 @@ std::size_t Connection::sent_packet_count_for_test() const
   std::lock_guard<std::mutex> lock(sent_packets_mutex_);
   return sent_packets_.size();
 }
-#endif  // BUILD_TESTING
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
 
 

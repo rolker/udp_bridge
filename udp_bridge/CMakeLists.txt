@@ -68,12 +68,21 @@ if(BUILD_TESTING)
   # Expose test-only helpers to the library's own compilation and to
   # the two test targets that use them. PRIVATE on the library means
   # the macro doesn't propagate to downstream consumers via
-  # target_link_libraries, so the BUILD_TESTING-gated declarations in
-  # remote_node.h / connection.h stay hidden from the installed public
-  # ABI. Each test target that uses the helpers needs its own PRIVATE
-  # define since the library's PRIVATE flag doesn't propagate to test
-  # compilations either.
-  target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_TESTING)
+  # target_link_libraries, so the UDP_BRIDGE_BUILD_TESTING-gated
+  # declarations in remote_node.h / connection.h stay hidden from the
+  # installed public ABI. Each test target that uses the helpers needs
+  # its own PRIVATE define since the library's PRIVATE flag doesn't
+  # propagate to test compilations either.
+  #
+  # The macro is package-namespaced (`UDP_BRIDGE_BUILD_TESTING`, not
+  # the generic `BUILD_TESTING`) to avoid an ODR hazard: downstream
+  # packages that define `BUILD_TESTING` for their own tests and
+  # include our installed headers would otherwise see a different
+  # `RemoteNode` / `Connection` class definition than the library was
+  # built with. The CMake variable `BUILD_TESTING` (the `if(...)`
+  # check above) is the standard CMake/ament name and stays as-is —
+  # only the C++ preprocessor symbol is package-scoped.
+  target_compile_definitions(${PROJECT_NAME} PRIVATE UDP_BRIDGE_BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
   # std_msgs is required for the QoS-matching integration test, which
@@ -105,11 +114,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_connection_rate_limit ${PROJECT_NAME})
 
   ament_add_gtest(test_remote_node_resend test/test_remote_node_resend.cpp)
-  target_compile_definitions(test_remote_node_resend PRIVATE BUILD_TESTING)
+  target_compile_definitions(test_remote_node_resend PRIVATE UDP_BRIDGE_BUILD_TESTING)
   target_link_libraries(test_remote_node_resend ${PROJECT_NAME})
 
   ament_add_gtest(test_connection_cleanup test/test_connection_cleanup.cpp)
-  target_compile_definitions(test_connection_cleanup PRIVATE BUILD_TESTING)
+  target_compile_definitions(test_connection_cleanup PRIVATE UDP_BRIDGE_BUILD_TESTING)
   target_link_libraries(test_connection_cleanup ${PROJECT_NAME})
 endif()
 

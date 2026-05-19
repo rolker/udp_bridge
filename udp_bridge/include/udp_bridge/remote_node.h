@@ -68,29 +68,33 @@ class RemoteNode
 
   udp_bridge_interfaces::msg::ResendRequest getMissingPackets();
 
-#ifdef BUILD_TESTING
+#ifdef UDP_BRIDGE_BUILD_TESTING
   // Time-injection overload used by unit tests so the gap-scan and
   // backoff logic can be exercised against a controlled clock without
   // bringing up a sim-time-driven node. Production callers should use
   // the no-arg variant above; this overload is here purely for the
   // gtest suite.
   //
-  // Gated behind BUILD_TESTING so it doesn't leak into the package's
-  // installed public ABI — CMakeLists installs `include/` and the
-  // library defines BUILD_TESTING privately only when CMake's
-  // BUILD_TESTING is on, so downstream consumers see only the no-arg
-  // variant. Both variants forward to the private
-  // `getMissingPacketsAt(rclcpp::Time)` worker so the implementation
-  // is single-sourced regardless of which entry point is built in.
+  // Gated behind UDP_BRIDGE_BUILD_TESTING so it doesn't leak into the
+  // package's installed public ABI — CMakeLists installs `include/`
+  // and defines the package-namespaced UDP_BRIDGE_BUILD_TESTING macro
+  // privately only when CMake's BUILD_TESTING variable is on, so
+  // downstream consumers see only the no-arg variant. The macro is
+  // namespaced (`UDP_BRIDGE_BUILD_TESTING` rather than the generic
+  // `BUILD_TESTING`) to avoid an ODR hazard with downstream packages
+  // that define `BUILD_TESTING` for their own tests. Both variants
+  // forward to the private `getMissingPacketsAt(rclcpp::Time)` worker
+  // so the implementation is single-sourced regardless of which entry
+  // point is built in.
   udp_bridge_interfaces::msg::ResendRequest getMissingPackets(rclcpp::Time now);
 
   // Test helper: record a received packet at a caller-supplied time
   // without going through unwrap(). Used by the gtest suite to seed
   // received_packet_times_ at known times for the debounce / backoff /
-  // give-up scenarios. BUILD_TESTING-gated for the same reason as the
+  // give-up scenarios. UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the
   // overload above.
   void recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time);
-#endif  // BUILD_TESTING
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
   // Count of missing-packet resends this RemoteNode has given up on
   // because the sender's TTL expired before the packet arrived. Read
@@ -114,9 +118,9 @@ private:
   void recordPacketArrival(uint64_t packet_number, rclcpp::Time time);
 
   // Worker for both public `getMissingPackets()` entry points (the
-  // no-arg production variant and the BUILD_TESTING-gated time-
+  // no-arg production variant and the UDP_BRIDGE_BUILD_TESTING-gated time-
   // injection overload). Always present in the library, even when
-  // BUILD_TESTING is unset — keeping it private means downstream
+  // UDP_BRIDGE_BUILD_TESTING is unset — keeping it private means downstream
   // consumers can't reach it through the installed header. The
   // zero-time guard lives here as the single source of truth so both
   // public wrappers stay trivial pass-throughs.

@@ -8,10 +8,14 @@
 //   - ~22% resend overhead on both WiFi and VPN
 //   - 126% rx_duplicate on VPN (multiple copies of the same data)
 //
-// The four cases below cover the failure modes that produced those
-// numbers; passing them does not prove the fix works in the field,
-// but a regression in any of them would reproduce a piece of the
-// 2026-04-21 shape.
+// The eight cases below cover the failure modes that produced those
+// numbers plus the regression cases that emerged during the review
+// rounds for PR #13 (recovered-packet false-give-up, give-up re-arm
+// via operator[] default-construct, remote-restart state clear,
+// burst-loss debounce anchoring). Passing them does not prove the
+// fix works in the field, but a regression in any of them would
+// reproduce a piece of the 2026-04-21 shape or one of the failure
+// modes the review surfaced.
 //
 // Time arithmetic uses RCL_ROS_TIME so the rclcpp::Time we construct
 // matches the clock RemoteNode itself would observe under sim time.

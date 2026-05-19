@@ -249,13 +249,13 @@ uint32_t RemoteNode::resendGiveupCount() const
   return resend_giveup_count_;
 }
 
-#ifdef BUILD_TESTING
+#ifdef UDP_BRIDGE_BUILD_TESTING
 void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time)
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   recordPacketArrival(packet_number, time);
 }
-#endif  // BUILD_TESTING
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
 void RemoteNode::recordPacketArrival(uint64_t packet_number, rclcpp::Time time)
 {
@@ -277,12 +277,12 @@ ResendRequest RemoteNode::getMissingPackets()
   return getMissingPacketsAt(clock_->now());
 }
 
-#ifdef BUILD_TESTING
+#ifdef UDP_BRIDGE_BUILD_TESTING
 ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
 {
   return getMissingPacketsAt(now);
 }
-#endif  // BUILD_TESTING
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
 ResendRequest RemoteNode::getMissingPacketsAt(rclcpp::Time now)
 {
@@ -290,7 +290,7 @@ ResendRequest RemoteNode::getMissingPacketsAt(rclcpp::Time now)
   // rclcpp::Time would make `now - rclcpp::Duration(kSentPacketTTL)`
   // construct a negative time, which rclcpp::Time throws on. Lives in
   // the shared worker so both public entry points (the production
-  // no-arg variant and the BUILD_TESTING-gated time-injection
+  // no-arg variant and the UDP_BRIDGE_BUILD_TESTING-gated time-injection
   // overload) get the same safety contract from a single source.
   if(now.nanoseconds() == 0)
     return {};
