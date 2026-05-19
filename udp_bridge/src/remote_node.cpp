@@ -5,6 +5,8 @@
 #include "udp_bridge/utilities.h"
 #include "rmw/qos_profiles.h"
 
+#include <cassert>
+
 namespace udp_bridge
 {
 
@@ -150,7 +152,18 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
       c = newConnection(packet->connection_id, source_info.host, source_info.port);
     auto now = clock_->now();
     if(!duplicate)
+    {
       received_packet_times_[packet->packet_number] = now;
+      // Clear any pending resend tracking for this packet — it
+      // arrived, so it's no longer missing. Without this erase, the
+      // give-up sweep in getMissingPackets() would later iterate the
+      // lingering entry and falsely treat the arrived packet as
+      // abandoned, inflating resend_giveup_count_ for packets that
+      // actually came through. given_up_packet_numbers_ is left alone:
+      // if we already gave up and the packet arrived late, the give-up
+      // was wasted but unwinding the counter is wrong.
+      resend_state_.erase(packet->packet_number);
+    }
   }
 
   // update_last_receive_time uses Connection's own mutex; safe to call
@@ -191,17 +204,19 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
   for(auto e: expired)
     received_packet_times_.erase(e);
 
-  expired.clear();
-  for(auto rs: resend_state_)
-    if(rs.second.first_request_time < time)
-      expired.push_back(rs.first);
-  for(auto e: expired)
-    resend_state_.erase(e);
+  // Eviction of resend_state_ entries by first_request_time used to
+  // live here too, but the give-up sweep at the top of
+  // getMissingPackets() already removes every entry whose
+  // first_request_time < (now - kSentPacketTTL), which equals the
+  // `time` cutoff passed by getMissingPackets()
+  // (kReceiveHistoryWindow == kSentPacketTTL). The previous sweep was
+  // dead code — pinning the invariant via the give-up pass alone is
+  // simpler and matches the intent.
 
   // Prune given-up packet numbers that have fallen out of the
   // gap-scan range. The gap-scan walks [received_packet_times_.begin()
-  // + 1, rbegin()), so any given-up packet number strictly less than
-  // begin()->first can never be re-flagged as missing — drop it. If
+  // + 1, rbegin()), so any given-up packet number <= begin()->first
+  // can never be re-flagged as missing — drop it. If
   // received_packet_times_ is empty after the eviction above, no
   // future gap-scan in this call's lifetime can re-flag anything, so
   // clear the whole set.
@@ -211,9 +226,6 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
   }
   else
   {
-    // <= rather than <: the gap-scan walks [begin()+1, rbegin()-1),
-    // so an entry equal to begin_packet is also out of the scan
-    // range and safe to evict (one less entry held in memory).
     auto begin_packet = received_packet_times_.begin()->first;
     auto it = given_up_packet_numbers_.begin();
     while(it != given_up_packet_numbers_.end() && *it <= begin_packet)
@@ -231,6 +243,12 @@ void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp:
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   received_packet_times_[packet_number] = time;
+  // Mirror unwrap()'s on-arrival behavior: a packet that arrives is
+  // no longer missing, so any pending resend tracking is cleared.
+  // Required for tests that exercise the recovery path (a packet
+  // requested then arrives) — without this, the give-up sweep would
+  // false-fire on the lingering resend_state_ entry.
+  resend_state_.erase(packet_number);
 }
 
 ResendRequest RemoteNode::getMissingPackets()
@@ -244,7 +262,7 @@ ResendRequest RemoteNode::getMissingPackets()
 ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-  auto giveup_cutoff = now - rclcpp::Duration::from_seconds(seconds(kSentPacketTTL));
+  auto giveup_cutoff = now - rclcpp::Duration(kSentPacketTTL);
 
   // Pass 1: give-up sweep. Process resend_state_ entries whose
   // first_request_time has aged past kSentPacketTTL BEFORE running
@@ -257,25 +275,30 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
   // operator[]-default-construct on the resend_state_ map.
   std::vector<uint64_t> giveup_now;
   for(auto& kv: resend_state_)
-    if(kv.second.attempts > 0 && kv.second.first_request_time < giveup_cutoff)
+    if(kv.second.first_request_time < giveup_cutoff)
       giveup_now.push_back(kv.first);
   for(auto m: giveup_now)
   {
     auto& s = resend_state_[m];
+    // Invariant: every resend_state_ entry is created with attempts=1
+    // in the backoff loop below; nothing decrements. A zero-attempts
+    // entry would mean the invariant has broken upstream (e.g., a
+    // future direct map insert). Loud failure beats silent skip.
+    assert(s.attempts > 0);
     RCLCPP_WARN_STREAM(logger_,
       "Giving up on resend of packet " << m << " from remote '"
       << name_ << "' after " << s.attempts
       << " attempts (first requested "
       << (now - s.first_request_time).seconds()
-      << " s ago, sender TTL is " << seconds(kSentPacketTTL) << " s)");
+      << " s ago, sender TTL is " << kSentPacketTTL.count() << " s)");
     resend_state_.erase(m);
     given_up_packet_numbers_.insert(m);
     ++resend_giveup_count_;
   }
 
-  auto too_old = now - rclcpp::Duration::from_seconds(seconds(kReceiveHistoryWindow));
+  auto too_old = now - rclcpp::Duration(kReceiveHistoryWindow);
   clearReceivedPacketTimesBefore(too_old);  // re-enters mutex (recursive)
-  auto debounce_cutoff = now - rclcpp::Duration::from_seconds(seconds(kResendDebounceHold));
+  auto debounce_cutoff = now - rclcpp::Duration(kResendDebounceHold);
 
   // Walk packet numbers in [first+1, last-1] of the known-received range
   // and flag gaps as missing. Each gap is debounced against the receive
@@ -347,9 +370,9 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
     uint32_t shift = state.attempts - 1;
     if(shift > kMaxBackoffShift)
       shift = kMaxBackoffShift;
-    double cooldown = seconds(kResendBackoffBase) * (1u << shift);
-    if(cooldown > seconds(kResendBackoffCap))
-      cooldown = seconds(kResendBackoffCap);
+    double cooldown = kResendBackoffBase.count() * (1u << shift);
+    if(cooldown > kResendBackoffCap.count())
+      cooldown = kResendBackoffCap.count();
     if((now - state.last_request_time).seconds() >= cooldown)
     {
       rr.missing_packets.push_back(m);

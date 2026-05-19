@@ -79,12 +79,10 @@ inline constexpr std::chrono::duration<double> kResendBackoffCap{1.600};
 // the cooldown to kResendBackoffCap — observable behavior is unchanged.
 inline constexpr uint32_t kMaxBackoffShift = 7;
 
-// Convenience: convert a constants entry to rclcpp::Duration via
-// from_seconds() at call sites that need it.
-inline double seconds(std::chrono::duration<double> d)
-{
-  return d.count();
-}
+// To convert a constant to seconds-as-double at a call site, use
+// `kFoo.count()`. To build an rclcpp::Duration, pass the constant
+// directly to rclcpp::Duration's chrono::duration constructor:
+//   auto cutoff = now - rclcpp::Duration(kSentPacketTTL);
 
 }  // namespace udp_bridge
 

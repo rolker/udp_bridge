@@ -26,8 +26,6 @@
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
 
-using udp_bridge::seconds;
-
 namespace
 {
 
@@ -116,7 +114,7 @@ TEST_F(ResendFixture, BackoffScheduleFollowsExponentialThenCap)
 
   // Drive ticks at fine granularity and collect every moment the gap
   // is requested.
-  for(double t = 0.300; t < 0.300 + seconds(udp_bridge::kSentPacketTTL); t += 0.010)
+  for(double t = 0.300; t < 0.300 + udp_bridge::kSentPacketTTL.count(); t += 0.010)
   {
     auto rr = remote_->getMissingPackets(t_at(t));
     if(!rr.missing_packets.empty() && rr.missing_packets[0] == 2u)
@@ -136,8 +134,8 @@ TEST_F(ResendFixture, BackoffScheduleFollowsExponentialThenCap)
   // is at least the configured cooldown; the at-least direction is
   // what the algorithm guarantees.
   const double tick = 0.010;
-  const double base = seconds(udp_bridge::kResendBackoffBase);
-  const double cap = seconds(udp_bridge::kResendBackoffCap);
+  const double base = udp_bridge::kResendBackoffBase.count();
+  const double cap = udp_bridge::kResendBackoffCap.count();
   EXPECT_GE(intervals[0], base - 1e-9)
     << "First inter-request interval should be >= base (" << base << "s)";
   EXPECT_LT(intervals[0], base + 2 * tick)
@@ -169,7 +167,7 @@ TEST_F(ResendFixture, TtlGiveUpStopsRequestingAndIncrementsCounter)
   // moment.
   uint32_t giveups_before = remote_->resendGiveupCount();
   const double first_request_time = 0.300;
-  const double final_time = first_request_time + seconds(udp_bridge::kSentPacketTTL) + 1.0;
+  const double final_time = first_request_time + udp_bridge::kSentPacketTTL.count() + 1.0;
 
   bool ever_requested = false;
   for(double t = first_request_time; t < final_time; t += 0.050)
@@ -224,7 +222,7 @@ TEST_F(ResendFixture, GiveUpIsNotReArmedByOngoingArrivals)
   // 2.5 TTL windows is enough that the bug, if present, would
   // produce 2-3 give-up cycles instead of one.
   const double start_t = 0.300;
-  const double end_t = start_t + 2.5 * udp_bridge::seconds(udp_bridge::kSentPacketTTL);
+  const double end_t = start_t + 2.5 * udp_bridge::kSentPacketTTL.count();
   uint64_t next_pn = 4;
   for(double t = start_t; t < end_t; t += 0.050)
   {
@@ -245,6 +243,51 @@ TEST_F(ResendFixture, GiveUpIsNotReArmedByOngoingArrivals)
        "resend_state_[m] access is re-creating a fresh entry after "
        "the give-up sweep erased it, re-arming a full TTL window of "
        "attempts.";
+}
+
+// Case 6 (regression for C1 from the 2026-05-19 Copilot review): if
+// a previously-requested resend ARRIVES, the give-up sweep must NOT
+// later treat that packet as abandoned. Without the
+// `resend_state_.erase(packet_number)` in unwrap()'s on-arrival path,
+// the lingering resend_state_ entry sits there until its
+// first_request_time crosses giveup_cutoff, at which point the
+// give-up sweep would fire its WARN log and bump
+// resend_giveup_count_ for a packet that actually arrived.
+TEST_F(ResendFixture, RecoveredPacketDoesNotTriggerGiveUp)
+{
+  // Seed: packets 1, 3 around t=0 — gap at 2.
+  remote_->recordReceivedPacketTimeForTest(1, t_at(0.000));
+  remote_->recordReceivedPacketTimeForTest(3, t_at(0.200));
+
+  // Drive a tick past the debounce hold so the receiver flags 2 as
+  // missing and sets first_request_time[2] = ~0.300.
+  auto rr = remote_->getMissingPackets(t_at(0.300));
+  ASSERT_EQ(rr.missing_packets.size(), 1u);
+  ASSERT_EQ(rr.missing_packets[0], 2u);
+
+  // Packet 2 arrives at t=0.500 (resend succeeded, or originally
+  // lost packet finally got delivered). This is the production
+  // recovery path that the C1 fix protects.
+  remote_->recordReceivedPacketTimeForTest(2, t_at(0.500));
+
+  // Drive ticks past kSentPacketTTL. Without the C1 fix, the
+  // give-up sweep at t > first_request_time + kSentPacketTTL would
+  // process the lingering resend_state_[2] entry, bump the counter,
+  // and emit a misleading WARN log. With the fix, unwrap() erased
+  // resend_state_[2] when packet 2 arrived, so the sweep finds
+  // nothing to give up on.
+  uint32_t giveups_before = remote_->resendGiveupCount();
+  const double start_t = 0.600;
+  const double end_t = start_t + udp_bridge::kSentPacketTTL.count() + 1.0;
+  for(double t = start_t; t < end_t; t += 0.100)
+    remote_->getMissingPackets(t_at(t));
+
+  EXPECT_EQ(remote_->resendGiveupCount(), giveups_before)
+    << "Counter incremented for a packet that arrived. The "
+       "resend_state_ entry for the arrived packet was not erased "
+       "in unwrap()'s on-arrival branch — the give-up sweep is now "
+       "firing for recovered packets, inflating "
+       "Remote.resend_giveup_count in production.";
 }
 
 int main(int argc, char** argv)

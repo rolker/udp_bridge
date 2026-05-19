@@ -102,13 +102,17 @@ public:
   /// Test helper: inject a sent-packet entry at a caller-supplied
   /// timestamp without going through the send() path. Used by the
   /// gtest suite to seed sent_packets_ for cleanup-boundary tests.
-  /// Not part of any production code path.
-  void recordSentPacketForTest(uint64_t packet_number, rclcpp::Time timestamp);
+  /// Not part of any production code path. Only `packet_number` and
+  /// `timestamp` are populated — the WrappedPacket's byte vector and
+  /// other fields are default-constructed. Not safe for tests that
+  /// exercise `resend_packets` on the seeded data (those would send
+  /// empty byte payloads).
+  void record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp);
 
   /// Test accessor: returns sent_packets_.size() under the buffer's
   /// own mutex. Used by the gtest cleanup-boundary test to verify
   /// what evicted vs what stayed. Not for production callers.
-  std::size_t sentPacketCountForTest() const;
+  std::size_t sent_packet_count_for_test() const;
 
 private:
   // Caller must hold config_mutex_; resolveHost mutates addresses_ and

@@ -429,7 +429,7 @@ void UDPBridge::spin_once()
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
   }
-  auto cleanup_cutoff = get_clock()->now() - rclcpp::Duration::from_seconds(seconds(kReceiveHistoryWindow));
+  auto cleanup_cutoff = get_clock()->now() - rclcpp::Duration(kReceiveHistoryWindow);
   for(auto& remote: remotes)
   {
     if(remote.second)
@@ -1089,7 +1089,7 @@ void UDPBridge::cleanupSentPackets()
   auto now = get_clock()->now();
   if(now.nanoseconds() == 0)
     return;
-  auto old_enough = now - rclcpp::Duration::from_seconds(seconds(kSentPacketTTL));
+  auto old_enough = now - rclcpp::Duration(kSentPacketTTL);
 
   // Snapshot connections under the lock; cleanup_sent_packets takes its own
   // per-Connection mutex.

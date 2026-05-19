@@ -48,33 +48,33 @@ TEST(ConnectionCleanup, BoundaryEvictionIsStrictLessThan)
   udp_bridge::Connection conn("test-cleanup", "127.0.0.1", 9999, "", 0);
 
   // Three packets at distinct times around an arbitrary anchor T = 5s.
-  conn.recordSentPacketForTest(1, t_at(4.999));  // before cutoff
-  conn.recordSentPacketForTest(2, t_at(5.000));  // exactly at cutoff
-  conn.recordSentPacketForTest(3, t_at(5.001));  // after cutoff
-  ASSERT_EQ(conn.sentPacketCountForTest(), 3u);
+  conn.record_sent_packet_for_test(1, t_at(4.999));  // before cutoff
+  conn.record_sent_packet_for_test(2, t_at(5.000));  // exactly at cutoff
+  conn.record_sent_packet_for_test(3, t_at(5.001));  // after cutoff
+  ASSERT_EQ(conn.sent_packet_count_for_test(), 3u);
 
   // Eviction cutoff of T = 5s. Packet 1 (timestamp=4.999) is < cutoff
   // and must be evicted; packet 2 (timestamp=5.000) is == cutoff and
   // must be retained (strict <); packet 3 (5.001) > cutoff retained.
   conn.cleanup_sent_packets(t_at(5.000));
-  EXPECT_EQ(conn.sentPacketCountForTest(), 2u)
+  EXPECT_EQ(conn.sent_packet_count_for_test(), 2u)
     << "Packet at timestamp == cutoff should be retained "
        "(strict-less-than comparison)";
 
   // Idempotent: re-running cleanup at the same cutoff changes nothing.
   conn.cleanup_sent_packets(t_at(5.000));
-  EXPECT_EQ(conn.sentPacketCountForTest(), 2u);
+  EXPECT_EQ(conn.sent_packet_count_for_test(), 2u);
 
   // Advance cutoff to t=5.001. Packet 2 (timestamp=5.000) is now <
   // cutoff and must be evicted; packet 3 (timestamp=5.001) is still
   // == cutoff and must be retained.
   conn.cleanup_sent_packets(t_at(5.001));
-  EXPECT_EQ(conn.sentPacketCountForTest(), 1u);
+  EXPECT_EQ(conn.sent_packet_count_for_test(), 1u);
 
   // Advance cutoff to t=5.002. Packet 3 (timestamp=5.001) is now <
   // cutoff and must be evicted. Buffer is empty.
   conn.cleanup_sent_packets(t_at(5.002));
-  EXPECT_EQ(conn.sentPacketCountForTest(), 0u);
+  EXPECT_EQ(conn.sent_packet_count_for_test(), 0u);
 }
 
 // Sanity: a no-op cleanup when the buffer is empty should succeed
