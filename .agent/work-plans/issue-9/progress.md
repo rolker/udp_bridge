@@ -94,3 +94,20 @@ re-locate before editing:
 - [ ] (suggestion) Document lock-ordering invariant on `RemoteNode::state_mutex_` — `remote_node.h:116-122`. Deferred.
 - [x] (suggestion) Document `resend_giveup_count` cumulative semantics (survives remote restart) — `Remote.msg:28`. **→ commit 8c9b21d** added the cumulative-semantics note alongside the new given_up tracking comment in `remote_node.h`. (Remote.msg's existing field comment already says "Cumulative per remote since the receiver started.")
 - [ ] (suggestion) Rename `seconds()` to `to_seconds()` to avoid ADL collisions — `resend_constants.h:76`. Deferred.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-19 00:45
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 — 2 Copilot review(s) (stale @ `7a1a8fa` + fresh @ `49ca9a1`), 11 inline comments, 11 valid, 0 false positives
+**CI**: all-pass (4 checks)
+
+### Actions
+- [ ] **C1 (false give-up on recovered packets)** — When a previously-requested resend arrives, `unwrap()` adds it to `received_packet_times_` but does NOT clear `resend_state_[packet_number]`. After kSentPacketTTL, the give-up sweep iterates the lingering entry, fires the WARN log, bumps `resend_giveup_count_`, and inserts into `given_up_packet_numbers_` — for a packet that arrived successfully. Corrupts the operational visibility signal this PR introduces. Fix: in `unwrap()` after the duplicate check, `resend_state_.erase(packet->packet_number)`. Don't touch `given_up_packet_numbers_` (if we already gave up and the packet arrived late anyway, the give-up was wasted but unwinding the counter is wrong).
+- [ ] **C2 (regression test for C1)** — Add `RecoveredPacketDoesNotTriggerGiveUp`: seed {1, 3}, drive a tick to detect gap at 2, inject 2 via `recordReceivedPacketTimeForTest`, drive past `kSentPacketTTL`, assert `resendGiveupCount() == 0`.
+- [ ] **F1 (dead sweep)** — Drop the redundant `resend_state_` sweep in `clearReceivedPacketTimesBefore`, OR replace with a no-op + comment. Pass 1 (give-up sweep) handles the same predicate already.
+- [ ] **F2 (camelCase naming)** — Rename `recordSentPacketForTest`, `sentPacketCountForTest`, `recordReceivedPacketTimeForTest`, and the `getMissingPackets(Time)` overload's locals/methods to snake_case to match the surrounding `Connection` / `RemoteNode` API.
+- [ ] **F3 + S5 (`seconds()` helper + Duration round-trip)** — `rclcpp::Duration` has a `std::chrono::duration` constructor, so `rclcpp::Duration(kReceiveHistoryWindow)` works at all four callers (`udp_bridge.cpp:432`, `:1092`, `remote_node.cpp:244, 273, 275`). If all callers migrate, the `seconds()` helper becomes unused — delete it, sidestepping F3's ADL concern entirely.
+- [ ] **F4 (`attempts > 0` redundant)** — Convert to `assert(kv.second.attempts > 0)` so a future invariant violation is loud.
+- [ ] **F5 (`recordSentPacketForTest` empty packet vector)** — Add a comment in the helper noting only `packet_number` + `timestamp` are set; the byte vector is intentionally empty.
