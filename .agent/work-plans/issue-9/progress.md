@@ -200,3 +200,20 @@ re-locate before editing:
 - R6 #1: real portability bug, trivial fix
 - R6 #2: self-inflicted in the R5 reword — Copilot caught my inverted math within 22 min
 - R6 #3: weaker test coverage than the test name implies; my Case 5 doesn't actually exercise the guard it claims to. This is the highest-value R6 finding
+
+## External Review (R7 follow-up)
+**Status**: complete
+**When**: 2026-05-19 14:55
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 at `65eb948` — Copilot R7 fired ~12 min after the R6 follow-up push; 4 inline comments, 4 valid, 0 false positives
+**CI**: all-pass (4 checks at `65eb948`)
+
+### Actions
+- [ ] (fix) Rename `BUILD_TESTING` → `UDP_BRIDGE_BUILD_TESTING` across `remote_node.h`, `remote_node.cpp`, `connection.h`, `connection.cpp`, and the 3 `target_compile_definitions` lines in `CMakeLists.txt` (R7 #1–#3). The R5 fix used a generic macro name; downstream packages that define `BUILD_TESTING` for their own tests would see a different class definition than the library was built with — real ODR hazard. The CMake variable `BUILD_TESTING` (the `if(BUILD_TESTING)` check) stays unchanged; only the C++ macro renames.
+- [ ] (fix) Update "The four cases below" comment in `test_remote_node_resend.cpp:11` to reflect the actual 8 cases now in the file (R7 #4)
+
+### Classification breakdown
+- R7 #1–#3 are the same finding triplicated across the three files that use the macro. Real ODR hazard introduced by my R5 fix — `BUILD_TESTING` is a CMake/ament-standard name commonly defined by downstream packages.
+- R7 #4 is trivial stale-doc.
+- The pattern of "Copilot catches self-inflicted issues from prior rounds" continues — R5 introduced the ODR hazard, R7 caught it.
