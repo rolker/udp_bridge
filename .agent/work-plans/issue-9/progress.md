@@ -166,3 +166,19 @@ re-locate before editing:
 ### Classification breakdown
 - Both R4 findings are doc-staleness from the C1/F1 fix landed in `ff32f58` (the `clearReceivedPacketTimesBefore` sweep removal and the field rename from `resend_request_times_` to `resend_state_` + `given_up_packet_numbers_`).
 - No new algorithmic or code-correctness findings — the local-review fixes (overload guard + 2 new test cases + cosmetic hygiene) didn't introduce new issues.
+
+## External Review (R5 follow-up)
+**Status**: complete
+**When**: 2026-05-19 14:10
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 at `67594ab` — Copilot R5 fired after the R4 doc-refresh push; 4 inline comments, 4 valid, 0 false positives
+**CI**: all-pass (4 checks at `67594ab`)
+
+### Actions
+- [ ] (fix) Reword `clearReceivedPacketTimesBefore` and give-up-sweep comments to drop the over-claim that `kReceiveHistoryWindow == kSentPacketTTL` is enforced by static_assert — `remote_node.cpp:199-201, 276`. The static_assert only enforces `<=`; the two are equal today by default but narrowing is allowed.
+- [ ] (fix) Gate the 4 test-only helpers behind `#ifdef BUILD_TESTING` so they don't leak into the installed public ABI — `getMissingPackets(rclcpp::Time)` + `recordReceivedPacketTimeForTest` in `remote_node.h`, `record_sent_packet_for_test` + `sent_packet_count_for_test` in `connection.h` (plus matching `.cpp` definitions). CMakeLists.txt:63 installs `include/` so these are currently public.
+
+### Classification breakdown
+- R5 #1+#2 are doc-staleness in pre-existing (not session-introduced) comments — the over-claim was present before today's work and only surfaced when R5 re-read the area after the R4 doc-refresh.
+- R5 #3+#4 are a real API-surface concern. Test-only helpers were added in earlier commits (test_remote_node_resend + ff32f58); R5 is the first round to flag the installed-header exposure. `#ifdef BUILD_TESTING` is the lightest-touch fix and matches the pattern CMakeLists already uses to gate test registration.
