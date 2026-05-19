@@ -108,11 +108,11 @@ private:
   std::string local_name_;
 
   // Guards all mutable state below: connections_, received_packet_times_,
-  // resend_request_times_, next_packet_number_, last_packet_time_. Under
-  // MultiThreadedExecutor, public methods on RemoteNode are reachable from
-  // multiple callback groups (socket-drain via decode/unwrap; periodic via
-  // bridge_info / stats / diagnostic timers; service handlers in periodic
-  // group).
+  // resend_state_, given_up_packet_numbers_, resend_giveup_count_,
+  // next_packet_number_, last_packet_time_. Under MultiThreadedExecutor,
+  // public methods on RemoteNode are reachable from multiple callback
+  // groups (socket-drain via decode/unwrap; periodic via bridge_info /
+  // stats / diagnostic timers; service handlers in periodic group).
   //
   // recursive_mutex chosen because some public methods call each other —
   // update(BridgeInfo) calls connection() and newConnection(); unwrap()
@@ -138,10 +138,18 @@ private:
   // Per-missing-packet state used by getMissingPackets to apply
   // exponential backoff and the TTL-bounded give-up condition (issue
   // #9 failure modes B and the give-up gap). Entries are created when
-  // a packet is first observed missing; cleared by
-  // clearReceivedPacketTimesBefore when first_request_time falls
-  // outside kReceiveHistoryWindow OR by update(BridgeInfo) on remote
-  // restart.
+  // a packet is first observed missing and cleared by one of three
+  // paths:
+  //   (1) the give-up sweep at the top of getMissingPackets when
+  //       first_request_time ages past kSentPacketTTL (entry moves into
+  //       given_up_packet_numbers_ and bumps resend_giveup_count_),
+  //   (2) recordPacketArrival when the previously-missing packet
+  //       actually arrives (prevents the give-up sweep from later
+  //       firing on a lingering entry for a recovered packet — see
+  //       Case 6 in test_remote_node_resend.cpp), or
+  //   (3) update(BridgeInfo) on remote-restart detection, which clears
+  //       the whole map alongside received_packet_times_ and
+  //       given_up_packet_numbers_.
   struct ResendState
   {
     rclcpp::Time first_request_time;
