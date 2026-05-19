@@ -211,9 +211,12 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
   }
   else
   {
+    // <= rather than <: the gap-scan walks [begin()+1, rbegin()-1),
+    // so an entry equal to begin_packet is also out of the scan
+    // range and safe to evict (one less entry held in memory).
     auto begin_packet = received_packet_times_.begin()->first;
     auto it = given_up_packet_numbers_.begin();
-    while(it != given_up_packet_numbers_.end() && *it < begin_packet)
+    while(it != given_up_packet_numbers_.end() && *it <= begin_packet)
       it = given_up_packet_numbers_.erase(it);
   }
 }
@@ -321,6 +324,8 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
     // already evicted. The given_up set is pruned by
     // clearReceivedPacketTimesBefore once the packet number falls
     // out of the gap-scan range.
+    // count() rather than C++20 contains() — udp_bridge's CMakeLists
+    // sets CXX_STANDARD 17.
     if(given_up_packet_numbers_.count(m))
       continue;
     auto& state = resend_state_[m];
@@ -334,13 +339,14 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
     }
     // Clamp the shift so a stuck packet that somehow climbs past the
     // attempts a normal kSentPacketTTL window admits (~6) cannot hit
-    // undefined behavior. 1u << 7 = 128, so 8 attempts is well above
-    // any realistic value once the cap clause below applies; clamping
-    // at the shift means a runaway attempts counter just pegs at
-    // kResendBackoffCap, which is the desired behavior anyway.
+    // undefined behavior at the shift expression. The bound
+    // (kMaxBackoffShift) is chosen so the shifted value is already
+    // strictly greater than kResendBackoffCap; the cap clause below
+    // then pins the cooldown to the cap, so observable behavior is
+    // unchanged — the clamp purely guards the shift's well-definedness.
     uint32_t shift = state.attempts - 1;
-    if(shift > 7)
-      shift = 7;
+    if(shift > kMaxBackoffShift)
+      shift = kMaxBackoffShift;
     double cooldown = seconds(kResendBackoffBase) * (1u << shift);
     if(cooldown > seconds(kResendBackoffCap))
       cooldown = seconds(kResendBackoffCap);

@@ -69,6 +69,16 @@ inline constexpr std::chrono::duration<double> kResendBackoffBase{0.200};
 // (1-2 s), and gives ~6 attempts in the kSentPacketTTL window.
 inline constexpr std::chrono::duration<double> kResendBackoffCap{1.600};
 
+// Defensive clamp on the shift used to compute the per-packet
+// cooldown: cooldown = kResendBackoffBase * (1u << shift), with
+// shift = min(attempts - 1, kMaxBackoffShift). Bounds the shift
+// expression so it can't reach UB at attempts >= 33. The chosen
+// value is the smallest shift that already produces a cooldown
+// strictly greater than kResendBackoffCap (0.2 * 2^7 = 25.6s >> cap),
+// so the clamp only kicks in when the cap clause would already pin
+// the cooldown to kResendBackoffCap — observable behavior is unchanged.
+inline constexpr uint32_t kMaxBackoffShift = 7;
+
 // Convenience: convert a constants entry to rclcpp::Duration via
 // from_seconds() at call sites that need it.
 inline double seconds(std::chrono::duration<double> d)

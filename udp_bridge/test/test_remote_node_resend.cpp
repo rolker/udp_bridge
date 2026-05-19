@@ -221,8 +221,12 @@ TEST_F(ResendFixture, GiveUpIsNotReArmedByOngoingArrivals)
   // After the first give-up (one increment of resendGiveupCount()),
   // the counter must NOT keep climbing — the receiver must remember
   // it gave up on packet 2.
+  // 2.5 TTL windows is enough that the bug, if present, would
+  // produce 2-3 give-up cycles instead of one.
+  const double start_t = 0.300;
+  const double end_t = start_t + 2.5 * udp_bridge::seconds(udp_bridge::kSentPacketTTL);
   uint64_t next_pn = 4;
-  for(double t = 0.300; t < 0.300 + 2.5 * udp_bridge::seconds(udp_bridge::kSentPacketTTL); t += 0.050)
+  for(double t = start_t; t < end_t; t += 0.050)
   {
     // Inject a new neighbor at packet number above 3, so gap 2 stays
     // bounded on both sides (1 below, the new arrival above).
