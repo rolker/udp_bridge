@@ -182,3 +182,21 @@ re-locate before editing:
 ### Classification breakdown
 - R5 #1+#2 are doc-staleness in pre-existing (not session-introduced) comments — the over-claim was present before today's work and only surfaced when R5 re-read the area after the R4 doc-refresh.
 - R5 #3+#4 are a real API-surface concern. Test-only helpers were added in earlier commits (test_remote_node_resend + ff32f58); R5 is the first round to flag the installed-header exposure. `#ifdef BUILD_TESTING` is the lightest-touch fix and matches the pattern CMakeLists already uses to gate test registration.
+
+## External Review (R6 follow-up)
+**Status**: complete
+**When**: 2026-05-19 14:30
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 at `ce19363` — Copilot R6 fired ~22 min after the R5 follow-up push; 3 inline comments, 3 valid, 0 false positives
+**CI**: all-pass (4 checks at `ce19363`)
+
+### Actions
+- [ ] (fix) Add `#include <cstdint>` to `resend_constants.h` (R6 #1) — `uint32_t kMaxBackoffShift` declared without the header; compiles today via transitive include from `<chrono>` but breaks downstream consumers that include `resend_constants.h` first
+- [ ] (fix) Rewrite the over-eager R5 doc reword in `remote_node.cpp:196-208`: the inequality is inverted. With `kReceiveHistoryWindow <= kSentPacketTTL`, `giveup_cutoff <= time`, so the give-up sweep evicts a *subset* (not a superset) of what the old eviction sweep would have. Under narrowing, this allows bounded orphaned resend_state_ entries — acceptable but the reasoning needs to be honest (R6 #2)
+- [ ] (fix) Restructure `GiveUpIsNotReArmedByOngoingArrivals` to re-inject packet 1 at each tick so it stays in receive history past give-up; current test passes whether the `given_up_packet_numbers_` guard exists or not because packet 1 ages out and packet 2 falls outside the gap-scan range (R6 #3) — the most substantive R6 finding
+
+### Classification breakdown
+- R6 #1: real portability bug, trivial fix
+- R6 #2: self-inflicted in the R5 reword — Copilot caught my inverted math within 22 min
+- R6 #3: weaker test coverage than the test name implies; my Case 5 doesn't actually exercise the guard it claims to. This is the highest-value R6 finding
