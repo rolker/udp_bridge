@@ -467,6 +467,28 @@ void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
     sent_packets_.erase(e);
 }
 
+#ifdef UDP_BRIDGE_BUILD_TESTING
+void Connection::record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp)
+{
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+  // Only packet_number and timestamp are set; the WrappedPacket's
+  // byte vector and SequencedPacketHeader fields are
+  // default-constructed. Adequate for cleanup-boundary tests that
+  // only check sent_packets_.size(); not safe for tests that
+  // exercise resend_packets() on the seeded data.
+  WrappedPacket wp;
+  wp.packet_number = packet_number;
+  wp.timestamp = timestamp;
+  sent_packets_[packet_number] = wp;
+}
+
+std::size_t Connection::sent_packet_count_for_test() const
+{
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+  return sent_packets_.size();
+}
+#endif  // UDP_BRIDGE_BUILD_TESTING
+
 
 
 std::string addressToDotted(const sockaddr_in& address)

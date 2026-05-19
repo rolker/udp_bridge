@@ -55,6 +55,7 @@
 #include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge_interfaces/msg/resend_request.hpp"
 #include "udp_bridge/remote_node.h"
+#include "udp_bridge/resend_constants.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/utilities.h"
 #include "lifecycle_msgs/msg/state.hpp"
@@ -428,7 +429,7 @@ void UDPBridge::spin_once()
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
   }
-  auto cleanup_cutoff = get_clock()->now() - rclcpp::Duration::from_seconds(5);
+  auto cleanup_cutoff = get_clock()->now() - rclcpp::Duration(kReceiveHistoryWindow);
   for(auto& remote: remotes)
   {
     if(remote.second)
@@ -1088,7 +1089,7 @@ void UDPBridge::cleanupSentPackets()
   auto now = get_clock()->now();
   if(now.nanoseconds() == 0)
     return;
-  auto old_enough = now - rclcpp::Duration::from_seconds(3.0);
+  auto old_enough = now - rclcpp::Duration(kSentPacketTTL);
 
   // Snapshot connections under the lock; cleanup_sent_packets takes its own
   // per-Connection mutex.
@@ -1266,6 +1267,11 @@ void UDPBridge::sendBridgeInfo()
         udp_bridge::Remote remote;
         remote.name = remote_node.first;
         remote.topic_name = remote_node.second->topicName();
+        // Per-remote give-up counter (issue #9). Lock-friendly with
+        // the scoped_lock above: resendGiveupCount() takes only the
+        // recursive RemoteNode::state_mutex_ and does not re-acquire
+        // remote_nodes_mutex_.
+        remote.resend_giveup_count = remote_node.second->resendGiveupCount();
         for(auto connection: remote_node.second->connections())
           if(connection)
           {
