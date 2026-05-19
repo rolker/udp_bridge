@@ -208,19 +208,46 @@ TEST_F(ResendFixture, TtlGiveUpStopsRequestingAndIncrementsCounter)
 // operator[]-default-construct a fresh entry the next tick, hit the
 // "first observed" branch, and re-arm a full TTL window of attempts —
 // bumping the give-up counter once per TTL cycle.
+//
+// Test mechanics (fixed for R6 #3): to actually exercise the guard,
+// gap 2 must remain in the gap-scan range [begin()->first+1,
+// rbegin()->first) AFTER the give-up moment. Two pitfalls the naive
+// setup falls into:
+//
+//   1. Anchor eviction: seed packets 1 + 3 at t=0/0.2 only, then drive
+//      ticks. Once now > kSentPacketTTL, clearReceivedPacketTimesBefore
+//      evicts both. begin() and rbegin() collapse, gap 2 falls out of
+//      the scan range, and the test passes whether the guard exists
+//      or not (the original R5 test).
+//
+//   2. Injection cascade: re-inject anchors AND inject a fresh packet
+//      next_pn at each tick. The fresh packets age out one by one,
+//      each becoming a new gap with its own give-up cycle. Counter
+//      goes to ~50 across 2.5 TTL windows even with the guard intact
+//      — the guard works for packet 2 but the other gaps drown it
+//      out, masking what's being tested.
+//
+// The fix: stick to packets 1 and 3 only (gap at 2), and re-inject
+// BOTH at a "just-inside-the-eviction-window" timestamp once t crosses
+// kReceiveHistoryWindow. Packet 1 stays at begin(), packet 3 stays at
+// rbegin(), gap-scan walks only i=2, no cascade of other gaps. The
+// timestamp `now - kReceiveHistoryWindow + 1 ms` survives the strict-
+// less-than eviction comparison and leaves prev_received_time (=
+// packet 1's time) ~kReceiveHistoryWindow behind now — well below the
+// 100 ms debounce hold, so gap 2 keeps flagging past give-up. The
+// backoff loop then reaches `given_up_packet_numbers_.count(2)` and
+// the test actually fails without the guard.
 TEST_F(ResendFixture, GiveUpIsNotReArmedByOngoingArrivals)
 {
   // Seed: packets 1, 3 around t=0 — gap at 2.
   remote_->recordReceivedPacketTimeForTest(1, t_at(0.000));
   remote_->recordReceivedPacketTimeForTest(3, t_at(0.200));
 
-  // Drive past kSentPacketTTL to trigger give-up, AND inject a fresh
-  // arrival at each tick so received_packet_times_ never empties out
-  // (which would otherwise let clearReceivedPacketTimesBefore evict
-  // the neighbors and remove gap 2 from the scan range entirely).
-  // The new arrivals at higher packet numbers keep gap 2 visible:
-  // begin()->first stays at 1 (or shifts upward) for as long as the
-  // receive history retains a packet with number < 2.
+  // Drive past kSentPacketTTL to trigger give-up. Once t crosses
+  // kReceiveHistoryWindow, re-inject BOTH anchor packets at a
+  // just-inside-the-window timestamp so they survive eviction by
+  // clearReceivedPacketTimesBefore while keeping the gap-scan anchor
+  // (packet 1's time) well behind the debounce cutoff.
   //
   // After the first give-up (one increment of resendGiveupCount()),
   // the counter must NOT keep climbing — the receiver must remember
@@ -228,14 +255,20 @@ TEST_F(ResendFixture, GiveUpIsNotReArmedByOngoingArrivals)
   // 2.5 TTL windows is enough that the bug, if present, would
   // produce 2-3 give-up cycles instead of one.
   const double start_t = 0.300;
+  const double window = udp_bridge::kReceiveHistoryWindow.count();
   const double end_t = start_t + 2.5 * udp_bridge::kSentPacketTTL.count();
-  uint64_t next_pn = 4;
   for(double t = start_t; t < end_t; t += 0.050)
   {
-    // Inject a new neighbor at packet number above 3, so gap 2 stays
-    // bounded on both sides (1 below, the new arrival above).
-    remote_->recordReceivedPacketTimeForTest(next_pn, t_at(t));
-    ++next_pn;
+    if(t > window)
+    {
+      // Pick a timestamp just inside the eviction window. The 1 ms
+      // buffer beats the strict-less-than eviction comparison; the
+      // distance back from `t` (~window) is well past the debounce
+      // hold (100 ms), so the gap stays flaggable.
+      double safe_time = t - window + 0.001;
+      remote_->recordReceivedPacketTimeForTest(1, t_at(safe_time));
+      remote_->recordReceivedPacketTimeForTest(3, t_at(safe_time));
+    }
     remote_->getMissingPackets(t_at(t));
   }
 

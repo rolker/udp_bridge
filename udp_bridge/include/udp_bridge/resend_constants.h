@@ -24,6 +24,7 @@
 // flat-cooldown single-constant design without re-reading issue #9.
 
 #include <chrono>
+#include <cstdint>
 
 namespace udp_bridge
 {

@@ -198,14 +198,30 @@ void RemoteNode::clearReceivedPacketTimesBefore(rclcpp::Time time)
   // sweep at the top of getMissingPackets() (removes entries whose
   // first_request_time < now - kSentPacketTTL), recordPacketArrival
   // (removes entries when the missing packet finally arrives), and
-  // the remote-restart clear in update(BridgeInfo). The previous
-  // sweep here was dead code under the current default
-  // (kReceiveHistoryWindow == kSentPacketTTL, so the `time` cutoff
-  // passed in matches the give-up cutoff exactly) and remains so
-  // under a future narrowing — the give-up cutoff is always >= this
-  // `time` cutoff (static_assert in resend_constants.h enforces
-  // kReceiveHistoryWindow <= kSentPacketTTL), so any entry the old
-  // sweep could have evicted was already evicted by the give-up pass.
+  // the remote-restart clear in update(BridgeInfo).
+  //
+  // Under the current default (kReceiveHistoryWindow == kSentPacketTTL),
+  // the old eviction-by-time sweep and the give-up sweep would have
+  // hit exactly the same entries, so removing the old sweep was a
+  // pure no-op.
+  //
+  // Under a future narrowing of kReceiveHistoryWindow (the
+  // static_assert in resend_constants.h enforces `<=`, so narrowing
+  // is allowed), the math reverses: the `time` cutoff passed in here
+  // (now - kReceiveHistoryWindow) is *newer* than the give-up cutoff
+  // (now - kSentPacketTTL), so the give-up sweep evicts a *subset*
+  // of what the old eviction would have. Entries with
+  // first_request_time in [giveup_cutoff, time) — still inside the
+  // sender's TTL window but older than the receiver's history window
+  // — would be left behind. They become orphans when the gap-scan
+  // range (bounded by received_packet_times_.begin()/rbegin()) no
+  // longer includes their packet number; nothing reads or modifies
+  // them until first_request_time finally ages past kSentPacketTTL,
+  // at which point the give-up sweep evicts them and bumps the
+  // counter. Memory growth is bounded by
+  // (kSentPacketTTL - kReceiveHistoryWindow) * packet_rate. If
+  // narrowing is ever adopted, decide then whether to re-add a
+  // time-based eviction here.
 
   // Prune given-up packet numbers that have fallen out of the
   // gap-scan range. The gap-scan walks [received_packet_times_.begin()
