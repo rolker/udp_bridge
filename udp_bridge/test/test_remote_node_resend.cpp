@@ -46,7 +46,13 @@ protected:
   {
     if(!rclcpp::ok())
       rclcpp::init(0, nullptr);
-    node_ = std::make_shared<rclcpp::Node>("test_remote_node_resend");
+    // Per-test node name suffix silences duplicate-node warnings from
+    // the ROS graph briefly retaining the previous test case's name
+    // after teardown (rclcpp::shutdown only runs once in main() after
+    // the full suite).
+    auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    std::string node_name = std::string("test_remote_node_resend_") + info->name();
+    node_ = std::make_shared<rclcpp::Node>(node_name);
     remote_ = std::make_unique<udp_bridge::RemoteNode>(
       "test-remote", "test-local",
       udp_bridge::RemoteNode::NodeInterfaces(*node_));
@@ -288,6 +294,118 @@ TEST_F(ResendFixture, RecoveredPacketDoesNotTriggerGiveUp)
        "in unwrap()'s on-arrival branch — the give-up sweep is now "
        "firing for recovered packets, inflating "
        "Remote.resend_giveup_count in production.";
+}
+
+// Case 7 (regression for the 2026-05-19 sub-agent review): remote
+// restart must clear all three resend-tracking maps
+// (received_packet_times_, resend_state_, given_up_packet_numbers_),
+// not just the first. Before the give-up reorg this PR introduces,
+// only received_packet_times_ existed; after the reorg, the restart
+// path is responsible for nuking the other two maps as well. If a
+// future change adds a fourth map and forgets to wire it into the
+// restart clear, this test fails on the second-tick-no-bump assertion
+// (lingering resend_state_ entries trigger fresh give-up cycles
+// against the empty received_packet_times_ map).
+//
+// The resend_giveup_count_ counter is intentionally NOT reset on
+// restart — header doc at remote_node.h:169-172 calls out that it's
+// operator-facing and represents cumulative loss across the
+// RemoteNode's lifetime. This test pins that contract too.
+TEST_F(ResendFixture, RemoteRestartClearsAllResendState)
+{
+  // Set next_packet_number_ to a non-zero value so the second update()
+  // triggers restart detection via `bridge_info.next_packet_number <
+  // next_packet_number_`. Build a BridgeInfo with a single Remote
+  // entry naming this node's local_name_ ("test-local") so the inner
+  // restart-check loop in update() runs.
+  udp_bridge::SourceInfo src;
+  src.node_name = "test-remote";
+  src.host = "127.0.0.1";
+  src.port = 9999;
+
+  udp_bridge_interfaces::msg::BridgeInfo bi_initial;
+  bi_initial.next_packet_number = 100;
+  udp_bridge_interfaces::msg::Remote remote_entry;
+  remote_entry.name = "test-local";
+  bi_initial.remotes.push_back(remote_entry);
+  remote_->update(bi_initial, src);
+
+  // Seed packets 1, 3 → gap at 2 → drive past TTL to populate
+  // resend_state_, given_up_packet_numbers_, and bump
+  // resend_giveup_count_ to 1.
+  remote_->recordReceivedPacketTimeForTest(1, t_at(0.000));
+  remote_->recordReceivedPacketTimeForTest(3, t_at(0.200));
+  for(double t = 0.300; t < 0.300 + udp_bridge::kSentPacketTTL.count() + 0.1; t += 0.050)
+    remote_->getMissingPackets(t_at(t));
+  ASSERT_EQ(remote_->resendGiveupCount(), 1u)
+    << "Sanity: setup should have populated give-up state before the restart";
+
+  // Deliver a restart-signaling BridgeInfo (next_packet_number = 0
+  // and 0 < 100 → triggers the restart-clear branch).
+  udp_bridge_interfaces::msg::BridgeInfo bi_restart;
+  bi_restart.next_packet_number = 0;
+  bi_restart.remotes.push_back(remote_entry);
+  remote_->update(bi_restart, src);
+
+  // Follow-up tick well past the original TTL window. With the
+  // restart-clear in place, resend_state_ is empty so the give-up
+  // sweep has nothing to process — counter stays at 1, no throw, no
+  // missing packets reported (received_packet_times_ is also empty so
+  // the gap-scan has nothing to walk).
+  for(double t = 10.0; t < 10.0 + udp_bridge::kSentPacketTTL.count() * 2; t += 0.100)
+  {
+    auto rr = remote_->getMissingPackets(t_at(t));
+    EXPECT_TRUE(rr.missing_packets.empty())
+      << "Gap scan should find nothing after restart cleared "
+         "received_packet_times_; got " << rr.missing_packets.size()
+      << " missing at t=" << t;
+  }
+
+  // The give-up counter is the load-bearing assertion: if a future
+  // change drops `resend_state_.clear()` from the restart path,
+  // lingering entry [2] has first_request_time < (now - kSentPacketTTL)
+  // and the sweep above bumps the counter again — would observe 2+
+  // here instead of 1.
+  EXPECT_EQ(remote_->resendGiveupCount(), 1u)
+    << "Counter climbed past 1 after restart. The restart path "
+       "(remote_node.cpp:73-85) did not clear resend_state_, so the "
+       "give-up sweep is re-firing for entries that survived the "
+       "restart against an empty received_packet_times_ map.";
+}
+
+// Case 8: burst-loss debounce — pack 1 + pack 5 arrive 50 ms apart;
+// packets 2, 3, 4 are lost in a single burst. The gap-scan walks
+// [begin+1, last-1] with prev_received_time pinned to packet 1's
+// receive time across the run of consecutive gaps. All three gaps
+// share the same anchor (packet 1 at t=0), so they all flag together
+// once the debounce hold expires — they do NOT each wait their own
+// per-gap debounce. This pins the design intent commented at
+// remote_node.cpp:308-312 against a future "optimization" that resets
+// prev_received_time on gap entries.
+TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
+{
+  remote_->recordReceivedPacketTimeForTest(1, t_at(0.000));
+  remote_->recordReceivedPacketTimeForTest(5, t_at(0.050));
+
+  // Tick at t=0.060: prev_received (= packet 1 at 0.000) is 60 ms old,
+  // under the 100 ms debounce hold. No gaps flagged.
+  auto rr_early = remote_->getMissingPackets(t_at(0.060));
+  EXPECT_TRUE(rr_early.missing_packets.empty())
+    << "Debounce should suppress all 3 gaps while prev_received is "
+       "still inside the hold";
+
+  // Tick at t=0.150: prev_received is now 150 ms old, past the hold.
+  // All three gaps anchor on packet 1 and must flag in one tick.
+  auto rr = remote_->getMissingPackets(t_at(0.150));
+  ASSERT_EQ(rr.missing_packets.size(), 3u)
+    << "Burst loss should flag all three gaps in one tick — they share "
+       "an anchor (packet 1's receive time), not their own per-gap "
+       "clocks. If a future change resets prev_received_time on gap "
+       "entries, this test fails because each gap then waits its own "
+       "100 ms hold and only the first one fires at t=0.150.";
+  EXPECT_EQ(rr.missing_packets[0], 2u);
+  EXPECT_EQ(rr.missing_packets[1], 3u);
+  EXPECT_EQ(rr.missing_packets[2], 4u);
 }
 
 int main(int argc, char** argv)

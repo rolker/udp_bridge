@@ -89,6 +89,7 @@ TEST(ConnectionCleanup, NoopCleanupOnEmptyBuffer)
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);
+  rclcpp::init(0, nullptr);
   int rc = RUN_ALL_TESTS();
   if(rclcpp::ok())
     rclcpp::shutdown();
