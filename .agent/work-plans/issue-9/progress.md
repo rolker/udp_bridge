@@ -127,3 +127,25 @@ re-locate before editing:
 - [ ] (suggestion) Test-only `getMissingPackets(rclcpp::Time)` overload is public but lacks the `now.nanoseconds() == 0` guard the no-arg variant has — `remote_node.h:75`, `remote_node.cpp:260`
 - [ ] (suggestion) Test gap: remote-restart with active resend state — no case exercises `update(BridgeInfo)`'s clear of `received_packet_times_` / `resend_state_` / `given_up_packet_numbers_` at `remote_node.cpp:73-85` after the give-up reorg — `test_remote_node_resend.cpp`
 - [ ] (suggestion) Test gap: debounce anchor walking across consecutive gaps — the "runs of consecutive gaps" design intent at `remote_node.cpp:308-312` isn't exercised; burst-loss debounce could regress silently — `test_remote_node_resend.cpp`
+
+## External Review (Combined Triage)
+**Status**: complete
+**When**: 2026-05-19 09:30
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #13 — 3 Copilot review(s) (15 inline comments) + 1 conversation comment + 1 local review (this session), triaged together
+**CI**: all-pass (4 checks at `e4e5f3f`)
+
+### Actions
+- [ ] (optional/cosmetic) Add `rclcpp::init` guard to `test_connection_cleanup.cpp` for consistency with sister test file (Copilot R3)
+- [ ] (optional/cosmetic) Append per-test suffix to `ResendFixture` node name to silence duplicate-node warnings (Copilot R3)
+- [ ] (fix) Guard or hide test-only `getMissingPackets(rclcpp::Time)` overload — `remote_node.h:75` (local review)
+- [ ] (fix) Add remote-restart-with-active-resend-state test case (local review)
+- [ ] (fix) Add burst-loss debounce test case (local review)
+- [ ] (optional) Dismiss the 6 addressed Copilot R1/R2 inline comments on the PR
+
+### Classification breakdown
+- **11/15 Copilot comments addressed** at HEAD by commits `ff32f58` + `e4e5f3f` (R1/R2 ran against stale SHAs `7a1a8fa4` / `49ca9a1d`).
+- **4/15 Copilot R3 comments** still apply: 1 intentionally-kept design choice (`assert(s.attempts > 0)` belt-and-suspenders, defended in code comment), 1 adequately-documented test-helper caveat (`record_sent_packet_for_test`), 2 cosmetic test-hygiene items.
+- **3 new findings** from this session's `/review-code 13` local review — all suggestions targeting test-coverage hardening + one small API-surface tightening. No must-fix.
+- Self plan-review conversation comment: all 7 findings absorbed into plan revisions pre-implementation.
