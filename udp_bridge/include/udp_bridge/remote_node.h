@@ -90,6 +90,17 @@ class RemoteNode
   uint32_t resendGiveupCount() const;
 
 private:
+  // Single on-arrival point: record the receive time AND clear any
+  // pending resend tracking for that packet. Both `unwrap()` (the
+  // production socket-drain path) and `recordReceivedPacketTimeForTest`
+  // (the unit-test injection helper) route through here, so the
+  // invariant "an arrived packet has no resend_state_ entry" is
+  // impossible to drop from one path without dropping it from both —
+  // dropping the call from `unwrap()` would also drop it from the
+  // test path, surfacing the regression in the gtest suite.
+  // Caller must hold state_mutex_.
+  void recordPacketArrival(uint64_t packet_number, rclcpp::Time time);
+
   // name of the remote udp_bridge node
   std::string name_;
 

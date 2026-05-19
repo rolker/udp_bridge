@@ -152,18 +152,7 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
       c = newConnection(packet->connection_id, source_info.host, source_info.port);
     auto now = clock_->now();
     if(!duplicate)
-    {
-      received_packet_times_[packet->packet_number] = now;
-      // Clear any pending resend tracking for this packet — it
-      // arrived, so it's no longer missing. Without this erase, the
-      // give-up sweep in getMissingPackets() would later iterate the
-      // lingering entry and falsely treat the arrived packet as
-      // abandoned, inflating resend_giveup_count_ for packets that
-      // actually came through. given_up_packet_numbers_ is left alone:
-      // if we already gave up and the packet arrived late, the give-up
-      // was wasted but unwinding the counter is wrong.
-      resend_state_.erase(packet->packet_number);
-    }
+      recordPacketArrival(packet->packet_number, now);
   }
 
   // update_last_receive_time uses Connection's own mutex; safe to call
@@ -242,12 +231,21 @@ uint32_t RemoteNode::resendGiveupCount() const
 void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time)
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  recordPacketArrival(packet_number, time);
+}
+
+void RemoteNode::recordPacketArrival(uint64_t packet_number, rclcpp::Time time)
+{
+  // Caller holds state_mutex_. An arrived packet is no longer missing,
+  // so the receive-time map is updated AND any pending resend tracking
+  // is cleared. Without the resend_state_ erase, the give-up sweep in
+  // getMissingPackets() would later iterate the lingering entry and
+  // falsely treat the arrived packet as abandoned, inflating
+  // resend_giveup_count_ for packets that actually came through.
+  // given_up_packet_numbers_ is left alone: if we already gave up and
+  // the packet arrived late, the give-up was wasted but unwinding the
+  // counter is wrong.
   received_packet_times_[packet_number] = time;
-  // Mirror unwrap()'s on-arrival behavior: a packet that arrives is
-  // no longer missing, so any pending resend tracking is cleared.
-  // Required for tests that exercise the recovery path (a packet
-  // requested then arrives) — without this, the give-up sweep would
-  // false-fire on the lingering resend_state_ entry.
   resend_state_.erase(packet_number);
 }
 
@@ -275,15 +273,18 @@ ResendRequest RemoteNode::getMissingPackets(rclcpp::Time now)
   // operator[]-default-construct on the resend_state_ map.
   std::vector<uint64_t> giveup_now;
   for(auto& kv: resend_state_)
-    if(kv.second.first_request_time < giveup_cutoff)
+    if(kv.second.attempts > 0 && kv.second.first_request_time < giveup_cutoff)
       giveup_now.push_back(kv.first);
   for(auto m: giveup_now)
   {
     auto& s = resend_state_[m];
     // Invariant: every resend_state_ entry is created with attempts=1
-    // in the backoff loop below; nothing decrements. A zero-attempts
-    // entry would mean the invariant has broken upstream (e.g., a
-    // future direct map insert). Loud failure beats silent skip.
+    // in the backoff loop below; nothing decrements. The runtime
+    // `attempts > 0` filter above is the Release-build safety net; the
+    // assert below is the Debug-build tripwire. Keep both — the
+    // runtime cost is one integer compare and a Release build with a
+    // zero-attempts entry would otherwise log "after 0 attempts"
+    // silently.
     assert(s.attempts > 0);
     RCLCPP_WARN_STREAM(logger_,
       "Giving up on resend of packet " << m << " from remote '"
