@@ -111,3 +111,19 @@ re-locate before editing:
 - [x] **F3 + S5 (`seconds()` helper + Duration round-trip)** — Deleted the `seconds()` helper. All call sites switched to `rclcpp::Duration(kFoo)` for Duration construction or `kFoo.count()` for double extraction. ADL concern sidestepped. **→ commit ff32f58**
 - [x] **F4 (`attempts > 0` redundant)** — Converted to `assert(s.attempts > 0)` so a future invariant break is loud. **→ commit ff32f58**
 - [x] **F5 (test helper empty vector)** — Comment added at `record_sent_packet_for_test` noting only `packet_number` + `timestamp` are populated; not safe for tests that exercise `resend_packets()` on seeded data. **→ commit ff32f58**
+
+## Local Review
+**Status**: complete
+**When**: 2026-05-19 09:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: approved
+
+**PR**: #13 at `e4e5f3f`
+**Mode**: post-PR
+**Depth**: Standard (reason: ~800 LOC source/test + Remote.msg append + concurrency-adjacent)
+**Must-fix**: 0 | **Suggestions**: 3
+
+### Findings
+- [ ] (suggestion) Test-only `getMissingPackets(rclcpp::Time)` overload is public but lacks the `now.nanoseconds() == 0` guard the no-arg variant has — `remote_node.h:75`, `remote_node.cpp:260`
+- [ ] (suggestion) Test gap: remote-restart with active resend state — no case exercises `update(BridgeInfo)`'s clear of `received_packet_times_` / `resend_state_` / `given_up_packet_numbers_` at `remote_node.cpp:73-85` after the give-up reorg — `test_remote_node_resend.cpp`
+- [ ] (suggestion) Test gap: debounce anchor walking across consecutive gaps — the "runs of consecutive gaps" design intent at `remote_node.cpp:308-312` isn't exercised; burst-loss debounce could regress silently — `test_remote_node_resend.cpp`
