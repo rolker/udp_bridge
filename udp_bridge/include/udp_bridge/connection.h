@@ -124,6 +124,16 @@ public:
   /// what evicted vs what stayed. Not for production callers.
   /// UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the helper above.
   std::size_t sent_packet_count_for_test() const;
+
+  /// Test accessor: returns how many times resend_packets has been
+  /// invoked on this Connection since construction. Used by the
+  /// dispatch-routing tests in test_remote_node_resend.cpp to assert
+  /// that a stamped ResendRequest reaches only the matching connection
+  /// (issue #23). Incremented at entry of resend_packets (before any
+  /// network I/O), so an empty missing-packet list still counts as a
+  /// call. UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the
+  /// helpers above.
+  std::size_t resend_call_count_for_test() const;
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
 private:
@@ -192,6 +202,17 @@ private:
   /// (reads), and cleanup_sent_packets (writes), which can be invoked
   /// from different callback groups under MultiThreadedExecutor.
   mutable std::mutex sent_packets_mutex_;
+
+#ifdef UDP_BRIDGE_BUILD_TESTING
+  /// Test-only counter: number of times resend_packets() has been
+  /// invoked. Bumped at the top of resend_packets, before any I/O,
+  /// under sent_packets_mutex_ so the increment piggybacks on the
+  /// lock that resend_packets already takes (no separate atomic).
+  /// Read via resend_call_count_for_test() under the same mutex.
+  /// Gated behind UDP_BRIDGE_BUILD_TESTING so it doesn't change the
+  /// production object layout.
+  std::size_t resend_call_count_for_test_ = 0;
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
   PacketSendStatistics sent_packet_statistics_;
   /// Guards sent_packet_statistics_ and reserved_bytes_in_flight_.

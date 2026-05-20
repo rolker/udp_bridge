@@ -130,6 +130,49 @@ void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)
     slot = connection;
 }
 
+void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclcpp::Time now)
+{
+  // Snapshot the target connection (or, on miss, the set of known ids)
+  // under state_mutex_, then release the mutex before calling
+  // resend_packets — Connection::resend_packets does socket I/O and
+  // must not run under our state lock.
+  std::shared_ptr<Connection> target;
+  std::vector<std::string> known_ids;
+  {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    auto it = connections_.find(rr.connection_id);
+    if(it != connections_.end())
+      target = it->second;
+    if(!target)
+    {
+      known_ids.reserve(connections_.size());
+      for(const auto& kv : connections_)
+        known_ids.push_back(kv.first);
+    }
+  }
+  if(target)
+  {
+    target->resend_packets(rr.missing_packets, socket, now);
+    return;
+  }
+  // Fires on legitimate sender/receiver races (the receiver tore the
+  // connection down for a CONNECT cycle or config reload between the
+  // sender stamping the request and us decoding it) AND on bona-fide
+  // coordinated-redeploy mismatches. Log both the stamped id and the
+  // set of currently known connection ids so an operator chasing
+  // either case has enough to diagnose.
+  std::string joined;
+  for(size_t i = 0; i < known_ids.size(); ++i)
+  {
+    if(i > 0) joined += ", ";
+    joined += known_ids[i];
+  }
+  RCLCPP_DEBUG_STREAM(logger_,
+    "Dropping ResendRequest from " << name_
+    << " stamped for connection_id='" << rr.connection_id
+    << "' (no matching connection; known ids: [" << joined << "])");
+}
+
 
 std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {

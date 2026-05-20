@@ -70,16 +70,19 @@ design forks:
      call `dispatchResendRequest`; assert
      `wifi.resend_call_count_for_test() == 1` and
      `vpn.resend_call_count_for_test() == 0`.
-   - **Stamped id no longer present.** Set up both connections, then tear
-     down `"wifi"` (drop it from `connections_` — exercise the production
-     path via whatever method already removes connections, or via a
-     `UDP_BRIDGE_BUILD_TESTING`-gated helper if none is reachable); send a
-     `ResendRequest` stamped for `"wifi"`; assert both counters stay at 0
-     (this is the legitimate sender/receiver race during a CONNECT cycle).
-   - **Unknown id (config mismatch).** Smaller third test: stamp for a
-     never-registered id; assert both counters stay at 0. Same code path
-     as the stale-id case but distinct framing for the operator-facing
-     diagnostic.
+   - **Stamped id absent (transient state).** Register only `"vpn"`;
+     stamp `ResendRequest` for `"wifi"`. Models the post-restart /
+     pre-BridgeInfo-reconciliation window where the receiver hasn't
+     re-registered the connection yet. Assert vpn's counter stays at 0
+     (must not fall back to broadcast). No new helper needed — the test
+     achieves the absent-id state by initial population alone; a
+     removal helper would only add production-adjacent API for no extra
+     coverage.
+   - **Unknown id (config mismatch).** Register both `"wifi"` and
+     `"vpn"`; stamp for `"starlink"` (an id this RemoteNode has never
+     seen). Same lookup-miss code path as the absent-id case; differs
+     in the `known_ids` payload of the DEBUG log, which documents the
+     two operator scenarios. Assert both counters stay at 0.
 7. **Follow-up comment on #18.** After PR opens, post a short note listing
    suggested bench scenarios: (a) verify per-connection routing under
    normal traffic, (b) verify no resends fan out to a path with rx loss,
@@ -95,7 +98,8 @@ design forks:
 | `udp_bridge/src/remote_node.cpp` | Implement `dispatchResendRequest` |
 | `udp_bridge/include/udp_bridge/connection.h` | Add `resend_call_count_for_test()` under `UDP_BRIDGE_BUILD_TESTING`; counter member under same gate |
 | `udp_bridge/src/connection.cpp` | Increment counter at entry of `resend_packets` (gated) |
-| `udp_bridge/test/test_remote_node_resend.cpp` | Two new `TEST_F`s: matched-id routing; unknown-id no-op |
+| `udp_bridge/test/test_remote_node_resend.cpp` | Three new `TEST_F`s (matched-id routing; stamped-id-absent; unknown-id) + a `ScopedFd` RAII helper for unbound UDP socket |
+| `udp_bridge/CMakeLists.txt` | Add `add_udp_bridge_gtest()` helper that wraps `ament_add_gtest` + `target_compile_definitions(UDP_BRIDGE_BUILD_TESTING)` + `target_link_libraries`. Extend the macro to every test target (previously only on two) — see Implementation Notes for the ODR rationale |
 
 ## Principles Self-Check
 
@@ -132,3 +136,23 @@ in the PR body so it's visible to whoever cuts the deployment.
 
 Single PR. ~80 LOC code + ~50 LOC test. Comparable to the resend-loop work in
 PR #13.
+
+## Implementation Notes
+
+- **ODR pitfall surfaced in CMakeLists.** The plan called for a
+  `UDP_BRIDGE_BUILD_TESTING`-gated counter on `Connection`. The existing
+  test-only helpers (`record_sent_packet_for_test`,
+  `sent_packet_count_for_test`) are method-only and don't change class
+  layout; my counter, however, is a real data member (`std::size_t
+  resend_call_count_for_test_`) and therefore changes `sizeof(Connection)`
+  when the macro is defined. Before the CMakeLists change, only two test
+  targets defined the macro — the rest (notably
+  `test_connection_rate_limit`, which constructs `Connection` directly)
+  compiled against a smaller layout while linking to a library compiled
+  with the larger layout. That ODR mismatch reproduced as a clean
+  segfault in `ConcurrentSendsStayUnderLimit`. The fix wraps every test
+  target in `add_udp_bridge_gtest()` so they all carry the macro; the
+  existing namespaced-macro comment already anticipated the downstream-
+  consumer hazard but didn't extend the discipline to in-package tests.
+  Documented in CMakeLists so a future agent adding another counter
+  doesn't have to re-discover this.

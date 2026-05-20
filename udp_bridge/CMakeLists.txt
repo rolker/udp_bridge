@@ -65,23 +65,33 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
-  # Expose test-only helpers to the library's own compilation and to
-  # the two test targets that use them. PRIVATE on the library means
-  # the macro doesn't propagate to downstream consumers via
-  # target_link_libraries, so the UDP_BRIDGE_BUILD_TESTING-gated
-  # declarations in remote_node.h / connection.h stay hidden from the
-  # installed public ABI. Each test target that uses the helpers needs
-  # its own PRIVATE define since the library's PRIVATE flag doesn't
-  # propagate to test compilations either.
+  # Expose test-only helpers to the library's own compilation AND to
+  # every test target. PRIVATE on the library means the macro doesn't
+  # propagate to downstream consumers via target_link_libraries, so the
+  # UDP_BRIDGE_BUILD_TESTING-gated declarations in remote_node.h /
+  # connection.h stay hidden from the installed public ABI.
+  #
+  # Every test target that links against the library must define the
+  # same macro: some `UDP_BRIDGE_BUILD_TESTING`-gated entries (notably
+  # Connection::resend_call_count_for_test_, the per-connection counter
+  # introduced for issue #23 routing tests) are data members, not just
+  # methods — adding a member changes `sizeof(Connection)`. If the
+  # library is compiled with the macro and a test compilation isn't,
+  # the test sees a smaller layout, constructs Connection on the stack
+  # at the wrong size, and the library's writes scribble past it
+  # (observed as a segfault in test_connection_rate_limit before this
+  # discipline was extended package-wide). Each test target needs its
+  # own PRIVATE define since the library's PRIVATE flag doesn't
+  # propagate to test compilations.
   #
   # The macro is package-namespaced (`UDP_BRIDGE_BUILD_TESTING`, not
-  # the generic `BUILD_TESTING`) to avoid an ODR hazard: downstream
-  # packages that define `BUILD_TESTING` for their own tests and
-  # include our installed headers would otherwise see a different
-  # `RemoteNode` / `Connection` class definition than the library was
-  # built with. The CMake variable `BUILD_TESTING` (the `if(...)`
-  # check above) is the standard CMake/ament name and stays as-is —
-  # only the C++ preprocessor symbol is package-scoped.
+  # the generic `BUILD_TESTING`) to avoid the same ODR hazard for
+  # downstream packages that define `BUILD_TESTING` for their own
+  # tests and include our installed headers — they would otherwise see
+  # a different `RemoteNode` / `Connection` class definition than the
+  # library was built with. The CMake variable `BUILD_TESTING` (the
+  # `if(...)` check above) is the standard CMake/ament name and stays
+  # as-is — only the C++ preprocessor symbol is package-scoped.
   target_compile_definitions(${PROJECT_NAME} PRIVATE UDP_BRIDGE_BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
@@ -92,34 +102,26 @@ if(BUILD_TESTING)
   # CI builds from quietly losing that coverage.
   find_package(std_msgs REQUIRED)
 
-  ament_add_gtest(utest test/utest.cpp)
-  target_link_libraries(utest ${PROJECT_NAME})
+  # Helper: register a gtest, define UDP_BRIDGE_BUILD_TESTING on it,
+  # and link the library. Keeps the per-test boilerplate from
+  # forgetting the macro and reintroducing the ODR hazard documented
+  # above. Extra link libraries can be passed after the source file.
+  function(add_udp_bridge_gtest target source)
+    ament_add_gtest(${target} ${source})
+    target_compile_definitions(${target} PRIVATE UDP_BRIDGE_BUILD_TESTING)
+    target_link_libraries(${target} ${PROJECT_NAME} ${ARGN})
+  endfunction()
 
-  ament_add_gtest(test_utilities test/test_utilities.cpp)
-  target_link_libraries(test_utilities ${PROJECT_NAME})
-
-  ament_add_gtest(test_defragmenter test/test_defragmenter.cpp)
-  target_link_libraries(test_defragmenter ${PROJECT_NAME})
-
-  ament_add_gtest(test_qos_resolution test/test_qos_resolution.cpp)
-  target_link_libraries(test_qos_resolution ${PROJECT_NAME})
-
-  ament_add_gtest(test_qos_matching_integration test/test_qos_matching_integration.cpp)
-  target_link_libraries(test_qos_matching_integration
-    ${PROJECT_NAME}
-    ${std_msgs_TARGETS}
-  )
-
-  ament_add_gtest(test_connection_rate_limit test/test_connection_rate_limit.cpp)
-  target_link_libraries(test_connection_rate_limit ${PROJECT_NAME})
-
-  ament_add_gtest(test_remote_node_resend test/test_remote_node_resend.cpp)
-  target_compile_definitions(test_remote_node_resend PRIVATE UDP_BRIDGE_BUILD_TESTING)
-  target_link_libraries(test_remote_node_resend ${PROJECT_NAME})
-
-  ament_add_gtest(test_connection_cleanup test/test_connection_cleanup.cpp)
-  target_compile_definitions(test_connection_cleanup PRIVATE UDP_BRIDGE_BUILD_TESTING)
-  target_link_libraries(test_connection_cleanup ${PROJECT_NAME})
+  add_udp_bridge_gtest(utest test/utest.cpp)
+  add_udp_bridge_gtest(test_utilities test/test_utilities.cpp)
+  add_udp_bridge_gtest(test_defragmenter test/test_defragmenter.cpp)
+  add_udp_bridge_gtest(test_qos_resolution test/test_qos_resolution.cpp)
+  add_udp_bridge_gtest(test_qos_matching_integration
+    test/test_qos_matching_integration.cpp
+    ${std_msgs_TARGETS})
+  add_udp_bridge_gtest(test_connection_rate_limit test/test_connection_rate_limit.cpp)
+  add_udp_bridge_gtest(test_remote_node_resend test/test_remote_node_resend.cpp)
+  add_udp_bridge_gtest(test_connection_cleanup test/test_connection_cleanup.cpp)
 endif()
 
 ament_package()

@@ -444,6 +444,9 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
   std::vector<std::vector<uint8_t>> packets_to_resend;
   {
     std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+#ifdef UDP_BRIDGE_BUILD_TESTING
+    ++resend_call_count_for_test_;
+#endif
     packets_to_resend.reserve(missing_packets.size());
     for(auto packet_number: missing_packets)
     {
@@ -486,6 +489,12 @@ std::size_t Connection::sent_packet_count_for_test() const
 {
   std::lock_guard<std::mutex> lock(sent_packets_mutex_);
   return sent_packets_.size();
+}
+
+std::size_t Connection::resend_call_count_for_test() const
+{
+  std::lock_guard<std::mutex> lock(sent_packets_mutex_);
+  return resend_call_count_for_test_;
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

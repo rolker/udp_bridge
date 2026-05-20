@@ -60,6 +60,24 @@ class RemoteNode
 
   std::vector<std::vector<uint8_t> > getPacketsToResend(const udp_bridge_interfaces::msg::ResendRequest& resend_request);
 
+  // Route a ResendRequest to the single connection it was stamped for
+  // (issue #23). Looks up connection(rr.connection_id) and forwards to
+  // its resend_packets. If the id is not in connections_, no-op and
+  // emit a DEBUG log naming both the stamped id and the set of
+  // currently known connection ids — this branch fires both on
+  // legitimate sender/receiver races (the receiver tore the connection
+  // down for a CONNECT cycle or config reload between the sender
+  // stamping the request and us decoding it) and on bona-fide
+  // coordinated-redeploy mismatches, so the log line needs enough
+  // context for an operator to distinguish them.
+  //
+  // Caller MUST NOT hold state_mutex_. The method takes it briefly for
+  // the lookup, then releases it before invoking
+  // Connection::resend_packets (which does socket I/O) — mirrors the
+  // snapshot-then-iterate locking discipline elsewhere in this class.
+  void dispatchResendRequest(const udp_bridge_interfaces::msg::ResendRequest& rr,
+                             int socket, rclcpp::Time now);
+
   Defragmenter& defragmenter();
 
   void publishTopicStatistics(const udp_bridge_interfaces::msg::TopicStatisticsArray& statistics);

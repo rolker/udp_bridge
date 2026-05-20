@@ -23,10 +23,15 @@
 #include <cstdint>
 #include <vector>
 
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
 #include "rclcpp/rclcpp.hpp"
 
+#include "udp_bridge_interfaces/msg/resend_request.hpp"
+#include "udp_bridge/connection.h"
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
 
@@ -443,6 +448,126 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
   EXPECT_EQ(rr.missing_packets[0], 2u);
   EXPECT_EQ(rr.missing_packets[1], 3u);
   EXPECT_EQ(rr.missing_packets[2], 4u);
+}
+
+// Issue #23: ResendRequests carry connection_id and dispatchResendRequest
+// routes the response to that one connection only — replacing the
+// previous broadcast across every active connection to the source remote,
+// which amplified resend volume 2-4x and pushed bytes into rx-dead paths
+// under the 2026-05-19 wifi-loss storm.
+//
+// The three tests below cover one matched-id case and two flavors of the
+// "stamped id is absent from the receiver's connections_" path:
+//   - StampedIdAbsent: receiver currently knows about a subset of the
+//     connection ids the sender knows about. Models the transient
+//     post-restart / pre-BridgeInfo-reconciliation window where the
+//     sender stamps for an id the receiver hasn't (re-)registered yet.
+//   - UnknownConnectionId: stamped id was never registered on the
+//     receiver at all. Models a config-mismatch coordinated-redeploy bug
+//     where the two bridges' connection-id strings don't agree.
+// Both no-op paths share dispatch's lookup-miss branch; the test split
+// documents the two operational scenarios an operator might be chasing
+// when the DEBUG log fires.
+
+namespace
+{
+
+// Open an unbound UDP socket for the dispatch tests. Connection::send
+// will hand this to sendto(); without a destination address the call
+// fails benignly with EDESTADDRREQ, which is fine — the assertion is
+// the per-connection counter, not the I/O. Caller closes via ScopedFd.
+class ScopedFd
+{
+public:
+  ScopedFd() : fd_(::socket(AF_INET, SOCK_DGRAM, 0)) {}
+  ~ScopedFd() { if(fd_ >= 0) ::close(fd_); }
+  ScopedFd(const ScopedFd&) = delete;
+  ScopedFd& operator=(const ScopedFd&) = delete;
+  int get() const { return fd_; }
+private:
+  int fd_;
+};
+
+}  // namespace
+
+// Routing case 1: a ResendRequest stamped for "wifi" reaches only the
+// wifi connection's resend_packets — not vpn's.
+TEST_F(ResendFixture, DispatchRoutesToStampedConnectionOnly)
+{
+  auto wifi = remote_->newConnection("wifi", "127.0.0.1", 9001);
+  auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);
+  ASSERT_NE(wifi, nullptr);
+  ASSERT_NE(vpn,  nullptr);
+
+  // Seed one sent packet on each connection so resend_packets has
+  // something to look up. The lookup result doesn't matter for the
+  // assertion (we count calls, not sent bytes); seeding just exercises
+  // the production code path past its early-return.
+  wifi->record_sent_packet_for_test(1, t_at(1.0));
+  vpn->record_sent_packet_for_test(1, t_at(1.0));
+
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = "wifi";
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+
+  EXPECT_EQ(wifi->resend_call_count_for_test(), 1u)
+    << "Stamped-for connection should receive exactly one resend dispatch.";
+  EXPECT_EQ(vpn->resend_call_count_for_test(), 0u)
+    << "Non-stamped connection must not receive a resend — this is the "
+       "amplification bug issue #23 is fixing.";
+}
+
+// Routing case 2: stamped id is absent from the receiver's connections_
+// (subset state). Models the race window where the receiver hasn't
+// re-registered the connection yet but the sender already stamped for
+// it. Dispatch must no-op silently — must not fall back to broadcast
+// (that's the old behavior this issue removes).
+TEST_F(ResendFixture, DispatchSilentlyDropsWhenStampedIdAbsent)
+{
+  // Receiver knows only "vpn" right now; sender stamped for "wifi".
+  auto vpn = remote_->newConnection("vpn", "127.0.0.1", 9002);
+  ASSERT_NE(vpn, nullptr);
+  vpn->record_sent_packet_for_test(1, t_at(1.0));
+
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = "wifi";
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+
+  EXPECT_EQ(vpn->resend_call_count_for_test(), 0u)
+    << "Lookup miss must not fan out to the other live connection — "
+       "that would reintroduce the broadcast behavior issue #23 removes.";
+}
+
+// Routing case 3: stamped id was never registered (config mismatch
+// across coordinated redeploys). Same no-op path as case 2; differs in
+// known_ids log content (which is operator-facing, not asserted here).
+TEST_F(ResendFixture, DispatchSilentlyDropsUnknownConnectionId)
+{
+  auto wifi = remote_->newConnection("wifi", "127.0.0.1", 9001);
+  auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);
+  ASSERT_NE(wifi, nullptr);
+  ASSERT_NE(vpn,  nullptr);
+  wifi->record_sent_packet_for_test(1, t_at(1.0));
+  vpn->record_sent_packet_for_test(1, t_at(1.0));
+
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = "starlink";  // never registered on this RemoteNode
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+
+  EXPECT_EQ(wifi->resend_call_count_for_test(), 0u);
+  EXPECT_EQ(vpn->resend_call_count_for_test(),  0u);
 }
 
 int main(int argc, char** argv)

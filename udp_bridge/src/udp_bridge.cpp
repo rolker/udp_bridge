@@ -697,17 +697,21 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
   auto rr = deserialize<ResendRequest>(message);
   auto now = get_clock()->now();
 
-  std::vector<std::shared_ptr<Connection>> connections;
+  // Issue #23: route the resend response back via the single connection
+  // the request was stamped for, not a broadcast across every active path.
+  // The routing logic lives on RemoteNode (which owns the connection map);
+  // we snapshot the RemoteNode shared_ptr here under remote_nodes_mutex_
+  // and call dispatchResendRequest outside the lock so its socket I/O
+  // doesn't run under our map mutex.
+  std::shared_ptr<RemoteNode> remote_node;
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-    auto remote_node = remote_nodes_.find(source_info.node_name);
-    if(remote_node != remote_nodes_.end() && remote_node->second)
-      connections = remote_node->second->connections();
+    auto it = remote_nodes_.find(source_info.node_name);
+    if(it != remote_nodes_.end())
+      remote_node = it->second;
   }
-  // resend_packets does network I/O — call without remote_nodes_mutex_ held.
-  for(auto& connection: connections)
-    if(connection)
-      connection->resend_packets(rr.missing_packets, socket_, now);
+  if(remote_node)
+    remote_node->dispatchResendRequest(rr, socket_, now);
 }
 
 void UDPBridge::decodeTopicStatistics(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -964,22 +968,46 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
 
 void UDPBridge::resendMissingPackets()
 {
-  // Snapshot remotes under the lock; getMissingPackets and send() run unlocked.
+  // Snapshot remotes under the lock; getMissingPackets, connections(),
+  // and send() run unlocked.
   std::vector<std::pair<std::string, std::shared_ptr<RemoteNode>>> remotes;
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
   }
   for(auto remote: remotes)
-    if(remote.second)
+  {
+    if(!remote.second)
+      continue;
+    auto rr_base = remote.second->getMissingPackets();
+    if(rr_base.missing_packets.empty())
+      continue;
+    // Issue #23: stamp one copy per live connection and send each via
+    // a RemoteConnectionsList that names only that connection — so the
+    // remote bridge gets one ResendRequest per path and can route the
+    // response back via the same path it arrived on (via
+    // RemoteNode::dispatchResendRequest on the receive side). Replaces
+    // the previous broadcast-to-all-connections send, which amplified
+    // resend volume 2-4x in the both-paths-alive and one-path-dead
+    // regimes documented in the issue.
+    auto connections = remote.second->connections();
+    if(connections.empty())
+      continue;
+    RCLCPP_DEBUG_STREAM(get_logger(),
+      "Sending a request to resend " << rr_base.missing_packets.size()
+      << " packets to " << remote.first << " across "
+      << connections.size() << " connection(s)");
+    for(const auto& connection: connections)
     {
-      auto rr = remote.second->getMissingPackets();
-      if(!rr.missing_packets.empty())
-      {
-        RCLCPP_DEBUG_STREAM(get_logger(), "Sending a request to resend " << rr.missing_packets.size() << " packets");
-        send(rr, remote.first, true);
-      }
+      if(!connection)
+        continue;
+      ResendRequest rr = rr_base;
+      rr.connection_id = connection->id();
+      RemoteConnectionsList rcl;
+      rcl[remote.first] = {connection->id()};
+      send(rr, rcl, true);
     }
+  }
 }
 
 
