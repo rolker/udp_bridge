@@ -179,10 +179,12 @@ private:
 
   /// Populate a diagnostic status message summarizing resend give-up
   /// activity for one remote. Computes rate from a window since the
-  /// previous publish (tracked in last_giveup_*_ maps guarded by
-  /// remote_nodes_mutex_). The rate-vs-threshold logic lives in the
-  /// computeGiveupDiagnostic() free function (giveup_diagnostic.h) so
-  /// it can be unit-tested without a UDPBridge instance.
+  /// previous publish (per-remote state kept in giveup_rate_state_, a
+  /// std::map<std::string, GiveupRateState> guarded by
+  /// remote_nodes_mutex_; step + threshold-evaluation live in
+  /// stepGiveupDiagnostic() / computeGiveupDiagnostic() in
+  /// giveup_diagnostic.h so they can be unit-tested without a
+  /// UDPBridge instance.
   void diagnoseRemoteGiveups(const std::string& remote_name,
                              diagnostic_updater::DiagnosticStatusWrapper& stat);
 

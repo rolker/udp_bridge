@@ -20,6 +20,9 @@
 
 #include "udp_bridge/giveup_diagnostic.h"
 
+#include <cmath>
+#include <limits>
+
 #include <gtest/gtest.h>
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
@@ -32,6 +35,7 @@ using udp_bridge::computeGiveupDiagnostic;
 using udp_bridge::GiveupDiagnostic;
 using udp_bridge::GiveupRateState;
 using udp_bridge::stepGiveupDiagnostic;
+using udp_bridge::validateGiveupThresholds;
 using DS = diagnostic_msgs::msg::DiagnosticStatus;
 
 constexpr double kWarn = 5.0;
@@ -276,4 +280,87 @@ TEST(GiveupRateState, ThresholdChangeTakesEffectOnNextStep)
   GiveupDiagnostic d2 = stepGiveupDiagnostic(state, 108, t_at(12.0), /*warn=*/1.0, kError);
   EXPECT_EQ(d2.level, DS::WARN);
   EXPECT_DOUBLE_EQ(d2.rate_per_s, 4.0);
+}
+
+// ----- validateGiveupThresholds -----
+
+TEST(GiveupThresholdValidation, DefaultPairIsAccepted)
+{
+  // The calibrated 5/50 defaults must validate cleanly — otherwise the
+  // on_configure path would fail every launch.
+  auto v = validateGiveupThresholds(5.0, 50.0);
+  EXPECT_TRUE(v.ok);
+  EXPECT_TRUE(v.reason.empty());
+}
+
+TEST(GiveupThresholdValidation, EqualWarnAndErrorIsAccepted)
+{
+  // warn == error collapses the WARN band to a single point, but it is
+  // not invalid; an operator may want only OK/ERROR transitions.
+  auto v = validateGiveupThresholds(10.0, 10.0);
+  EXPECT_TRUE(v.ok);
+}
+
+TEST(GiveupThresholdValidation, ZeroThresholdsAreAccepted)
+{
+  // 0/0 means every nonzero rate fires ERROR. Pathological but valid;
+  // not the validator's job to second-guess intent.
+  auto v = validateGiveupThresholds(0.0, 0.0);
+  EXPECT_TRUE(v.ok);
+}
+
+TEST(GiveupThresholdValidation, NegativeWarnIsRejected)
+{
+  auto v = validateGiveupThresholds(-1.0, 50.0);
+  EXPECT_FALSE(v.ok);
+  EXPECT_NE(v.reason.find("resend_giveup_warn_rate_per_s"), std::string::npos);
+  EXPECT_NE(v.reason.find(">= 0"), std::string::npos);
+}
+
+TEST(GiveupThresholdValidation, NegativeErrorIsRejected)
+{
+  auto v = validateGiveupThresholds(5.0, -10.0);
+  EXPECT_FALSE(v.ok);
+  EXPECT_NE(v.reason.find("resend_giveup_error_rate_per_s"), std::string::npos);
+  EXPECT_NE(v.reason.find(">= 0"), std::string::npos);
+}
+
+TEST(GiveupThresholdValidation, NanWarnIsRejected)
+{
+  // NaN comparisons return false, so a NaN threshold silently disables
+  // the diagnostic. Must be rejected with an operator-actionable reason.
+  auto v = validateGiveupThresholds(std::numeric_limits<double>::quiet_NaN(), 50.0);
+  EXPECT_FALSE(v.ok);
+  EXPECT_NE(v.reason.find("resend_giveup_warn_rate_per_s"), std::string::npos);
+  EXPECT_NE(v.reason.find("finite"), std::string::npos);
+}
+
+TEST(GiveupThresholdValidation, NanErrorIsRejected)
+{
+  auto v = validateGiveupThresholds(5.0, std::numeric_limits<double>::quiet_NaN());
+  EXPECT_FALSE(v.ok);
+  EXPECT_NE(v.reason.find("resend_giveup_error_rate_per_s"), std::string::npos);
+  EXPECT_NE(v.reason.find("finite"), std::string::npos);
+}
+
+TEST(GiveupThresholdValidation, PositiveInfinityIsRejected)
+{
+  // Infinity is finite-via-comparison but isfinite() rejects it. An
+  // infinite threshold could never be exceeded, so the diagnostic would
+  // never fire — same failure mode as NaN, different IEEE bit pattern.
+  auto v = validateGiveupThresholds(5.0, std::numeric_limits<double>::infinity());
+  EXPECT_FALSE(v.ok);
+  EXPECT_NE(v.reason.find("finite"), std::string::npos);
+}
+
+TEST(GiveupThresholdValidation, InvertedPairIsRejected)
+{
+  // warn > error would make the WARN band empty: rates above warn would
+  // also be above error and fire ERROR, never WARN. Operator-error
+  // signal — caught with both values printed so the operator can fix it.
+  auto v = validateGiveupThresholds(/*warn=*/50.0, /*error=*/5.0);
+  EXPECT_FALSE(v.ok);
+  EXPECT_NE(v.reason.find("resend_giveup_warn_rate_per_s"), std::string::npos);
+  EXPECT_NE(v.reason.find("resend_giveup_error_rate_per_s"), std::string::npos);
+  EXPECT_NE(v.reason.find("<="), std::string::npos);
 }

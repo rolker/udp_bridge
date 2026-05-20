@@ -16,9 +16,12 @@ via [`diagnostic_updater`](https://github.com/ros/diagnostics) at ~1 Hz. Two tas
   the rate at which the sender has abandoned resending packets (give-up events). High give-up rates
   indicate sustained packet loss on the link beyond what the resend protocol can compensate.
 
-  The per-event log (the `Giving up on resend of packet …` message) is emitted at DEBUG severity, so
-  it appears in bag recordings for forensic analysis but does not pollute live operator log panels.
-  Operators see the aggregated rate via this DiagnosticStatus instead.
+  The aggregated DiagnosticStatus is the default operator surface — it is published whether or not
+  any per-event logs are enabled. The per-event log (the `Giving up on resend of packet …` message)
+  is emitted at DEBUG severity, which is below the default ROS 2 log threshold (INFO). To capture
+  per-event detail in `/rosout` (and any `/rosout` bag recording), lower the node's log level — for
+  example, launch with `--ros-args --log-level udp_bridge:=DEBUG` or set
+  `RCUTILS_LOGGING_SEVERITY_THRESHOLD=DEBUG`.
 
 ### Resend give-up thresholds
 

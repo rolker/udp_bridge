@@ -47,6 +47,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <poll.h>
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include <unordered_set>
@@ -149,6 +150,23 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   declare_parameter("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
   resend_giveup_warn_rate_per_s_ = get_parameter("resend_giveup_warn_rate_per_s").as_double();
   resend_giveup_error_rate_per_s_ = get_parameter("resend_giveup_error_rate_per_s").as_double();
+  // Validate launch-time values. Launch-line overrides
+  // (`-p resend_giveup_warn_rate_per_s:=100.0`) bypass the
+  // OnSetParameters callback below, so a bad pair would otherwise
+  // silently disable or invert the diagnostic. Fail fast and visibly
+  // — same bug class as a runtime `ros2 param set`, closed at the same
+  // entry point.
+  {
+    auto validation = validateGiveupThresholds(
+      resend_giveup_warn_rate_per_s_, resend_giveup_error_rate_per_s_);
+    if(!validation.ok)
+    {
+      RCLCPP_ERROR(get_logger(),
+        "Invalid resend give-up thresholds at on_configure: %s",
+        validation.reason.c_str());
+      return CallbackReturn::FAILURE;
+    }
+  }
   RCLCPP_INFO_STREAM(get_logger(),
     "resend_giveup thresholds: warn=" << resend_giveup_warn_rate_per_s_
     << "/s, error=" << resend_giveup_error_rate_per_s_ << "/s");
@@ -159,43 +177,49 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     {
       rcl_interfaces::msg::SetParametersResult result;
       result.successful = true;
-      // Validate first so we can reject the whole batch atomically.
-      // Negative thresholds would never fire (rate is always >= 0)
-      // and indicate operator error rather than intent.
-      for(const auto& p: params)
-      {
-        if(p.get_name() == "resend_giveup_warn_rate_per_s" ||
-           p.get_name() == "resend_giveup_error_rate_per_s")
-        {
-          if(p.as_double() < 0.0)
-          {
-            result.successful = false;
-            result.reason = p.get_name() + " must be >= 0; got "
-              + std::to_string(p.as_double());
-            return result;
-          }
-        }
-      }
-      // Apply under the same lock the reader takes — keeps a torn
-      // read of the two threshold fields impossible.
+      // Take the reader's lock so the (read current → validate batch →
+      // apply) sequence is atomic against another concurrent set call,
+      // and so the reader can never observe a half-applied pair.
       std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+      // Compute the (warn, error) pair that would result from applying
+      // the batch on top of the current values, then validate the
+      // combined state in one pass — catches per-value problems
+      // (NaN/inf, negative) and cross-value problems (warn > error)
+      // together. See validateGiveupThresholds() in giveup_diagnostic.h.
+      bool warn_changed = false;
+      bool error_changed = false;
+      double proposed_warn = resend_giveup_warn_rate_per_s_;
+      double proposed_error = resend_giveup_error_rate_per_s_;
       for(const auto& p: params)
       {
         if(p.get_name() == "resend_giveup_warn_rate_per_s")
         {
-          resend_giveup_warn_rate_per_s_ = p.as_double();
-          RCLCPP_INFO_STREAM(get_logger(),
-            "resend_giveup_warn_rate_per_s updated to "
-            << resend_giveup_warn_rate_per_s_ << "/s");
+          proposed_warn = p.as_double();
+          warn_changed = true;
         }
         else if(p.get_name() == "resend_giveup_error_rate_per_s")
         {
-          resend_giveup_error_rate_per_s_ = p.as_double();
-          RCLCPP_INFO_STREAM(get_logger(),
-            "resend_giveup_error_rate_per_s updated to "
-            << resend_giveup_error_rate_per_s_ << "/s");
+          proposed_error = p.as_double();
+          error_changed = true;
         }
       }
+      auto validation = validateGiveupThresholds(proposed_warn, proposed_error);
+      if(!validation.ok)
+      {
+        result.successful = false;
+        result.reason = validation.reason;
+        return result;
+      }
+      resend_giveup_warn_rate_per_s_ = proposed_warn;
+      resend_giveup_error_rate_per_s_ = proposed_error;
+      if(warn_changed)
+        RCLCPP_INFO_STREAM(get_logger(),
+          "resend_giveup_warn_rate_per_s updated to "
+          << resend_giveup_warn_rate_per_s_ << "/s");
+      if(error_changed)
+        RCLCPP_INFO_STREAM(get_logger(),
+          "resend_giveup_error_rate_per_s updated to "
+          << resend_giveup_error_rate_per_s_ << "/s");
       return result;
     });
 
@@ -1713,7 +1737,11 @@ void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,
   stat.add("remote", remote_name);
   stat.add("give_ups_total", diag.total);
   stat.add("give_up_rate_per_s", diag.rate_per_s);
-  stat.add("window_s", elapsed_s);
+  // Clamp the published window to >= 0 so a backward clock jump
+  // (NTP correction, sim-time rewind) doesn't surface a negative
+  // window_s. computeGiveupDiagnostic already treats elapsed_s <= 0
+  // as zero-rate / OK, so this just keeps the KeyValue consistent.
+  stat.add("window_s", std::max(0.0, elapsed_s));
   stat.add("warn_threshold_per_s", warn_thresh);
   stat.add("error_threshold_per_s", error_thresh);
 

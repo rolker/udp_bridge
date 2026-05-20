@@ -1,7 +1,9 @@
 #ifndef UDP_BRIDGE_GIVEUP_DIAGNOSTIC_H
 #define UDP_BRIDGE_GIVEUP_DIAGNOSTIC_H
 
+#include <cmath>
 #include <cstdint>
+#include <string>
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "rclcpp/time.hpp"
@@ -127,6 +129,50 @@ inline GiveupDiagnostic stepGiveupDiagnostic(
   state.has_previous = true;
   return computeGiveupDiagnostic(
       prev_count, current_count, elapsed_s, warn_thresh, error_thresh);
+}
+
+// Result of validating a proposed (warn, error) threshold pair.
+// `ok == true` means the pair is safe to apply; `reason` is empty.
+// `ok == false` means the pair is invalid; `reason` carries an
+// operator-facing explanation suitable for SetParametersResult.reason
+// or an on_configure ERROR log.
+struct GiveupThresholdValidation
+{
+  bool ok;
+  std::string reason;
+};
+
+// Validate a proposed (warn, error) threshold pair before applying.
+// Rejects:
+//  - NaN / inf  — non-finite values silently disable the diagnostic
+//                 because NaN comparisons always return false.
+//  - Negative   — rate is always >= 0, so a negative threshold never
+//                 fires; an operator-error signal, not a configuration.
+//  - warn > err — inverts the WARN band: rates above warn would also
+//                 be above error and fire ERROR, never WARN.
+// The error string identifies which parameter is bad so an operator
+// can correct it from `ros2 param set` feedback without digging
+// through logs.
+inline GiveupThresholdValidation validateGiveupThresholds(
+    double warn, double error)
+{
+  if(!std::isfinite(warn))
+    return {false, "resend_giveup_warn_rate_per_s must be finite; got "
+                   + std::to_string(warn)};
+  if(warn < 0.0)
+    return {false, "resend_giveup_warn_rate_per_s must be >= 0; got "
+                   + std::to_string(warn)};
+  if(!std::isfinite(error))
+    return {false, "resend_giveup_error_rate_per_s must be finite; got "
+                   + std::to_string(error)};
+  if(error < 0.0)
+    return {false, "resend_giveup_error_rate_per_s must be >= 0; got "
+                   + std::to_string(error)};
+  if(warn > error)
+    return {false, "resend_giveup_warn_rate_per_s (" + std::to_string(warn)
+                   + ") must be <= resend_giveup_error_rate_per_s ("
+                   + std::to_string(error) + ")"};
+  return {true, ""};
 }
 
 }  // namespace udp_bridge
