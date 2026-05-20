@@ -56,7 +56,10 @@ issue: 22
 **CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
 
 ### Actions
-- [ ] Fix (udp_bridge.cpp:1703): drop the `:1271` line-number citation in the `diagnoseRemoteGiveups` lock comment — line 1271 is unrelated (TopicStatisticsArray code); the actual lock-order rationale lives at lines 1371–1374. Either describe the invariant in words or point at `remote_node.h`'s `resendGiveupCount()` declaration.
-- [ ] Decide scope (udp_bridge.cpp:152): Copilot flagged that `declare_parameter` inside `on_configure` throws on a second cleanup→configure cycle. The same pattern applies to every existing `declare_parameter` in this node (e.g., `maximum_packet_size` at line 115). Reconfigure was broken pre-PR. Options: (a) add `has_parameter()` guards to just my new params (cosmetic; doesn't fix reconfigure since line 115 throws first), (b) file a separate issue for repo-wide cleanup, (c) leave it (matches existing pattern). Surfacing to user.
-- [ ] (Optional) Resolve README `||` thread on GitHub — false positive (table at lines 30–33 uses single pipes; Copilot's claim does not match the source).
-- [ ] (Optional) Resolve 5 stale round-1 threads on GitHub — all addressed by the round-1 push.
+- [x] Fix (diagnoseRemoteGiveups lock comment): dropped both stale line-number citations (`udp_bridge.cpp:1271` and `diagnoseConnection() at line 1543`). Replaced with the durable invariants (`RemoteNode::resendGiveupCount()` takes only `RemoteNode::state_mutex_`; `STALE` return mirrors `diagnoseConnection()` above).
+- [x] Scope decision (declare_parameter reconfigure-safety): user authorized repo-wide fix in this PR. Added `declareIfMissing<T>(name, default)` private template helper to `UDPBridge`; replaced all 18 `declare_parameter` call sites in `on_configure` (port, maximum_packet_size, resend-giveup pair, and the remotes/connections/topics loops). Reconfigure cycle (cleanup→configure) now reentrant for parameter declaration.
+- [ ] (Pending) Resolve 4 unresolved round-1 threads + 1 round-2 `||` FP thread on GitHub. (Round-1 `as_double()` FP already resolved.)
+
+### Notes
+- `declareIfMissing` is a template member function defined inline in `udp_bridge.h` — needs `has_parameter()` on the `LifecycleNode` base, so couldn't go in `giveup_diagnostic.h` (the pure header). No new unit test: testing the guard requires bringing up the node and a real cleanup→configure cycle, which is out of proportion for a 2-line guard. The build and existing 74 tests still pass.
+- Scope creep authorized in advance — Copilot flagged only my new params, but the pre-existing pattern (lines 87, 94, 115, …, 387) had the same defect. Fixing only my pair would have been cosmetic; the reconfigure cycle would still throw at line 87. Repo-wide fix lands the property Copilot wanted.
