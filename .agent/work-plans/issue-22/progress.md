@@ -63,3 +63,15 @@ issue: 22
 ### Notes
 - `declareIfMissing` is a template member function defined inline in `udp_bridge.h` — needs `has_parameter()` on the `LifecycleNode` base, so couldn't go in `giveup_diagnostic.h` (the pure header). No new unit test: testing the guard requires bringing up the node and a real cleanup→configure cycle, which is out of proportion for a 2-line guard. The build and existing 74 tests still pass.
 - Scope creep authorized in advance — Copilot flagged only my new params, but the pre-existing pattern (lines 87, 94, 115, …, 387) had the same defect. Fixing only my pair would have been cosmetic; the reconfigure cycle would still throw at line 87. Repo-wide fix lands the property Copilot wanted.
+
+## External Review (round 3)
+**Status**: complete
+**When**: 2026-05-20 22:25 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 at `be6e9e6` — Copilot's third re-review. 1 new inline comment, classified Valid (real defect).
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [ ] Fix (`giveup_diagnostic.h:65–79`): add an explicit "no activity → OK" branch in `computeGiveupDiagnostic` so `current_count == prev_count` returns `{rate=0, level=OK}` before threshold comparison. With `>=` semantics and `validateGiveupThresholds` accepting 0/0, a zero-rate tick was firing ERROR forever (`0.0 >= 0.0`). Threshold logic should apply to actual give-up activity, not its absence.
+- [ ] Test (`test_giveup_diagnostic.cpp`): add regression test `ZeroDeltaWithZeroThresholdsStaysOk` (or similar) — `computeGiveupDiagnostic(5, 5, 1.0, 0.0, 0.0)` must return `{rate=0, level=OK}`. Also fix the misleading comment in the existing `ZeroThresholdsAreAccepted` validator test that incorrectly claimed "0/0 means every nonzero rate fires ERROR" — it would have fired on every rate including zero, which is the actual defect.
