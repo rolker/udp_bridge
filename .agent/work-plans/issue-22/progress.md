@@ -46,3 +46,17 @@ issue: 22
 
 ### Notes
 - One scope expansion beyond Copilot's flagged surface: launch-line overrides bypass the OnSetParameters callback. Same bug class (NaN/negative/inverted pair → silently broken diagnostic), closed at the launch entry point too. Authorized via AskUserQuestion before committing.
+
+## External Review (round 2)
+**Status**: complete
+**When**: 2026-05-20 22:00 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 at `87e8b6e` — Copilot re-reviewed after the round-1 push. 3 new inline comments; round-1's 5 comments are now stale (concerns addressed by the round-1 push).
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [ ] Fix (udp_bridge.cpp:1703): drop the `:1271` line-number citation in the `diagnoseRemoteGiveups` lock comment — line 1271 is unrelated (TopicStatisticsArray code); the actual lock-order rationale lives at lines 1371–1374. Either describe the invariant in words or point at `remote_node.h`'s `resendGiveupCount()` declaration.
+- [ ] Decide scope (udp_bridge.cpp:152): Copilot flagged that `declare_parameter` inside `on_configure` throws on a second cleanup→configure cycle. The same pattern applies to every existing `declare_parameter` in this node (e.g., `maximum_packet_size` at line 115). Reconfigure was broken pre-PR. Options: (a) add `has_parameter()` guards to just my new params (cosmetic; doesn't fix reconfigure since line 115 throws first), (b) file a separate issue for repo-wide cleanup, (c) leave it (matches existing pattern). Surfacing to user.
+- [ ] (Optional) Resolve README `||` thread on GitHub — false positive (table at lines 30–33 uses single pipes; Copilot's claim does not match the source).
+- [ ] (Optional) Resolve 5 stale round-1 threads on GitHub — all addressed by the round-1 push.
