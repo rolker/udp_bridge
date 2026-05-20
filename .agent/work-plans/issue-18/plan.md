@@ -15,7 +15,7 @@ the scope contract.
 
 ### Phase 0: Threshold extraction (~1 hr, blocking)
 
-Land concrete values in `test/bench/README.md` before Phase 3:
+Land concrete values in `udp_bridge/test/bench/README.md` before Phase 3:
 
 - **F = 2×** (anchored: ~13× pathological from `2026-05-01_findings.md`; ~30%
   healthy from `2026-05-18_bandwidth_test.md`).
@@ -27,15 +27,19 @@ Land concrete values in `test/bench/README.md` before Phase 3:
 
 ### Phase 1: Orchestrator + smoke
 
-- `test/bench/run_scenario.py` — Python orchestrator using `unshare -rn` to
+- `udp_bridge/test/bench/run_scenario.py` — Python orchestrator using `unshare -rn` to
   create operator+boat netns connected by N veth pairs; applies `tc qdisc
   netem` per path.
-- `test/bench/configs/three_path.yaml` — bridge config with WiFi/Cell/Starlink
+- `udp_bridge/test/bench/configs/three_path.yaml` — bridge config with WiFi/Cell/Starlink
   Connections.
-- `test/bench/pub.py`, `test/bench/sub.py` — rclpy publisher/subscriber driven
+- `udp_bridge/test/bench/pub.py`, `udp_bridge/test/bench/sub.py` — rclpy publisher/subscriber driven
   by a topic-mix spec.
-- `test/bench/test_smoke.py` — pytest smoke (clean link, 10s pub/sub, asserts
+- `udp_bridge/test/bench/test_smoke.py` — pytest smoke (clean link, 10s pub/sub, asserts
   `success_bytes_per_second > 0`). Skip if `unshare -rn` unavailable.
+- `udp_bridge/test/bench/bag_reader.py` — small in-tree sqlite/`rosbag2_py`
+  reader that pulls the few `BridgeInfo` / `TopicStatistics` fields the
+  assertions need. Avoids a cross-repo runtime dep on `marine_tools`'
+  `bag_analysis` package, which isn't reachable via rosdep.
 
 ### Phase 2: Topic mix + replication
 
@@ -52,9 +56,9 @@ Phase walker drives WiFi `tc` through the 6-phase trajectory. Capture
 `bridge_info` + `recv_q_trace` bag during the run into a fresh
 `tempfile.mkdtemp(prefix='udp_bridge_bench_')` (respects `$TMPDIR`; override
 via `UDP_BRIDGE_BENCH_OUTDIR`). Cleanup on pass; preserve on fail.
-`test/bench/test_range_degradation.py` — opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`,
-asserts the 5 single-path invariants. Bag parsed via
-`bag_analysis/extractors/udp_bridge.py`.
+`udp_bridge/test/bench/test_range_degradation.py` — opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`,
+asserts the 5 single-path invariants. Bag parsed via the in-tree
+`bag_reader.py` from Phase 1 (no cross-repo dep).
 
 ### Phase 4: Multi-link assertions
 
@@ -64,11 +68,17 @@ measures-and-reports, does not fail).
 
 ### Phase 5: Documentation + retire mininet
 
-- `test/bench/README.md` — decision capture (netns vs mininet, walk-WiFi-only),
+- `udp_bridge/test/bench/README.md` — decision capture (netns vs mininet, walk-WiFi-only),
   run instructions, threshold values + rationale.
-- Move `test/mininet/` to `test/mininet/.archived/` with a `README.md` pointer
-  to `test/bench/`; keep `recv_q_trace.py` (it works standalone) by moving it
-  to `test/bench/recv_q_trace.py`.
+- Move the dead ROS 1 mininet scaffolding under
+  `udp_bridge/test/mininet/.archived/` with a top-level `README.md` pointing
+  to `udp_bridge/test/bench/`. Includes the directory's `*.bash`, `*.launch`,
+  and `multilink.py`. Also move the two ROS-1-vintage launch files
+  `udp_bridge/launch/test_mininet_multilink_operator.launch` and
+  `.../test_mininet_multilink_robot.launch` under the same `.archived/`
+  tree — they reference the dead scaffolding and have no callers.
+- Keep `recv_q_trace.py` (it works standalone) by moving it to
+  `udp_bridge/test/bench/recv_q_trace.py`.
 
 ### Phase 6: CI runner verification
 
@@ -79,16 +89,17 @@ Confirm `unshare -rn` + `tc qdisc` on `ubuntu-latest`. If unsupported, the smoke
 
 | File | Change |
 |---|---|
-| `test/bench/run_scenario.py` | new — orchestrator |
-| `test/bench/configs/three_path.yaml` | new — bridge config |
-| `test/bench/pub.py`, `sub.py` | new — pub/sub scripts |
-| `test/bench/test_smoke.py` | new — pytest smoke |
-| `test/bench/test_range_degradation.py` | new — scenario (opt-in) |
-| `test/bench/README.md` | new — decisions + thresholds |
-| `test/bench/recv_q_trace.py` | move from `test/mininet/` |
-| `test/mininet/` → `test/mininet/.archived/` | retire dead ROS 1 scripts |
-| `package.xml` | `<test_depend>` adds: `python3-pytest`, `sensor_msgs`, `nav_msgs` |
-| `CMakeLists.txt` | register pytest tests via `ament_add_pytest_test` |
+| `udp_bridge/test/bench/run_scenario.py` | new — orchestrator |
+| `udp_bridge/test/bench/configs/three_path.yaml` | new — bridge config |
+| `udp_bridge/test/bench/pub.py`, `sub.py` | new — pub/sub scripts |
+| `udp_bridge/test/bench/test_smoke.py` | new — pytest smoke |
+| `udp_bridge/test/bench/test_range_degradation.py` | new — scenario (opt-in) |
+| `udp_bridge/test/bench/README.md` | new — decisions + thresholds |
+| `udp_bridge/test/bench/recv_q_trace.py` | move from `udp_bridge/test/mininet/` |
+| `udp_bridge/test/mininet/` → `udp_bridge/test/mininet/.archived/` | archive-with-pointer for dead ROS 1 scripts |
+| `udp_bridge/launch/test_mininet_multilink_{operator,robot}.launch` → `udp_bridge/test/mininet/.archived/` | archive ROS-1-vintage launch files (no callers) |
+| `udp_bridge/package.xml` | `<test_depend>` adds: `python3-pytest`, `sensor_msgs`, `nav_msgs`, `util-linux` (for `unshare`), `iproute2` (for `tc`) |
+| `udp_bridge/CMakeLists.txt` | register pytest tests via `ament_add_pytest_test` |
 
 ## Principles Self-Check
 
@@ -111,11 +122,14 @@ Confirm `unshare -rn` + `tc qdisc` on `ubuntu-latest`. If unsupported, the smoke
 
 | If we change... | Also update... | Included? |
 |---|---|---|
-| Add `test/bench/` | `package.xml` test_depend + `CMakeLists.txt` test registration | Yes |
+| Add `udp_bridge/test/bench/` | `udp_bridge/package.xml` test_depend + `udp_bridge/CMakeLists.txt` test registration | Yes |
 | Smoke under `colcon test` | Skip-on-no-netns guard | Yes |
-| Retire mininet | `test/mininet/README.md` (replaced) | Yes |
+| Retire mininet | `udp_bridge/test/mininet/.archived/` with new `README.md` pointer to `udp_bridge/test/bench/`; sweep the two `launch/test_mininet_*.launch` files too | Yes |
+| Use bag fields | In-tree `bag_reader.py` (no cross-repo dep on `marine_tools/bag_analysis`) | Yes |
 
 ## Estimated Scope
 
 Single PR, ~6 commits (one per phase). Phase 0 (threshold extraction) is the
-gating one — the rest depends on landed numbers.
+gating one — the rest depends on landed numbers. Phase 0 lands as its own
+reviewable commit so the chosen values for N/X/T/F/G/R/Y are visible and
+discussable before any harness code is written against them.
