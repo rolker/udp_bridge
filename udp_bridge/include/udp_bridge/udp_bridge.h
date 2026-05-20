@@ -188,6 +188,20 @@ private:
   void diagnoseRemoteGiveups(const std::string& remote_name,
                              diagnostic_updater::DiagnosticStatusWrapper& stat);
 
+  /// Lifecycle-safe wrapper around `declare_parameter`. Parameters
+  /// declared during `on_configure` persist across a
+  /// cleanup→configure transition (`on_cleanup` does not
+  /// `undeclare_parameter`), so a second `declare_parameter` for the
+  /// same name throws `ParameterAlreadyDeclaredException` and breaks
+  /// reconfiguration. Use this everywhere in `on_configure` instead
+  /// of bare `declare_parameter` to keep the lifecycle reentrant.
+  template <typename T>
+  void declareIfMissing(const std::string& name, const T& default_value)
+  {
+    if(!has_parameter(name))
+      declare_parameter(name, default_value);
+  }
+
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();
 

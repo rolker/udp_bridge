@@ -84,14 +84,14 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   auto last_slash = name.rfind('/');
   if(last_slash != std::string::npos)
     name = name.substr(last_slash+1);
-  declare_parameter( "name", name);
+  declareIfMissing( "name", name);
   // This is the name of the UDPBridge node, not the ROS2 node name
   setName(get_parameter("name").as_string());
 
 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
 
-  declare_parameter("port", port_);
+  declareIfMissing("port", port_);
   // ROS 2 parameters are int64. port_ is uint16_t; out-of-range values
   // would silently wrap and bind to an unintended port. Clamp + warn.
   {
@@ -112,7 +112,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   }
   RCLCPP_INFO_STREAM(get_logger(), "port: " << port_);
 
-  declare_parameter("maximum_packet_size", max_packet_size_);
+  declareIfMissing("maximum_packet_size", max_packet_size_);
   // Bound the packet size to a sensible UDP range. Lower bound is the
   // minimum that still leaves room for a Packet header + a meaningful
   // payload after fragmentation; upper bound is the IPv4/UDP maximum.
@@ -146,8 +146,8 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // OnSetParameters callback below propagates `ros2 param set` to the
   // cached members under remote_nodes_mutex_, so operators can adjust
   // mid-storm without a reconfigure cycle.
-  declare_parameter("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
-  declare_parameter("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
+  declareIfMissing("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
+  declareIfMissing("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
   resend_giveup_warn_rate_per_s_ = get_parameter("resend_giveup_warn_rate_per_s").as_double();
   resend_giveup_error_rate_per_s_ = get_parameter("resend_giveup_error_rate_per_s").as_double();
   // Validate launch-time values. Launch-line overrides
@@ -310,7 +310,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   bridge_info_publisher_ = create_publisher<BridgeInfo>(node_name+"/bridge_info", latching_qos);
 
-  declare_parameter("remotes_list", std::vector<std::string>());
+  declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
   for(auto remote_name: remotes_list)
   {
@@ -321,7 +321,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
 
     std::string connections_list_param = "remotes."+remote_name+".connections_list";
-    declare_parameter(connections_list_param, std::vector<std::string>());
+    declareIfMissing(connections_list_param, std::vector<std::string>());
     auto connections_list = get_parameter(connections_list_param).as_string_array();
     for(auto connection_name: connections_list)
     {
@@ -329,23 +329,23 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       connection.connection_id = connection_name;
       
       std::string host_param = "remotes." + remote_name + ".connections." + connection_name + ".host";
-      declare_parameter(host_param, "");
+      declareIfMissing(host_param, "");
       connection.host = get_parameter(host_param).as_string();
 
       std::string port_param = "remotes." + remote_name + ".connections." + connection_name + ".port";
-      declare_parameter(port_param, 0);
+      declareIfMissing(port_param, 0);
       connection.port = get_parameter(port_param).as_int();
       
       std::string return_host_param = "remotes." + remote_name + ".connections." + connection_name + ".return_host";
-      declare_parameter(return_host_param, "");
+      declareIfMissing(return_host_param, "");
       connection.return_host = get_parameter(return_host_param).as_string();
 
       std::string return_port_param = "remotes." + remote_name + ".connections." + connection_name + ".return_port";
-      declare_parameter(return_port_param, 0);
+      declareIfMissing(return_port_param, 0);
       connection.return_port = get_parameter(return_port_param).as_int();
 
       std::string maximum_bytes_per_second_param = "remotes." + remote_name + ".connections." + connection_name + ".maximum_bytes_per_second";
-      declare_parameter(maximum_bytes_per_second_param, 0);
+      declareIfMissing(maximum_bytes_per_second_param, 0);
       int mbps = get_parameter(maximum_bytes_per_second_param).as_int();
       if(mbps > 0)
         connection.maximum_bytes_per_second = mbps;
@@ -354,37 +354,37 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       remote_nodes_[remote_info.name]->update(remote_info);
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
-      declare_parameter(topics_list_param, std::vector<std::string>());
+      declareIfMissing(topics_list_param, std::vector<std::string>());
       auto topics_list = get_parameter(topics_list_param).as_string_array();
       for(auto topic: topics_list)
       {
         std::string queue_size_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".queue_size";
-        declare_parameter(queue_size_param, 10);
+        declareIfMissing(queue_size_param, 10);
         int queue_size = get_parameter(queue_size_param).as_int();
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
-        declare_parameter(period_param, 0.0);
+        declareIfMissing(period_param, 0.0);
         double period = get_parameter(period_param).as_double();
 
         std::string source_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".source";
-        declare_parameter(source_param, topic);
+        declareIfMissing(source_param, topic);
         std::string source = get_parameter(source_param).as_string();
         source = get_node_base_interface()->resolve_topic_or_service_name(source, false, false);
 
         std::string destination_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".destination";
-        declare_parameter(destination_param, source);
+        declareIfMissing(destination_param, source);
         auto destination = get_parameter(destination_param).as_string();
 
         std::string reliability_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".reliability";
-        declare_parameter(reliability_param, std::string());
+        declareIfMissing(reliability_param, std::string());
         std::string reliability = get_parameter(reliability_param).as_string();
 
         std::string durability_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".durability";
-        declare_parameter(durability_param, std::string());
+        declareIfMissing(durability_param, std::string());
         std::string durability = get_parameter(durability_param).as_string();
 
         std::string history_depth_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".history_depth";
-        declare_parameter(history_depth_param, 0);
+        declareIfMissing(history_depth_param, 0);
         // ROS 2 parameters are int64; an unchecked static_cast<uint32_t>
         // of a negative or out-of-range value wraps to a billions-large
         // depth and triggers a huge KEEP_LAST allocation in the rmw
@@ -1698,15 +1698,16 @@ void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,
 {
   // Snapshot the remote pointer + the give-up counter + step the
   // per-remote rate state + sample the thresholds all under
-  // remote_nodes_mutex_. The lock is brief — the counter read takes
-  // RemoteNode::state_mutex_ internally (lock-friendly per the
-  // comment at udp_bridge.cpp:1271) and the state-step is a tiny
-  // struct copy + compute. Sampling the thresholds under the same
-  // lock the OnSetParameters callback takes pins them against
-  // mid-callback runtime changes from `ros2 param set`. STALE return
-  // mirrors diagnoseConnection() at line 1543 for the same race
-  // condition (remote removed between task registration and
-  // diagnostic callback firing).
+  // remote_nodes_mutex_. The lock is brief — the counter read
+  // (RemoteNode::resendGiveupCount() in remote_node.cpp) takes only
+  // the recursive RemoteNode::state_mutex_ and does not re-acquire
+  // remote_nodes_mutex_, so it is lock-friendly here; the state-step
+  // is a tiny struct copy + compute. Sampling the thresholds under
+  // the same lock the OnSetParameters callback takes pins them
+  // against mid-callback runtime changes from `ros2 param set`. The
+  // STALE return mirrors diagnoseConnection() above: the remote may
+  // have been removed between task registration and the diagnostic
+  // callback firing.
   rclcpp::Time now_time = now();
   GiveupDiagnostic diag;
   double elapsed_s = 0.0;
