@@ -36,8 +36,13 @@ issue: 22
 **CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
 
 ### Actions
-- [ ] Fix (udp_bridge.cpp:165–178): add `std::isfinite` per value and `warn_thresh <= error_thresh` cross-check in OnSetParameters validation; reject batch with actionable `result.reason`.
-- [ ] Fix (udp_bridge.cpp:1716): clamp `elapsed_s` to `>= 0` for `window_s` KeyValue (`stat.add("window_s", std::max(0.0, elapsed_s))`).
-- [ ] Fix (udp_bridge.h:180–185): update `diagnoseRemoteGiveups` docstring — drop the "last_giveup_*_ maps" reference, point to `giveup_rate_state_` / `GiveupRateState` from `giveup_diagnostic.h`.
-- [ ] Fix (README.md:19–21): clarify DiagnosticStatus is the default operator surface; per-event DEBUG log requires enabling DEBUG severity to land in `/rosout` / bags.
-- [ ] (Optional) Reply or dismiss Copilot's `as_double()` type-check thread — false positive (strict typing rejects mismatched `param set` server-side; `dynamic_typing` not enabled).
+- [x] Fix (udp_bridge.cpp OnSetParameters): refactored to single-pass validator. Added `validateGiveupThresholds` to `giveup_diagnostic.h` — rejects NaN/inf, negatives, and `warn > error` with operator-actionable reason strings. Callback computes proposed_warn/proposed_error from batch + current under `remote_nodes_mutex_`, then validates once.
+- [x] Fix (udp_bridge.cpp on_configure): same validator called after `get_parameter` so launch-line overrides (`-p resend_giveup_warn_rate_per_s:=…`) can't slip a bad pair past startup. Fails the lifecycle transition with `RCLCPP_ERROR` + `CallbackReturn::FAILURE` — scope expansion beyond Copilot's flagged surface, approved by user.
+- [x] Fix (udp_bridge.cpp:1716 → now 1740): `stat.add("window_s", std::max(0.0, elapsed_s))` so a backward clock jump (NTP correction, sim-time rewind) doesn't surface a negative published window.
+- [x] Fix (udp_bridge.h diagnoseRemoteGiveups docstring): dropped stale `last_giveup_*_` reference, points at `giveup_rate_state_` / `GiveupRateState` / `stepGiveupDiagnostic`.
+- [x] Fix (README.md diagnostic surface paragraph): DiagnosticStatus called out as the default surface; per-event DEBUG log capture now documented as requiring `--ros-args --log-level udp_bridge:=DEBUG` or `RCUTILS_LOGGING_SEVERITY_THRESHOLD=DEBUG`.
+- [x] Test coverage: +9 gtests in `test_giveup_diagnostic.cpp` for the validator — defaults pass, equal warn=error passes, 0/0 passes, negative warn/error rejected per side, NaN warn/error rejected per side, +inf rejected (finite check), inverted pair rejected with both values in the reason string. 65 → 74 tests, all passing.
+- [ ] (Optional) Reply or dismiss Copilot's `as_double()` type-check thread — false positive (strict typing rejects mismatched `param set` server-side; `dynamic_typing` not enabled). Deferred to user.
+
+### Notes
+- One scope expansion beyond Copilot's flagged surface: launch-line overrides bypass the OnSetParameters callback. Same bug class (NaN/negative/inverted pair → silently broken diagnostic), closed at the launch entry point too. Authorized via AskUserQuestion before committing.
