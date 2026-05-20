@@ -78,6 +78,19 @@ Two new findings:
 Updates the prior classification: the original CMake/ODR finding from Review 1 was directionally correct on the principle; I covered downstream-package consumers but missed the in-package executable consumer. Reclassifying that comment from false-positive to partially-valid.
 
 ### Actions
-- [ ] Fix #7: re-add `#include <set>` to `udp_bridge/include/udp_bridge/remote_node.h` alongside `<deque>` and `<unordered_set>`.
-- [ ] Fix #8: add `target_compile_definitions(udp_bridge_node PRIVATE UDP_BRIDGE_BUILD_TESTING)` inside the existing `if(BUILD_TESTING)` block in `CMakeLists.txt`. Extend the CMake comment to cover the in-package executable case alongside the existing downstream-package wording.
-- [ ] Update `plan.md` round-5 note documenting both fixes and the partial-false-positive correction.
+- [x] Fix #7: re-add `#include <set>` to `udp_bridge/include/udp_bridge/remote_node.h` alongside `<deque>` and `<unordered_set>`.
+- [x] Fix #8: add `target_compile_definitions(udp_bridge_node PRIVATE UDP_BRIDGE_BUILD_TESTING)` inside the existing `if(BUILD_TESTING)` block in `CMakeLists.txt`. Extend the CMake comment to cover the in-package executable case alongside the existing downstream-package wording.
+- [x] Update `plan.md` round-5 note documenting both fixes and the partial-false-positive correction.
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-20 18:05
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-5 changes addressing Copilot's review-3 findings (against round-4 HEAD `5225c2e`):
+
+- **`udp_bridge/include/udp_bridge/remote_node.h`** — added `#include <set>` alongside the existing `<deque>` and `<unordered_set>`. `given_up_packet_numbers_` at line 260 still uses `std::set<uint64_t>`; without the direct include the build was relying on a transitive include via `udp_bridge.h:10`. Fragile.
+- **`udp_bridge/CMakeLists.txt`** — added `target_compile_definitions(udp_bridge_node PRIVATE UDP_BRIDGE_BUILD_TESTING)` inside the existing `if(BUILD_TESTING)` block, with a new comment paragraph explaining why the in-package executable needs the same discipline as the test targets (the executable includes `udp_bridge.h` which directly includes `connection.h`, so it sees `Connection`'s class definition; without the macro it would compile against a different layout than the library was built with). Walks back my earlier "false positive" classification on the original CMake/ODR finding from review 1 — the in-package executable was the consumer I'd failed to audit.
+- **`.agent/work-plans/issue-23/plan.md`** — round-5 implementation note documenting both fixes and the corrected classification.
+
+Build and full test suite (51 tests) green locally on the worktree.

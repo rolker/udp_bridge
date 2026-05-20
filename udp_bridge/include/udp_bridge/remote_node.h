@@ -11,6 +11,7 @@
 
 #include <deque>
 #include <mutex>
+#include <set>
 #include <unordered_set>
 
 #include "rclcpp/rclcpp.hpp"

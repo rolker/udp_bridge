@@ -94,6 +94,23 @@ if(BUILD_TESTING)
   # as-is — only the C++ preprocessor symbol is package-scoped.
   target_compile_definitions(${PROJECT_NAME} PRIVATE UDP_BRIDGE_BUILD_TESTING)
 
+  # The udp_bridge_node executable links against the library AND
+  # includes udp_bridge.h (which in turn includes connection.h
+  # directly), so its translation unit sees Connection / RemoteNode
+  # class definitions. Without the macro on this target too, the
+  # executable would compile against the smaller (production) layout
+  # while linking against a library compiled with the larger
+  # (test-augmented) layout — the same ODR hazard the test-target
+  # discipline above is designed to prevent, just for an in-package
+  # executable instead of a test target. In practice no Connection /
+  # RemoteNode is allocated by value in udp_bridge_node and no inline
+  # methods touch the conditional members, so the mismatch hasn't
+  # bitten us; but it is UB per the standard and tooling
+  # (sanitizers, ABI checkers) will flag it. Defining the macro on
+  # the executable too aligns all in-package translation units to a
+  # single layout. (Originally caught by Copilot in PR #25 review 3.)
+  target_compile_definitions(udp_bridge_node PRIVATE UDP_BRIDGE_BUILD_TESTING)
+
   find_package(ament_cmake_gtest REQUIRED)
   # std_msgs is required for the QoS-matching integration test, which
   # validates the load-bearing BEST_AVAILABLE matching guarantee

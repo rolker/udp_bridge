@@ -247,6 +247,47 @@ PR #13.
   reworded the surrounding comments — the invariant under test is
   "no broadcast fallback," not "no log output."
 
+- **Header hygiene + in-package ABI alignment (round-5 fix).** Two
+  precise findings from Copilot's third review (against the round-4
+  push at `5225c2e`):
+  1. **Missing `<set>` include.** Round-4 dropped `#include <set>`
+     from `remote_node.h` when replacing the WARN-bookkeeping set,
+     but `given_up_packet_numbers_` at line 260 still uses
+     `std::set<uint64_t>`. The build was passing only because
+     `udp_bridge.h:10` transitively pulled in `<set>`. Re-added the
+     direct include alongside the new `<deque>` / `<unordered_set>`.
+  2. **In-package ABI mismatch on `udp_bridge_node`.** The library
+     target was being compiled with `UDP_BRIDGE_BUILD_TESTING`
+     defined under `BUILD_TESTING=ON` (larger `Connection` /
+     `RemoteNode` layouts), but the `udp_bridge_node` executable
+     target was not — and its translation unit includes `udp_bridge.h`
+     which directly includes `connection.h`, so the executable
+     compiled against the production layout while linking a
+     test-augmented library. The original CMake comment block called
+     out the same hazard for **downstream-package** consumers but
+     didn't extend the discipline to **in-package** consumers
+     (executable + tests). Test targets were already covered by the
+     `add_udp_bridge_gtest()` helper added in round-2; the executable
+     was the remaining gap. Fix: add
+     `target_compile_definitions(udp_bridge_node PRIVATE UDP_BRIDGE_BUILD_TESTING)`
+     inside the existing `if(BUILD_TESTING)` block, with a new
+     comment paragraph documenting why the executable needs the same
+     discipline as the test targets. The mismatch hadn't bitten us
+     in practice because the executable never allocates `Connection`
+     by value and no inline methods on Connection touch conditional
+     members, but it's UB per the standard and is exactly the kind
+     of latent ABI hazard the existing CMake comment was already
+     designed to prevent.
+
+  This also walks back the "false positive" classification I'd
+  attached to Copilot's original CMake/ODR finding in the round-1
+  triage. The finding's framing — "downstream targets that link
+  against this library" — was technically correct only for the
+  downstream-package case I covered (where no consumers exist
+  outside udp_bridge), but the underlying principle (layout-changing
+  macros in installed headers are an ODR hazard for any consumer)
+  applied to the in-package executable I had failed to audit.
+
 - **Bounded FIFO for dispatch-miss WARN bookkeeping (round-4 fix).**
   Copilot's second review on PR #25 (against the round-3 push) flagged
   that the round-3 receive-side clamp only bounded each entry's *size*
