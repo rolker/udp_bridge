@@ -42,10 +42,15 @@ design forks:
 3. **Move routing into `RemoteNode`.** Add
    `RemoteNode::dispatchResendRequest(const ResendRequest&, int socket, rclcpp::Time now)`
    that looks up `connection(rr.connection_id)` and calls `resend_packets` on
-   exactly that connection (no-op + DEBUG log if not found — only happens on
-   bona-fide config mismatch under coordinated-redeploy). Keeps the routing
-   logic on the class that owns the connection map and is already directly
-   constructed in `test_remote_node_resend.cpp`'s fixture.
+   exactly that connection. If the id is not in `connections_`, no-op and
+   emit a DEBUG log that names both the stamped id and the set of currently
+   known connection ids — this branch fires both on legitimate races (sender
+   stamped while the receiver was tearing the connection down for a CONNECT
+   cycle or config reload) and on bona-fide coordinated-redeploy mismatches,
+   so the log line needs to give an operator chasing either case enough to
+   diagnose. Keeps the routing logic on the class that owns the connection
+   map and is already directly constructed in `test_remote_node_resend.cpp`'s
+   fixture.
 4. **`UDPBridge::decodeResendRequest` becomes a thin shim.** Snapshot the
    matching `RemoteNode` under `remote_nodes_mutex_`, then call
    `dispatchResendRequest` outside the lock (same pattern as today —
@@ -55,14 +60,26 @@ design forks:
    `Connection`. `resend_packets` increments the counter at entry (before the
    network I/O). Mirrors the existing `record_sent_packet_for_test` /
    `sent_packet_count_for_test` pattern at `connection.h:102-127`.
-6. **Unit test.** New `TEST_F` in `test_remote_node_resend.cpp`: set up a
-   `RemoteNode` with two `Connection`s (`"wifi"`, `"vpn"`); seed a sent packet
-   on each via `record_sent_packet_for_test`; build a `ResendRequest` stamped
-   for `"wifi"`; call `dispatchResendRequest` with a dummy `socket` (use a
-   throwaway UDP socket on loopback so `sendto` doesn't fail in a confusing
-   way); assert `wifi.resend_call_count_for_test() == 1` and
-   `vpn.resend_call_count_for_test() == 0`. Second test: stamp for an
-   unknown id; assert both counters stay at 0 (no-op path).
+6. **Unit tests.** New `TEST_F`s in `test_remote_node_resend.cpp`. Common
+   setup: `RemoteNode` with two `Connection`s (`"wifi"`, `"vpn"`); seed a
+   sent packet on each via `record_sent_packet_for_test`; dummy socket
+   obtained via `socket(AF_INET, SOCK_DGRAM, 0)` left unbound and `close()`d
+   on teardown — `sendto` will fail benignly but the counter is what we
+   assert on, not the I/O.
+   - **Matched-id routing.** Build a `ResendRequest` stamped for `"wifi"`;
+     call `dispatchResendRequest`; assert
+     `wifi.resend_call_count_for_test() == 1` and
+     `vpn.resend_call_count_for_test() == 0`.
+   - **Stamped id no longer present.** Set up both connections, then tear
+     down `"wifi"` (drop it from `connections_` — exercise the production
+     path via whatever method already removes connections, or via a
+     `UDP_BRIDGE_BUILD_TESTING`-gated helper if none is reachable); send a
+     `ResendRequest` stamped for `"wifi"`; assert both counters stay at 0
+     (this is the legitimate sender/receiver race during a CONNECT cycle).
+   - **Unknown id (config mismatch).** Smaller third test: stamp for a
+     never-registered id; assert both counters stay at 0. Same code path
+     as the stale-id case but distinct framing for the operator-facing
+     diagnostic.
 7. **Follow-up comment on #18.** After PR opens, post a short note listing
    suggested bench scenarios: (a) verify per-connection routing under
    normal traffic, (b) verify no resends fan out to a path with rx loss,
