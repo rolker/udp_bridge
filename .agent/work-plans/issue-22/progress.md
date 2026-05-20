@@ -75,3 +75,18 @@ issue: 22
 ### Actions
 - [x] Fix (`giveup_diagnostic.h`): added the "no activity → OK" short-circuit (`current_count == prev_count` returns rate=0/OK before threshold comparison). The function's edge-case docstring was extended with the new case.
 - [x] Test (`test_giveup_diagnostic.cpp`): 3 new gtests — `NoActivityReturnsOk` (current==prev with default thresholds), `ZeroDeltaWithZeroThresholdsStaysOk` (the round-3 regression), `ZeroWarnFiresOnAnyActivity` (companion — warn=0 still fires on real activity). Also rewrote the misleading comment in `ZeroThresholdsAreAccepted` to describe the actual semantics. 74 → 77 tests, all green.
+
+## External Review (round 4)
+**Status**: complete
+**When**: 2026-05-20 23:55 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 at `b5946c2` — Copilot's fourth re-review. 2 new inline comments — 1 valid (README wording), 1 false positive (repeat `||` hallucination).
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [ ] Fix (`README.md` Diagnostic surface bullet): reword "the sender has abandoned resending packets" — the counter is bumped on the *receiver* side in `RemoteNode::getMissingPackets()` when a missing packet's first-request time exceeds `kSentPacketTTL` (the sender's retention window). The receiver gives up because the sender no longer has the packet to resend. Phrase as "missing packets abandoned by the resend protocol" with the TTL mechanism named.
+- [ ] (Optional) Resolve the round-4 `||` README thread on GitHub — same parser-level hallucination Copilot fired in round 2; source still uses single pipes throughout the table.
+
+### Notes
+- Round-4 `||` claim is the second instance of the same hallucination on the same unchanged source (round-2 instance was resolved as FP). Copilot's own diff hunk in the comment body shows the correct single-pipe markup — the false claim is purely in the natural-language prose. Pattern: this specific false positive may keep recurring on each re-review pass. Worth noting for future agents that "yet another `||` claim against this table" should be triaged as FP without re-investigating.
