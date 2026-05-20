@@ -63,13 +63,20 @@ class RemoteNode
   // Route a ResendRequest to the single connection it was stamped for
   // (issue #23). Looks up connection(rr.connection_id) and forwards to
   // its resend_packets. If the id is not in connections_, no-op and
-  // emit a DEBUG log naming both the stamped id and the set of
-  // currently known connection ids — this branch fires both on
-  // legitimate sender/receiver races (the receiver tore the connection
-  // down for a CONNECT cycle or config reload between the sender
-  // stamping the request and us decoding it) and on bona-fide
-  // coordinated-redeploy mismatches, so the log line needs enough
-  // context for an operator to distinguish them.
+  // emit a log naming both the stamped id and the set of currently
+  // known connection ids: WARN on the first miss per stamped id
+  // (a genuine coordinated-redeploy mismatch needs to be diagnosable
+  // at default log levels), DEBUG on subsequent misses for the same id
+  // (legitimate CONNECT-cycle races shouldn't spam). The known-ids
+  // payload gives an operator enough context to distinguish the two
+  // operational scenarios that share this path:
+  //   - Legitimate race: the receiver tore the connection down for a
+  //     CONNECT cycle or config reload between the sender stamping
+  //     the request and us decoding it; resolves on the next BridgeInfo.
+  //   - Coordinated-redeploy mismatch: the two bridges' connection-id
+  //     strings don't agree; does not self-resolve.
+  // First-miss bookkeeping lives in dispatch_miss_warned_ids_ (see
+  // field comment below).
   //
   // Caller MUST NOT hold state_mutex_. The method takes it briefly for
   // the lookup, then releases it before invoking

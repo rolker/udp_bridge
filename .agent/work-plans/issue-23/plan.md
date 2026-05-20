@@ -211,3 +211,38 @@ PR #13.
   Promoted to WARN on first miss per id (state bookkeeping in a small
   set on RemoteNode), DEBUG on subsequent — surfaces real config
   errors without spamming during legitimate CONNECT-cycle races.
+
+- **Receive-side connection-id clamp (round-3 fix).** Copilot's PR-25
+  review flagged that `RemoteNode::dispatch_miss_warned_ids_` is
+  populated from a network-supplied string with no enforced upper
+  bound. The send side already truncates to
+  `maximum_connection_id_size - 1` (the sender-stamp truncation
+  introduced in round-2 above), but the receive side did no
+  validation — `ResendRequest.msg` declares `string connection_id`
+  unbounded. Two failure modes followed: (a) memory growth of the
+  WARN-once bookkeeping set under sustained corrupted-but-
+  deserializable packets or a misbehaving peer; (b) silent
+  resend-routing miss for any older or buggy peer that didn't apply
+  the truncation contract (its full-length id would never match the
+  truncated key in `connections_`). Round-3 fix: clamp
+  `rr.connection_id` to `maximum_connection_id_size - 1` in
+  `decodeResendRequest` right after the deserialize, mirroring the
+  sender-side `assign(..., 0, maximum_connection_id_size - 1)` at
+  `udp_bridge.cpp:1034-1035`. The clamp is a one-line invariant; the
+  existing `DispatchHonorsTruncatedConnectionId` test already covers
+  the downstream behavior the clamp leans on (truncated-form lookup
+  matches; untruncated misses). A dedicated test for the clamp itself
+  would require exposing the private `decodeResendRequest` or
+  refactoring it into a free helper, which is disproportionate for a
+  one-line resize on a value field.
+
+- **Doc-comment + test-name polish (round-3).** Two stale-wording
+  findings from the same Copilot review: the `dispatchResendRequest`
+  header comment in `remote_node.h` still said "emit a DEBUG log" even
+  though round-2 promoted it to WARN-first/DEBUG-subsequent; updated
+  to match the impl. And two dispatch-miss tests in
+  `test_remote_node_resend.cpp` were named `DispatchSilentlyDrops*`
+  with prose saying "must no-op silently", which wrongly implied no
+  diagnostic output. Renamed to `DispatchDropsWithoutBroadcast*` and
+  reworded the surrounding comments — the invariant under test is
+  "no broadcast fallback," not "no log output."

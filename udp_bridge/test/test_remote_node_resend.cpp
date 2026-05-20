@@ -472,9 +472,12 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 //     fixed char array). The truncated-form lookup matches; the
 //     untruncated-form lookup misses. This is the contract the fix in
 //     UDPBridge::resendMissingPackets relies on.
-// The two no-op cases share dispatch's lookup-miss branch; the test
-// split documents the two operational scenarios an operator might be
-// chasing when the WARN/DEBUG log fires.
+// The two no-op cases share dispatch's lookup-miss branch (which emits
+// WARN-on-first-miss-per-id, DEBUG thereafter — see
+// dispatchResendRequest in remote_node.cpp). The behavioral invariant
+// these tests assert is "no broadcast fallback to other connections",
+// not "no log output". The test split documents the two operational
+// scenarios an operator might be chasing when that WARN/DEBUG log fires.
 
 namespace
 {
@@ -528,9 +531,11 @@ TEST_F(ResendFixture, DispatchRoutesToStampedConnectionOnly)
 // Routing case 2: stamped id is absent from the receiver's connections_
 // (subset state). Models the race window where the receiver hasn't
 // re-registered the connection yet but the sender already stamped for
-// it. Dispatch must no-op silently — must not fall back to broadcast
-// (that's the old behavior this issue removes).
-TEST_F(ResendFixture, DispatchSilentlyDropsWhenStampedIdAbsent)
+// it. Dispatch must no-op (no broadcast fallback to other live
+// connections — that's the old behavior this issue removes). Dispatch
+// also emits a WARN log on the first such miss per id; this test
+// asserts the routing invariant, not the log output.
+TEST_F(ResendFixture, DispatchDropsWithoutBroadcastWhenStampedIdAbsent)
 {
   // Receiver knows only "vpn" right now; sender stamped for "wifi".
   auto vpn = remote_->newConnection("vpn", "127.0.0.1", 9002);
@@ -550,9 +555,10 @@ TEST_F(ResendFixture, DispatchSilentlyDropsWhenStampedIdAbsent)
 }
 
 // Routing case 3: stamped id was never registered (config mismatch
-// across coordinated redeploys). Same no-op path as case 2; differs in
-// known_ids log content (which is operator-facing, not asserted here).
-TEST_F(ResendFixture, DispatchSilentlyDropsUnknownConnectionId)
+// across coordinated redeploys). Same no-broadcast-fallback invariant
+// as case 2; differs in known_ids log content (which is operator-facing,
+// not asserted here).
+TEST_F(ResendFixture, DispatchDropsWithoutBroadcastUnknownConnectionId)
 {
   auto wifi = remote_->newConnection("wifi", "127.0.0.1", 9001);
   auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);

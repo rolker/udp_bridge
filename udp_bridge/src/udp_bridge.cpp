@@ -713,6 +713,25 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
       << "): " << e.what() << " — dropping packet");
     return;
   }
+  // Enforce the on-wire connection-id limit on the receive side too.
+  // The sender already truncates to maximum_connection_id_size - 1
+  // (udp_bridge.cpp resendMissingPackets) because the receiver's
+  // connections_ map is keyed on the truncated id (packet header is a
+  // fixed char[maximum_connection_id_size]; see wrapped_packet.cpp:31-32).
+  // Clamping here closes two latent gaps:
+  //   1) An older or buggy peer that stamps the full untruncated id
+  //      would otherwise miss the dispatch lookup forever; clamping
+  //      lets its resend route correctly (the truncated form matches
+  //      what arrived in the packet header).
+  //   2) RemoteNode::dispatch_miss_warned_ids_ inserts rr.connection_id
+  //      on lookup miss and is never pruned. Without a receive-side
+  //      cap, a misbehaving peer or a stream of bit-flipped-but-
+  //      deserializable packets could grow the set unboundedly. The
+  //      ROS string field is unbounded at the schema level. Clamping
+  //      ties the practical bound to the configured id space, which
+  //      is what the field comment at remote_node.h claims.
+  if(rr.connection_id.size() > maximum_connection_id_size - 1)
+    rr.connection_id.resize(maximum_connection_id_size - 1);
   auto now = get_clock()->now();
 
   // Issue #23: route the resend response back via the single connection
