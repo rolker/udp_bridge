@@ -61,3 +61,23 @@ Round-4 changes addressing Copilot's review-2 sharpening of the unbounded-set co
 Build and full test suite (51 tests; +1 cap test) green locally on the worktree.
 
 CMake/ODR Copilot finding still standing as documented false positive.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-20 18:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 (after round-4 push) — 3 reviews (Copilot). Review 1 (against stale `e244b9b`) and Review 2 (against `f6dad12`) status unchanged; Review 3 against current HEAD `5225c2e` adds 2 new findings, both valid.
+**CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4)
+
+Two new findings:
+
+1. **`remote_node.h:13`** — `<set>` include removed in round-4 (set was only used for the now-replaced `dispatch_miss_warned_ids_`), but `given_up_packet_numbers_` at line 260 still uses `std::set<uint64_t>`. Build succeeds only because `udp_bridge.h:10` transitively brings `<set>` in. Fragile.
+2. **`CMakeLists.txt:95`** — when `BUILD_TESTING=ON`, the library is compiled with `UDP_BRIDGE_BUILD_TESTING` (larger `Connection`/`RemoteNode` layouts), but the `udp_bridge_node` executable target links against that library without defining the same macro. Its compilation of `connection.h`/`remote_node.h` (via `udp_bridge.h:25`) sees the smaller layouts. In-package ODR mismatch. In practice the executable doesn't allocate `Connection` by value or inline layout-dependent methods (everything goes through `shared_ptr` and out-of-line library methods), so it hasn't bitten us — but it's UB per the standard.
+
+Updates the prior classification: the original CMake/ODR finding from Review 1 was directionally correct on the principle; I covered downstream-package consumers but missed the in-package executable consumer. Reclassifying that comment from false-positive to partially-valid.
+
+### Actions
+- [ ] Fix #7: re-add `#include <set>` to `udp_bridge/include/udp_bridge/remote_node.h` alongside `<deque>` and `<unordered_set>`.
+- [ ] Fix #8: add `target_compile_definitions(udp_bridge_node PRIVATE UDP_BRIDGE_BUILD_TESTING)` inside the existing `if(BUILD_TESTING)` block in `CMakeLists.txt`. Extend the CMake comment to cover the in-package executable case alongside the existing downstream-package wording.
+- [ ] Update `plan.md` round-5 note documenting both fixes and the partial-false-positive correction.
