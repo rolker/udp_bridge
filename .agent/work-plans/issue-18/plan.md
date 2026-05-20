@@ -41,11 +41,17 @@ Land concrete values in `test/bench/README.md` before Phase 3:
 
 Three-tier mix via `topics_list` replication in `three_path.yaml`. Critical
 replicated on all three paths; Telemetry on WiFi+Starlink; Bulk on WiFi only.
+Message types per tier: Critical / Telemetry use small fixed-shape messages
+(`std_msgs/String` for heartbeat-equivalent, `nav_msgs/Odometry` for odom
+stand-in); Bulk uses `sensor_msgs/Image` filled with synthetic random bytes
+at a calibrated size × rate that lands at the WiFi link cap. No ffmpeg dep.
 
 ### Phase 3: Range-degradation trajectory + base assertions
 
 Phase walker drives WiFi `tc` through the 6-phase trajectory. Capture
-`bridge_info` + `recv_q_trace` bag during the run.
+`bridge_info` + `recv_q_trace` bag during the run into a fresh
+`tempfile.mkdtemp(prefix='udp_bridge_bench_')` (respects `$TMPDIR`; override
+via `UDP_BRIDGE_BENCH_OUTDIR`). Cleanup on pass; preserve on fail.
 `test/bench/test_range_degradation.py` — opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`,
 asserts the 5 single-path invariants. Bag parsed via
 `bag_analysis/extractors/udp_bridge.py`.
@@ -81,7 +87,7 @@ Confirm `unshare -rn` + `tc qdisc` on `ubuntu-latest`. If unsupported, the smoke
 | `test/bench/README.md` | new — decisions + thresholds |
 | `test/bench/recv_q_trace.py` | move from `test/mininet/` |
 | `test/mininet/` → `test/mininet/.archived/` | retire dead ROS 1 scripts |
-| `package.xml` | `<test_depend>python3-pytest</test_depend>` |
+| `package.xml` | `<test_depend>` adds: `python3-pytest`, `sensor_msgs`, `nav_msgs` |
 | `CMakeLists.txt` | register pytest tests via `ament_add_pytest_test` |
 
 ## Principles Self-Check
@@ -108,15 +114,6 @@ Confirm `unshare -rn` + `tc qdisc` on `ubuntu-latest`. If unsupported, the smoke
 | Add `test/bench/` | `package.xml` test_depend + `CMakeLists.txt` test registration | Yes |
 | Smoke under `colcon test` | Skip-on-no-netns guard | Yes |
 | Retire mininet | `test/mininet/README.md` (replaced) | Yes |
-
-## Open Questions
-
-1. **Pub/sub language** — rclpy (Python) or rclcpp (C++)? Recommend rclpy for
-   consistency with the bag-analysis Python tooling and ease.
-2. **Camera stand-in for Bulk tier** — real ffmpeg or synthetic
-   `sensor_msgs/Image`? Recommend synthetic to avoid an unrelated dep.
-3. **Bag output location** — `/tmp/udp_bridge_bench/<scenario>_<ts>/`? Cleanup
-   after pass; preserve on failure.
 
 ## Estimated Scope
 
