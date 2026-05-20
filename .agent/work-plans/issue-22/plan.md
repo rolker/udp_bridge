@@ -20,7 +20,7 @@ This is also a worked instance of the workspace pattern documented in memory `fe
 
 3. **Declare thresholds as ROS 2 parameters**, not `const`. Defaults: `resend_giveup_warn_rate_per_s=5.0`, `resend_giveup_error_rate_per_s=50.0` — confirmed with owner. Calibrated against the 2026-05-19 storm (~700/s peak / ~3.9/s average steady): the average correctly fires WARN, the burst correctly fires ERROR. Lower-WARN-threshold question (Open Question 2 below) deferred — start with 5/50 and revisit if operators report missing mild-loss signal. Parameters allow field tuning via YAML without rebuild.
 
-4. **Tests** — extend `test/test_remote_node_resend.cpp` is *not* the right home for the publisher tests (RemoteNode doesn't know about the diagnostic infrastructure — only exposes `resendGiveupCount()`). Add a new `test/test_remote_giveup_diagnostic.cpp` exercising the rate-calculation logic in isolation (counter-reset case, threshold transitions OK↔WARN↔ERROR, zero-rate steady state, multi-remote independence).
+4. **Tests** — extend `test/test_remote_node_resend.cpp` is *not* the right home for the publisher tests (RemoteNode doesn't know about the diagnostic infrastructure — only exposes `resendGiveupCount()`). Add a new `test/test_remote_giveup_diagnostic.cpp` exercising the rate-calculation logic in isolation (counter-reset case, threshold transitions OK↔WARN↔ERROR, zero-rate steady state, multi-remote independence). Uses the same simulated-clock pattern as `test_remote_node_resend.cpp` to keep timing deterministic — the rate calculation is time-dependent, so test fixtures must control `now()` rather than rely on wall-clock.
 
 ## Files to Change
 
@@ -42,6 +42,7 @@ This is also a worked instance of the workspace pattern documented in memory `fe
 | Only what's needed | Reuses existing `diagnostic_updater_` infrastructure + existing `resendGiveupCount()` accessor + existing `Remote.msg.resend_giveup_count` field. No new accounting state introduced. ~50 LOC plus tests. |
 | Test what breaks | Test scope matches the field-observed failure modes: counter reset across `udp_bridge` restart (per #21), threshold boundaries calibrated against the 2026-05-19 storm, multi-remote independence (storm hit both directions). |
 | Improve incrementally | Two atomic commits: step 1 (one-line WARN→DEBUG) is independently mergeable; step 2 (diagnostic publisher + parameters + tests + README) is its own commit. |
+| Enforcement over documentation | The "link-conditions events go through DiagnosticStatus, not WARN" rule that this plan applies is a workspace convention (memory `feedback_wifi_disconnect_not_an_error`), not enforcement. Applying the convention here is the right step; broader enforcement (a grep / lint that flags `RCLCPP_WARN` near `resend_giveup_count_` and similar patterns) is acknowledged as out of scope for this PR. |
 | Workspace vs. project separation | Pure project change in `udp_bridge`. No workspace coupling. |
 
 ## ADR Compliance
