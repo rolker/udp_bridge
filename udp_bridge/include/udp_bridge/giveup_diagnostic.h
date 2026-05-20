@@ -39,7 +39,14 @@ struct GiveupDiagnostic
 //                         rewind across a sender restart)
 //                         → rate_per_s = 0, level = OK; total reflects
 //                         current_count.
-//  - Threshold transitions:
+//  - No activity:       current_count == prev_count
+//                         → rate_per_s = 0, level = OK regardless of
+//                         thresholds. Threshold semantics apply to
+//                         give-up activity, not its absence; without
+//                         this short-circuit, a 0/0 threshold pair
+//                         (allowed by validateGiveupThresholds) would
+//                         fire ERROR on every quiet tick via `0 >= 0`.
+//  - Threshold transitions (current_count > prev_count, elapsed_s > 0):
 //      rate >= error_thresh    → level = ERROR
 //      rate >= warn_thresh     → level = WARN
 //      otherwise               → level = OK
@@ -63,6 +70,18 @@ inline GiveupDiagnostic computeGiveupDiagnostic(
   // both collapse to "no measurable rate this interval". elapsed_s < 0
   // covers clock jumps from sim time or NTP corrections.
   if (current_count < prev_count || elapsed_s <= 0.0)
+  {
+    d.rate_per_s = 0.0;
+    d.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    return d;
+  }
+
+  // No activity this window: report OK regardless of thresholds. The
+  // `>=` comparisons below would otherwise fire WARN/ERROR for a zero
+  // rate when warn_thresh / error_thresh are 0 — a permanently-non-OK
+  // diagnostic. Caught by Copilot round 3 on PR #24; regression test
+  // ZeroDeltaWithZeroThresholdsStaysOk.
+  if (current_count == prev_count)
   {
     d.rate_per_s = 0.0;
     d.level = diagnostic_msgs::msg::DiagnosticStatus::OK;

@@ -131,6 +131,46 @@ TEST(GiveupDiagnostic, CounterResetReturnsZeroRate)
   EXPECT_EQ(d.total, 5u);
 }
 
+TEST(GiveupDiagnostic, NoActivityReturnsOk)
+{
+  // current == prev means no give-up events happened this window.
+  // Must short-circuit to OK regardless of threshold values — the
+  // diagnostic reports activity, not its absence.
+  GiveupDiagnostic d = computeGiveupDiagnostic(100, 100, 1.0, kWarn, kError);
+  EXPECT_EQ(d.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 0.0);
+  EXPECT_EQ(d.total, 100u);
+}
+
+TEST(GiveupDiagnostic, ZeroDeltaWithZeroThresholdsStaysOk)
+{
+  // Regression for Copilot round-3 on PR #24: validateGiveupThresholds
+  // accepts 0/0, and without the no-activity short-circuit the `>=`
+  // comparison fires ERROR on every quiet tick (0.0 >= 0.0 is true).
+  // The no-activity branch must run before threshold comparison so a
+  // 0/0 pair behaves as "WARN/ERROR on any give-up activity, OK
+  // otherwise" rather than "permanently non-OK".
+  GiveupDiagnostic d = computeGiveupDiagnostic(
+      /*prev=*/5, /*current=*/5, /*elapsed=*/1.0,
+      /*warn=*/0.0, /*error=*/0.0);
+  EXPECT_EQ(d.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 0.0);
+  EXPECT_EQ(d.total, 5u);
+}
+
+TEST(GiveupDiagnostic, ZeroWarnFiresOnAnyActivity)
+{
+  // Companion to ZeroDeltaWithZeroThresholdsStaysOk: validates that
+  // warn=0 still means "WARN on any non-zero rate", not "WARN never".
+  // With current > prev and elapsed > 0, the threshold branch runs and
+  // a rate of 1/s is >= warn=0 → WARN (since 1 < error=10 → not ERROR).
+  GiveupDiagnostic d = computeGiveupDiagnostic(
+      /*prev=*/0, /*current=*/1, /*elapsed=*/1.0,
+      /*warn=*/0.0, /*error=*/10.0);
+  EXPECT_EQ(d.level, DS::WARN);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 1.0);
+}
+
 TEST(GiveupDiagnostic, LongWindowAveragesCorrectly)
 {
   // 60 give-ups across a 60-second window = 1/s steady, below WARN.
@@ -303,8 +343,13 @@ TEST(GiveupThresholdValidation, EqualWarnAndErrorIsAccepted)
 
 TEST(GiveupThresholdValidation, ZeroThresholdsAreAccepted)
 {
-  // 0/0 means every nonzero rate fires ERROR. Pathological but valid;
-  // not the validator's job to second-guess intent.
+  // 0/0 is a pathological-but-valid configuration: it means every
+  // give-up event fires ERROR (rate > 0 trips the `>= 0` comparison).
+  // The validator's job is range/relation checks, not intent guessing.
+  // Note: the diagnostic computation has a no-activity short-circuit
+  // (computeGiveupDiagnostic returns OK when current == prev) so a
+  // 0/0 pair doesn't make every quiet tick fire — see
+  // ZeroDeltaWithZeroThresholdsStaysOk below for the regression.
   auto v = validateGiveupThresholds(0.0, 0.0);
   EXPECT_TRUE(v.ok);
 }
