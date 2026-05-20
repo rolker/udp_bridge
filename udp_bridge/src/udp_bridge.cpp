@@ -56,6 +56,7 @@
 #include "udp_bridge_interfaces/msg/resend_request.hpp"
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
+#include "udp_bridge/giveup_diagnostic.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/utilities.h"
 #include "lifecycle_msgs/msg/state.hpp"
@@ -135,6 +136,18 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     max_packet_size_ = static_cast<int>(configured_packet_size);
   }
   RCLCPP_INFO_STREAM(get_logger(), "maximum_packet_size: " << max_packet_size_);
+
+  // Resend give-up rate thresholds (issue #22). Defaults calibrated
+  // against the 2026-05-19 BizzyBoat storm (~3.9/s steady, ~700/s
+  // burst): steady fires WARN, burst fires ERROR. Tunable via
+  // deployment YAML without a rebuild.
+  declare_parameter("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
+  declare_parameter("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
+  resend_giveup_warn_rate_per_s_ = get_parameter("resend_giveup_warn_rate_per_s").as_double();
+  resend_giveup_error_rate_per_s_ = get_parameter("resend_giveup_error_rate_per_s").as_double();
+  RCLCPP_INFO_STREAM(get_logger(),
+    "resend_giveup thresholds: warn=" << resend_giveup_warn_rate_per_s_
+    << "/s, error=" << resend_giveup_error_rate_per_s_ << "/s");
 
   //maximum_packet_size_subscriber_ = ros::NodeHandle("~").subscribe("maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
 
@@ -362,6 +375,17 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
   diagnostic_timer_.reset();
   diagnostic_updater_.reset();
   diagnostic_task_names_.clear();
+  // Per-remote diagnostic state: also clear, so an
+  // activate→deactivate→activate cycle starts from a known baseline
+  // rather than carrying stale last_giveup_publish_time_ values that
+  // would compute a huge "elapsed" on the next publish. Guarded by
+  // remote_nodes_mutex_ per the lifecycle-state contract for these
+  // maps (declaration in udp_bridge.h).
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    last_giveup_count_.clear();
+    last_giveup_publish_time_.clear();
+  }
   return LifecycleNode::on_cleanup(state);
 }
 
@@ -1473,16 +1497,18 @@ void UDPBridge::syncDiagnosticTasks()
 {
   if(!diagnostic_updater_)
     return;
-  // Snapshot (remote_name, connection_id) pairs under the lock; the
-  // diagnostic_updater_->add call captures by value so the registered task
-  // does not need to outlive the lock.
+  // Snapshot (remote_name, connection_id) pairs and remote names under
+  // the lock; the diagnostic_updater_->add call captures by value so
+  // registered tasks don't need to outlive the lock.
   std::vector<std::pair<std::string, std::string>> remote_connection_pairs;
+  std::vector<std::string> remote_names;
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     for(auto& remote_entry: remote_nodes_)
     {
       if(!remote_entry.second)
         continue;
+      remote_names.push_back(remote_entry.first);
       for(auto& connection: remote_entry.second->connections())
       {
         if(!connection)
@@ -1502,6 +1528,24 @@ void UDPBridge::syncDiagnosticTasks()
       [this, remote_name, connection_id](diagnostic_updater::DiagnosticStatusWrapper& stat)
       {
         diagnoseConnection(remote_name, connection_id, stat);
+      });
+    diagnostic_task_names_.insert(task_name);
+  }
+  // Per-remote resend-give-up diagnostic (issue #22). Task name format
+  // mirrors the per-connection convention above so the aggregator
+  // groups them next to the related connection statuses. The
+  // diagnostic_task_names_ gate prevents double-add if a remote of the
+  // same name is removed and re-added in the same activate cycle —
+  // diagnostic_updater::Updater has no per-task remove() API.
+  for(const auto& remote_name: remote_names)
+  {
+    std::string task_name = "udp_bridge " + name_ + ": " + remote_name + ": resend give-ups";
+    if(diagnostic_task_names_.count(task_name))
+      continue;
+    diagnostic_updater_->add(task_name,
+      [this, remote_name](diagnostic_updater::DiagnosticStatusWrapper& stat)
+      {
+        diagnoseRemoteGiveups(remote_name, stat);
       });
     diagnostic_task_names_.insert(task_name);
   }
@@ -1570,6 +1614,67 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
   {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, summary);
   }
+}
+
+void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,
+                                      diagnostic_updater::DiagnosticStatusWrapper& stat)
+{
+  // Snapshot the remote pointer + take the give-up counter + read AND
+  // update the last_* maps all under remote_nodes_mutex_. The lock is
+  // brief — the counter read takes RemoteNode::state_mutex_ internally
+  // (lock-friendly per the comment at udp_bridge.cpp:1271) and the map
+  // ops are short integer/timestamp shuffles. STALE return mirrors
+  // diagnoseConnection() at line 1543 for the same race condition
+  // (remote removed between task registration and callback firing).
+  rclcpp::Time now_time = now();
+  uint32_t current_count = 0;
+  double elapsed_s = 0.0;
+  uint32_t prev_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote_it = remote_nodes_.find(remote_name);
+    if(remote_it == remote_nodes_.end() || !remote_it->second)
+    {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "remote not registered");
+      return;
+    }
+    current_count = remote_it->second->resendGiveupCount();
+
+    auto last_count_it = last_giveup_count_.find(remote_name);
+    auto last_time_it = last_giveup_publish_time_.find(remote_name);
+    if(last_count_it != last_giveup_count_.end() &&
+       last_time_it != last_giveup_publish_time_.end())
+    {
+      prev_count = last_count_it->second;
+      elapsed_s = (now_time - last_time_it->second).seconds();
+    }
+    // First call (no prior entry): prev_count=0, elapsed_s=0 — the
+    // free function's zero-elapsed branch returns rate=0/OK without
+    // dividing. Update the maps before releasing the lock so the
+    // next call has a baseline.
+    last_giveup_count_[remote_name] = current_count;
+    last_giveup_publish_time_[remote_name] = now_time;
+  }
+
+  GiveupDiagnostic diag = computeGiveupDiagnostic(
+      prev_count, current_count, elapsed_s,
+      resend_giveup_warn_rate_per_s_, resend_giveup_error_rate_per_s_);
+
+  stat.add("remote", remote_name);
+  stat.add("give_ups_total", diag.total);
+  stat.add("give_up_rate_per_s", diag.rate_per_s);
+  stat.add("window_s", elapsed_s);
+  stat.add("warn_threshold_per_s", resend_giveup_warn_rate_per_s_);
+  stat.add("error_threshold_per_s", resend_giveup_error_rate_per_s_);
+
+  std::string summary;
+  if(diag.level == diagnostic_msgs::msg::DiagnosticStatus::ERROR)
+    summary = "give-up rate " + std::to_string(diag.rate_per_s) + "/s exceeds error threshold";
+  else if(diag.level == diagnostic_msgs::msg::DiagnosticStatus::WARN)
+    summary = "give-up rate " + std::to_string(diag.rate_per_s) + "/s exceeds warn threshold";
+  else
+    summary = "give-up rate " + std::to_string(diag.rate_per_s) + "/s (total " + std::to_string(diag.total) + ")";
+  stat.summary(diag.level, summary);
 }
 
 // void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)

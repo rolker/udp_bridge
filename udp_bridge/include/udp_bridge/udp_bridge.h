@@ -176,6 +176,15 @@ private:
                           const std::string& connection_id,
                           diagnostic_updater::DiagnosticStatusWrapper& stat);
 
+  /// Populate a diagnostic status message summarizing resend give-up
+  /// activity for one remote. Computes rate from a window since the
+  /// previous publish (tracked in last_giveup_*_ maps guarded by
+  /// remote_nodes_mutex_). The rate-vs-threshold logic lives in the
+  /// computeGiveupDiagnostic() free function (giveup_diagnostic.h) so
+  /// it can be unit-tested without a UDPBridge instance.
+  void diagnoseRemoteGiveups(const std::string& remote_name,
+                             diagnostic_updater::DiagnosticStatusWrapper& stat);
+
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();
 
@@ -298,6 +307,22 @@ private:
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
+
+  // Per-remote diagnostic state for the resend-give-up rate computation
+  // (issue #22). Guarded by remote_nodes_mutex_ — extended scope, not a
+  // new mutex; entries are short integers/timestamps and the diagnostic
+  // callback's read is brief. Cleared in on_cleanup alongside
+  // diagnostic_task_names_ so an activate→deactivate→activate cycle
+  // starts from a known state.
+  std::map<std::string, uint32_t> last_giveup_count_;
+  std::map<std::string, rclcpp::Time> last_giveup_publish_time_;
+
+  // Thresholds for the resend-give-up DiagnosticStatus level. Declared
+  // as ROS 2 parameters in on_configure so deployments can override
+  // without rebuild; defaults calibrated against the 2026-05-19
+  // BizzyBoat storm (~3.9/s steady, ~700/s burst).
+  double resend_giveup_warn_rate_per_s_ {5.0};
+  double resend_giveup_error_rate_per_s_ {50.0};
 };
 
 } // namespace udp_bridge
