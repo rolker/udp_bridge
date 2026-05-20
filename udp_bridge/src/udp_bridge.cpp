@@ -694,7 +694,25 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const Sour
 
 void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
-  auto rr = deserialize<ResendRequest>(message);
+  // Catch deserialization failure here so a mismatched/corrupt
+  // ResendRequest packet logs+drops instead of propagating through
+  // the executor and killing the bridge. The ResendRequest.msg comment
+  // promises this; the catch makes the promise true. Mirror the same
+  // pattern at other decode* sites in a follow-up — see the parallel
+  // gap in decodeMessageInternal (predates this change).
+  ResendRequest rr;
+  try
+  {
+    rr = deserialize<ResendRequest>(message);
+  }
+  catch(const std::exception& e)
+  {
+    RCLCPP_WARN_STREAM(get_logger(),
+      "Failed to deserialize ResendRequest from " << source_info.node_name
+      << " (" << source_info.host << ":" << source_info.port
+      << "): " << e.what() << " — dropping packet");
+    return;
+  }
   auto now = get_clock()->now();
 
   // Issue #23: route the resend response back via the single connection
@@ -1002,8 +1020,24 @@ void UDPBridge::resendMissingPackets()
       if(!connection)
         continue;
       ResendRequest rr = rr_base;
-      rr.connection_id = connection->id();
+      // Honor the on-wire connection-id limit. SequencedPacketHeader
+      // carries a fixed `char connection_id[maximum_connection_id_size]`
+      // (packet.h:82) and WrappedPacket truncates to
+      // `maximum_connection_id_size - 1` (wrapped_packet.cpp:31-32). The
+      // receiver's connections_ map is therefore keyed on the truncated
+      // id (populated via RemoteNode::unwrap from the packet header).
+      // Stamping the full std::string here would cause the receiver's
+      // dispatchResendRequest lookup to miss for any id ≥
+      // maximum_connection_id_size characters — a silent resend-routing
+      // failure that the previous broadcast behavior masked. Truncate
+      // to match the wire format the receiver actually sees.
+      rr.connection_id.assign(connection->id(), 0,
+                              maximum_connection_id_size - 1);
       RemoteConnectionsList rcl;
+      // RemoteConnectionsList is consumed sender-side via
+      // RemoteNode::connection(id) on this bridge's own connections_
+      // (which is keyed on the full pre-truncation id from config), so
+      // the routing list keeps the full string.
       rcl[remote.first] = {connection->id()};
       send(rr, rcl, true);
     }

@@ -33,56 +33,76 @@ design forks:
 
 1. **`ResendRequest.msg` — add `string connection_id`** with a comment matching
    the tone of `MessageInternal.msg`'s coordinated-redeploy caveat.
-2. **`UDPBridge::resendMissingPackets` — stamp per connection.** Replace the
-   single `send(rr, remote.first, true)` broadcast with a per-connection loop:
-   build a fresh `ResendRequest` for each live connection, stamp `connection_id`,
-   send through that connection only via a `RemoteConnectionsList` carrying just
-   that one id. Hold the existing snapshot-then-iterate pattern (the locking
-   shape is unchanged).
+2. **`UDPBridge::resendMissingPackets` — stamp per connection (truncated).**
+   Replace the single `send(rr, remote.first, true)` broadcast with a
+   per-connection loop: build a fresh `ResendRequest` for each live connection,
+   stamp `connection_id` **truncated to `maximum_connection_id_size - 1`**
+   (the same limit `WrappedPacket` enforces on the on-wire char array at
+   `wrapped_packet.cpp:31-32`), send through that connection only via a
+   `RemoteConnectionsList` carrying that one id. The truncation is the
+   load-bearing detail: the receiver's `connections_` map is keyed on the
+   already-truncated id (populated from packet headers in
+   `RemoteNode::unwrap`), so stamping the full string would cause silent
+   resend-routing loss for any configured id ≥ 8 chars (`starlink`,
+   `cellular`, …). Hold the existing snapshot-then-iterate pattern (the
+   locking shape is unchanged).
 3. **Move routing into `RemoteNode`.** Add
    `RemoteNode::dispatchResendRequest(const ResendRequest&, int socket, rclcpp::Time now)`
    that looks up `connection(rr.connection_id)` and calls `resend_packets` on
    exactly that connection. If the id is not in `connections_`, no-op and
-   emit a DEBUG log that names both the stamped id and the set of currently
-   known connection ids — this branch fires both on legitimate races (sender
-   stamped while the receiver was tearing the connection down for a CONNECT
-   cycle or config reload) and on bona-fide coordinated-redeploy mismatches,
-   so the log line needs to give an operator chasing either case enough to
-   diagnose. Keeps the routing logic on the class that owns the connection
-   map and is already directly constructed in `test_remote_node_resend.cpp`'s
-   fixture.
-4. **`UDPBridge::decodeResendRequest` becomes a thin shim.** Snapshot the
-   matching `RemoteNode` under `remote_nodes_mutex_`, then call
-   `dispatchResendRequest` outside the lock (same pattern as today —
-   network I/O outside `remote_nodes_mutex_`).
+   emit a log that names both the stamped id and the set of currently
+   known connection ids. Use **WARN the first time** we see an unrecognized id
+   on this RemoteNode (so a real config mismatch is diagnosable at default log
+   levels) and **DEBUG on subsequent misses for the same id** (so legitimate
+   CONNECT-cycle races don't spam). Bookkeeping is a `std::set<std::string>`
+   on RemoteNode guarded by `state_mutex_` — never pruned, bounded by the
+   configuration space of legitimate-then-removed ids. Keeps the routing
+   logic on the class that owns the connection map and is already directly
+   constructed in `test_remote_node_resend.cpp`'s fixture.
+4. **`UDPBridge::decodeResendRequest` becomes a thin shim with try/catch.**
+   Wrap `deserialize<ResendRequest>(message)` in a `try { … } catch(const
+   std::exception&)` block that logs+drops on failure — makes good on the
+   "logs+drops on deserialization failure" promise the new `ResendRequest.msg`
+   comment makes. Then snapshot the matching `RemoteNode` under
+   `remote_nodes_mutex_` and call `dispatchResendRequest` outside the lock
+   (same pattern as today — network I/O outside `remote_nodes_mutex_`). The
+   parallel gap in `decodeMessageInternal` (which `MessageInternal.msg` also
+   wrongly promises is guarded) is pre-existing and gets its own follow-up
+   issue rather than expanding scope here.
 5. **Test seam: per-connection resend-call counter.** Add a
    `UDP_BRIDGE_BUILD_TESTING`-gated `resend_call_count_for_test()` accessor on
    `Connection`. `resend_packets` increments the counter at entry (before the
    network I/O). Mirrors the existing `record_sent_packet_for_test` /
    `sent_packet_count_for_test` pattern at `connection.h:102-127`.
-6. **Unit tests.** New `TEST_F`s in `test_remote_node_resend.cpp`. Common
-   setup: `RemoteNode` with two `Connection`s (`"wifi"`, `"vpn"`); seed a
-   sent packet on each via `record_sent_packet_for_test`; dummy socket
-   obtained via `socket(AF_INET, SOCK_DGRAM, 0)` left unbound and `close()`d
-   on teardown — `sendto` will fail benignly but the counter is what we
-   assert on, not the I/O.
-   - **Matched-id routing.** Build a `ResendRequest` stamped for `"wifi"`;
-     call `dispatchResendRequest`; assert
-     `wifi.resend_call_count_for_test() == 1` and
-     `vpn.resend_call_count_for_test() == 0`.
+6. **Unit tests.** Four new `TEST_F`s in `test_remote_node_resend.cpp`.
+   Common setup: `RemoteNode` with `Connection`s constructed via
+   `newConnection`; `ScopedFd` RAII helper opens a real UDP socket via
+   `socket(AF_INET, SOCK_DGRAM, 0)` (kernel accepts the loopback datagram
+   even with no listener — `Connection::resend_packets` increments the
+   counter at function entry before any sendto, so I/O outcome doesn't
+   affect the assertion). No `record_sent_packet_for_test` seeding —
+   the test counter is bumped pre-lookup, so seeding wouldn't change
+   anything and would be misleading scaffolding.
+   - **Matched-id routing.** Two connections (`"wifi"`, `"vpn"`); stamp
+     for `"wifi"`; assert wifi's counter is 1 and vpn's is 0.
    - **Stamped id absent (transient state).** Register only `"vpn"`;
-     stamp `ResendRequest` for `"wifi"`. Models the post-restart /
-     pre-BridgeInfo-reconciliation window where the receiver hasn't
-     re-registered the connection yet. Assert vpn's counter stays at 0
-     (must not fall back to broadcast). No new helper needed — the test
-     achieves the absent-id state by initial population alone; a
-     removal helper would only add production-adjacent API for no extra
-     coverage.
+     stamp for `"wifi"`. Models the post-restart / pre-BridgeInfo-
+     reconciliation window where the receiver hasn't re-registered the
+     connection yet. Assert vpn's counter stays at 0 (must not fall
+     back to broadcast).
    - **Unknown id (config mismatch).** Register both `"wifi"` and
-     `"vpn"`; stamp for `"starlink"` (an id this RemoteNode has never
+     `"vpn"`; stamp for `"iridium"` (an id this RemoteNode has never
      seen). Same lookup-miss code path as the absent-id case; differs
-     in the `known_ids` payload of the DEBUG log, which documents the
+     in the `known_ids` payload of the WARN log, which documents the
      two operator scenarios. Assert both counters stay at 0.
+   - **Truncated-id contract.** Register a connection keyed on the
+     truncated form (`"starlin"`, what the receiver would have after
+     packets from a configured-as-`"starlink"` connection arrive).
+     Two-part assertion: stamp with `"starlin"` (the post-fix sender
+     behavior) — counter goes to 1; stamp with `"starlink"` (the
+     pre-fix bug) — counter stays at 1 (lookup misses). Documents the
+     wire contract and catches any regression that reintroduces the
+     full-id stamp.
 7. **Follow-up comment on #18.** After PR opens, post a short note listing
    suggested bench scenarios: (a) verify per-connection routing under
    normal traffic, (b) verify no resends fan out to a path with rx loss,
@@ -98,7 +118,7 @@ design forks:
 | `udp_bridge/src/remote_node.cpp` | Implement `dispatchResendRequest` |
 | `udp_bridge/include/udp_bridge/connection.h` | Add `resend_call_count_for_test()` under `UDP_BRIDGE_BUILD_TESTING`; counter member under same gate |
 | `udp_bridge/src/connection.cpp` | Increment counter at entry of `resend_packets` (gated) |
-| `udp_bridge/test/test_remote_node_resend.cpp` | Three new `TEST_F`s (matched-id routing; stamped-id-absent; unknown-id) + a `ScopedFd` RAII helper for unbound UDP socket |
+| `udp_bridge/test/test_remote_node_resend.cpp` | Four new `TEST_F`s (matched-id routing; stamped-id-absent; unknown-id; truncated-id contract) + a `ScopedFd` RAII helper for the dispatch dummy socket |
 | `udp_bridge/CMakeLists.txt` | Add `add_udp_bridge_gtest()` helper that wraps `ament_add_gtest` + `target_compile_definitions(UDP_BRIDGE_BUILD_TESTING)` + `target_link_libraries`. Extend the macro to every test target (previously only on two) — see Implementation Notes for the ODR rationale |
 
 ## Principles Self-Check
@@ -156,3 +176,38 @@ PR #13.
   consumer hazard but didn't extend the discipline to in-package tests.
   Documented in CMakeLists so a future agent adding another counter
   doesn't have to re-discover this.
+
+- **Connection-id 8-char wire limit (round-2 fix).** The first
+  implementation pass stamped `connection->id()` (the full configured
+  string) into `ResendRequest.connection_id`. Review caught that the
+  on-wire `SequencedPacketHeader` carries a fixed `char[8]` connection
+  id (per `maximum_connection_id_size = 8`, originally added 2023-06-20
+  when the bridge moved off UDP-return-address routing). The receiver's
+  `connections_` map is keyed on the truncated id (populated from
+  packet headers in `RemoteNode::unwrap`), so the full-string stamp
+  would have caused silent resend-routing loss for any configured id
+  ≥ 8 chars — and `"starlink"` is exactly 8. Fix: truncate the stamp
+  to `maximum_connection_id_size - 1` in `resendMissingPackets`,
+  mirroring what `WrappedPacket` already does at
+  `wrapped_packet.cpp:31-32`. Round-2 also added the
+  `DispatchHonorsTruncatedConnectionId` test as a regression guard.
+  Not addressed here: raising the 8-byte limit (would require a
+  wire-format change to every data packet header — separate issue).
+
+- **try/catch on `decodeResendRequest` (round-2 fix).** The new
+  `ResendRequest.msg` comment originally claimed the receiver wrapped
+  decode in try/catch (mirroring `MessageInternal.msg`'s comment) —
+  review caught that no such wrap actually existed at
+  `decodeResendRequest`, *or* at `decodeMessageInternal`. Round-2 added
+  the wrap at the `decodeResendRequest` site this PR introduces and
+  tightened the message comment to be specific (not a systemic claim).
+  The pre-existing `decodeMessageInternal` gap is left for a follow-up
+  issue rather than expanding scope.
+
+- **Dispatch-miss WARN once-per-id (round-2 fix).** Review surfaced
+  that the original DEBUG-only log on dispatch lookup miss was too
+  quiet for genuine coordinated-redeploy mismatches (operator chasing
+  "resends stopped working" wouldn't see it at default log levels).
+  Promoted to WARN on first miss per id (state bookkeeping in a small
+  set on RemoteNode), DEBUG on subsequent — surfaces real config
+  errors without spamming during legitimate CONNECT-cycle races.

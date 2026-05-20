@@ -132,12 +132,15 @@ void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)
 
 void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclcpp::Time now)
 {
-  // Snapshot the target connection (or, on miss, the set of known ids)
-  // under state_mutex_, then release the mutex before calling
-  // resend_packets — Connection::resend_packets does socket I/O and
-  // must not run under our state lock.
+  // Snapshot the target connection (or, on miss, the set of known ids
+  // and a flag for whether this is the first miss for this id) under
+  // state_mutex_, then release the mutex before calling resend_packets
+  // / emitting the log — Connection::resend_packets does socket I/O
+  // and rclcpp logging macros do their own internal locking that we
+  // don't want nested under state_mutex_.
   std::shared_ptr<Connection> target;
   std::vector<std::string> known_ids;
+  bool first_miss_for_id = false;
   {
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     auto it = connections_.find(rr.connection_id);
@@ -148,6 +151,13 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
       known_ids.reserve(connections_.size());
       for(const auto& kv : connections_)
         known_ids.push_back(kv.first);
+      // First-miss-per-id bookkeeping: insert returns {iterator, true}
+      // when the id was newly added. We use that to pick WARN vs DEBUG
+      // below — first occurrence per id surfaces (so a real config
+      // mismatch is diagnosable at default log levels); subsequent
+      // occurrences drop to DEBUG so legitimate CONNECT-cycle races
+      // don't spam.
+      first_miss_for_id = dispatch_miss_warned_ids_.insert(rr.connection_id).second;
     }
   }
   if(target)
@@ -155,22 +165,39 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
     target->resend_packets(rr.missing_packets, socket, now);
     return;
   }
-  // Fires on legitimate sender/receiver races (the receiver tore the
-  // connection down for a CONNECT cycle or config reload between the
-  // sender stamping the request and us decoding it) AND on bona-fide
-  // coordinated-redeploy mismatches. Log both the stamped id and the
-  // set of currently known connection ids so an operator chasing
-  // either case has enough to diagnose.
+  // Lookup miss. Two operational scenarios share this path:
+  //   - Legitimate race: receiver tore the connection down for a
+  //     CONNECT cycle or config reload between the sender stamping the
+  //     request and us decoding it. Resolves on the next BridgeInfo.
+  //   - Coordinated-redeploy mismatch: the two bridges' connection-id
+  //     strings don't agree (or, with this PR's truncation, an id
+  //     ≥ maximum_connection_id_size that was somehow stamped
+  //     untruncated reaches the receiver). Does not self-resolve.
+  // Both deserve diagnostic output. The known-ids list and the
+  // first-vs-subsequent split together let an operator distinguish:
+  // a one-shot WARN that never repeats is a transient race; repeated
+  // hits on the same id (now DEBUG) suggest the race is ongoing.
   std::string joined;
   for(size_t i = 0; i < known_ids.size(); ++i)
   {
     if(i > 0) joined += ", ";
     joined += known_ids[i];
   }
-  RCLCPP_DEBUG_STREAM(logger_,
-    "Dropping ResendRequest from " << name_
-    << " stamped for connection_id='" << rr.connection_id
-    << "' (no matching connection; known ids: [" << joined << "])");
+  if(first_miss_for_id)
+  {
+    RCLCPP_WARN_STREAM(logger_,
+      "Dropping ResendRequest from " << name_
+      << " stamped for connection_id='" << rr.connection_id
+      << "' (no matching connection; known ids: [" << joined << "]). "
+         "Further misses for this id will log at DEBUG.");
+  }
+  else
+  {
+    RCLCPP_DEBUG_STREAM(logger_,
+      "Dropping ResendRequest from " << name_
+      << " stamped for connection_id='" << rr.connection_id
+      << "' (no matching connection; known ids: [" << joined << "])");
+  }
 }
 
 

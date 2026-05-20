@@ -174,6 +174,15 @@ private:
 
   std::map<std::string, std::shared_ptr<Connection> > connections_;
 
+  // Ids we've already emitted a WARN for in dispatchResendRequest's
+  // lookup-miss path. The first miss for an id surfaces as WARN (a
+  // genuine coordinated-redeploy mismatch needs to be diagnosable);
+  // subsequent misses for the same id drop to DEBUG to avoid spamming
+  // during legitimate CONNECT-cycle races. Guarded by state_mutex_;
+  // never pruned — the set is bounded by the configuration space of
+  // legitimate-then-removed connection ids, which is small.
+  std::set<std::string> dispatch_miss_warned_ids_;
+
   Defragmenter defragmenter_;
 
   std::map<uint64_t, rclcpp::Time> received_packet_times_;

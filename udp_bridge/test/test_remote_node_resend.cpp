@@ -456,8 +456,9 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 // which amplified resend volume 2-4x and pushed bytes into rx-dead paths
 // under the 2026-05-19 wifi-loss storm.
 //
-// The three tests below cover one matched-id case and two flavors of the
-// "stamped id is absent from the receiver's connections_" path:
+// Four tests below cover the matched-id case, the two flavors of the
+// "stamped id is absent from the receiver's connections_" path, and the
+// connection-id-length truncation contract:
 //   - StampedIdAbsent: receiver currently knows about a subset of the
 //     connection ids the sender knows about. Models the transient
 //     post-restart / pre-BridgeInfo-reconciliation window where the
@@ -465,17 +466,27 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 //   - UnknownConnectionId: stamped id was never registered on the
 //     receiver at all. Models a config-mismatch coordinated-redeploy bug
 //     where the two bridges' connection-id strings don't agree.
-// Both no-op paths share dispatch's lookup-miss branch; the test split
-// documents the two operational scenarios an operator might be chasing
-// when the DEBUG log fires.
+//   - TruncatedConnectionIdMatches: the sender truncates to
+//     maximum_connection_id_size - 1 chars when stamping; the receiver's
+//     connections_ map is keyed on the truncated id (packet header is a
+//     fixed char array). The truncated-form lookup matches; the
+//     untruncated-form lookup misses. This is the contract the fix in
+//     UDPBridge::resendMissingPackets relies on.
+// The two no-op cases share dispatch's lookup-miss branch; the test
+// split documents the two operational scenarios an operator might be
+// chasing when the WARN/DEBUG log fires.
 
 namespace
 {
 
-// Open an unbound UDP socket for the dispatch tests. Connection::send
-// will hand this to sendto(); without a destination address the call
-// fails benignly with EDESTADDRREQ, which is fine — the assertion is
-// the per-connection counter, not the I/O. Caller closes via ScopedFd.
+// Open a real UDP socket for the dispatch tests. Connection::send
+// will hand this to sendto(); the loopback destination resolves to
+// a real port whose receiver is no one, so the kernel cheerfully
+// accepts the datagram. The assertion target is the per-connection
+// counter, NOT the I/O — Connection::resend_packets increments the
+// counter at function entry before any sendto call, so empty payloads
+// or undeliverable destinations don't affect the test outcome. Caller
+// closes via RAII.
 class ScopedFd
 {
 public:
@@ -498,13 +509,6 @@ TEST_F(ResendFixture, DispatchRoutesToStampedConnectionOnly)
   auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);
   ASSERT_NE(wifi, nullptr);
   ASSERT_NE(vpn,  nullptr);
-
-  // Seed one sent packet on each connection so resend_packets has
-  // something to look up. The lookup result doesn't matter for the
-  // assertion (we count calls, not sent bytes); seeding just exercises
-  // the production code path past its early-return.
-  wifi->record_sent_packet_for_test(1, t_at(1.0));
-  vpn->record_sent_packet_for_test(1, t_at(1.0));
 
   udp_bridge_interfaces::msg::ResendRequest rr;
   rr.missing_packets = {1u};
@@ -531,7 +535,6 @@ TEST_F(ResendFixture, DispatchSilentlyDropsWhenStampedIdAbsent)
   // Receiver knows only "vpn" right now; sender stamped for "wifi".
   auto vpn = remote_->newConnection("vpn", "127.0.0.1", 9002);
   ASSERT_NE(vpn, nullptr);
-  vpn->record_sent_packet_for_test(1, t_at(1.0));
 
   udp_bridge_interfaces::msg::ResendRequest rr;
   rr.missing_packets = {1u};
@@ -555,12 +558,10 @@ TEST_F(ResendFixture, DispatchSilentlyDropsUnknownConnectionId)
   auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);
   ASSERT_NE(wifi, nullptr);
   ASSERT_NE(vpn,  nullptr);
-  wifi->record_sent_packet_for_test(1, t_at(1.0));
-  vpn->record_sent_packet_for_test(1, t_at(1.0));
 
   udp_bridge_interfaces::msg::ResendRequest rr;
   rr.missing_packets = {1u};
-  rr.connection_id = "starlink";  // never registered on this RemoteNode
+  rr.connection_id = "iridium";  // never registered on this RemoteNode
 
   ScopedFd sock;
   ASSERT_GE(sock.get(), 0);
@@ -568,6 +569,58 @@ TEST_F(ResendFixture, DispatchSilentlyDropsUnknownConnectionId)
 
   EXPECT_EQ(wifi->resend_call_count_for_test(), 0u);
   EXPECT_EQ(vpn->resend_call_count_for_test(),  0u);
+}
+
+// Routing case 4: connection-id-length truncation contract. The
+// on-wire SequencedPacketHeader carries
+// `char connection_id[maximum_connection_id_size]` (8 bytes), and
+// WrappedPacket truncates to 7 chars + null when constructing that
+// header (wrapped_packet.cpp:31-32). The receiver's connections_ map
+// is therefore keyed on the truncated id. UDPBridge::resendMissingPackets
+// must stamp the ResendRequest with the truncated id so dispatch's
+// lookup matches what the receiver actually has. This test exercises
+// the dispatch side of that contract: when the sender does the right
+// thing (truncated id), dispatch resolves; when it does the wrong
+// thing (full id ≥ 8 chars), dispatch misses. A regression that
+// reintroduces the full-id stamp would surface as the second
+// assertion succeeding when it shouldn't — but more importantly,
+// would cause silent resend-routing failure in production for any
+// configured id longer than 7 chars (e.g. "starlink", "cellular").
+TEST_F(ResendFixture, DispatchHonorsTruncatedConnectionId)
+{
+  // The receiver's connection key is the truncated form (what would
+  // arrive in the wire packet header). "starlink" (8 chars) becomes
+  // "starlin" (7 chars + implicit null in the char array).
+  auto truncated = remote_->newConnection("starlin", "127.0.0.1", 9003);
+  ASSERT_NE(truncated, nullptr);
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+
+  {
+    // Sender stamped the truncated form (the fix's behavior).
+    udp_bridge_interfaces::msg::ResendRequest rr;
+    rr.missing_packets = {1u};
+    rr.connection_id = "starlin";
+    remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+    EXPECT_EQ(truncated->resend_call_count_for_test(), 1u)
+      << "Truncated-form stamp must match the truncated-form receiver "
+         "key (the post-fix wire contract).";
+  }
+  {
+    // Sender stamped the full untruncated form (the pre-fix bug).
+    // Lookup misses because connections_["starlink"] doesn't exist;
+    // counter must not bump.
+    udp_bridge_interfaces::msg::ResendRequest rr;
+    rr.missing_packets = {1u};
+    rr.connection_id = "starlink";
+    remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+    EXPECT_EQ(truncated->resend_call_count_for_test(), 1u)
+      << "Untruncated-form stamp must miss the truncated-form receiver "
+         "key. A regression that bumps the counter here means the wire "
+         "contract is broken — any id longer than 7 chars silently "
+         "loses resends in the field.";
+  }
 }
 
 int main(int argc, char** argv)
