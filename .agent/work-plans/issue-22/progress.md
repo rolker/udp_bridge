@@ -73,5 +73,5 @@ issue: 22
 **CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
 
 ### Actions
-- [ ] Fix (`giveup_diagnostic.h:65–79`): add an explicit "no activity → OK" branch in `computeGiveupDiagnostic` so `current_count == prev_count` returns `{rate=0, level=OK}` before threshold comparison. With `>=` semantics and `validateGiveupThresholds` accepting 0/0, a zero-rate tick was firing ERROR forever (`0.0 >= 0.0`). Threshold logic should apply to actual give-up activity, not its absence.
-- [ ] Test (`test_giveup_diagnostic.cpp`): add regression test `ZeroDeltaWithZeroThresholdsStaysOk` (or similar) — `computeGiveupDiagnostic(5, 5, 1.0, 0.0, 0.0)` must return `{rate=0, level=OK}`. Also fix the misleading comment in the existing `ZeroThresholdsAreAccepted` validator test that incorrectly claimed "0/0 means every nonzero rate fires ERROR" — it would have fired on every rate including zero, which is the actual defect.
+- [x] Fix (`giveup_diagnostic.h`): added the "no activity → OK" short-circuit (`current_count == prev_count` returns rate=0/OK before threshold comparison). The function's edge-case docstring was extended with the new case.
+- [x] Test (`test_giveup_diagnostic.cpp`): 3 new gtests — `NoActivityReturnsOk` (current==prev with default thresholds), `ZeroDeltaWithZeroThresholdsStaysOk` (the round-3 regression), `ZeroWarnFiresOnAnyActivity` (companion — warn=0 still fires on real activity). Also rewrote the misleading comment in `ZeroThresholdsAreAccepted` to describe the actual semantics. 74 → 77 tests, all green.
