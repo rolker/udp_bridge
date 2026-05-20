@@ -23,6 +23,7 @@
 #include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 
 #include "connection.h"
+#include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
 #include "udp_bridge/types.h"
@@ -308,21 +309,35 @@ private:
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
 
-  // Per-remote diagnostic state for the resend-give-up rate computation
-  // (issue #22). Guarded by remote_nodes_mutex_ — extended scope, not a
-  // new mutex; entries are short integers/timestamps and the diagnostic
-  // callback's read is brief. Cleared in on_cleanup alongside
-  // diagnostic_task_names_ so an activate→deactivate→activate cycle
-  // starts from a known state.
-  std::map<std::string, uint32_t> last_giveup_count_;
-  std::map<std::string, rclcpp::Time> last_giveup_publish_time_;
+  // Per-remote diagnostic state for the resend-give-up rate
+  // computation (issue #22). Guarded by remote_nodes_mutex_ —
+  // extended scope, not a new mutex; entries are small
+  // integer/timestamp structs and the diagnostic callback's read is
+  // brief. Cleared in on_cleanup alongside diagnostic_task_names_ so
+  // an activate→deactivate→activate cycle starts from a known state.
+  // Consolidating the (count, time, has_previous) tuple into one
+  // struct (vs. two parallel maps) makes the wrapper's update logic
+  // testable via the stepGiveupDiagnostic helper in
+  // giveup_diagnostic.h — see test_giveup_diagnostic.cpp's
+  // wrapper-side cases.
+  std::map<std::string, GiveupRateState> giveup_rate_state_;
 
   // Thresholds for the resend-give-up DiagnosticStatus level. Declared
   // as ROS 2 parameters in on_configure so deployments can override
   // without rebuild; defaults calibrated against the 2026-05-19
-  // BizzyBoat storm (~3.9/s steady, ~700/s burst).
+  // BizzyBoat storm (~3.9/s steady, ~700/s burst). Live-updated via
+  // an OnSetParameters callback (handle below), so operators can tune
+  // mid-storm without restarting the bridge. Reads/writes are guarded
+  // by remote_nodes_mutex_ — diagnoseRemoteGiveups holds the lock when
+  // it samples these values, the callback holds the lock when it
+  // updates them.
   double resend_giveup_warn_rate_per_s_ {5.0};
   double resend_giveup_error_rate_per_s_ {50.0};
+
+  // Handle for the parameter-change callback. Reset in on_cleanup so
+  // re-configure cycles don't accumulate stale handles.
+  rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
+    on_set_parameters_handle_;
 };
 
 } // namespace udp_bridge

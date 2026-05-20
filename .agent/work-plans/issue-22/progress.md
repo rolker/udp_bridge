@@ -16,9 +16,9 @@ issue: 22
 **Must-fix**: 1 | **Suggestions**: 2
 
 ### Findings
-- [ ] (must-fix, Claude Adv. + Copilot Adv. cross-source) Thresholds latched at `on_configure`, README implies runtime-tunable. Add `OnSetParametersCallback` OR tighten README wording — `udp_bridge.cpp:144-147`, `README.md:31`
-- [ ] (suggestion, Claude Adv.) `std::to_string(double)` in summary text emits 6 fractional digits — noisy in aggregator UIs. Use `std::fixed << std::setprecision(2)` — `udp_bridge.cpp:1667-1671`
-- [ ] (suggestion, Copilot Adv.) No wrapper-side integration test for `diagnoseRemoteGiveups` (mutex discipline, map-update ordering, STALE path). Plan §4 deferred this as "verified at integration level"; flagging the coverage cost — `test/test_giveup_diagnostic.cpp` (gap)
+- [x] (must-fix, Claude Adv. + Copilot Adv. cross-source) Thresholds latched at `on_configure`, README implies runtime-tunable. Resolved by adding `OnSetParametersCallback` — `udp_bridge.cpp` `on_configure` registers the handle, validates non-negative thresholds, applies under `remote_nodes_mutex_` (matches reader's lock). `on_cleanup` resets the handle. Reader now samples thresholds inside the lock too.
+- [x] (suggestion, Claude Adv.) `std::to_string(double)` in summary text replaced with `std::ostringstream` + `std::fixed << std::setprecision(2)`. Structured KeyValues (raw doubles) unaffected.
+- [x] (suggestion, Copilot Adv.) Wrapper-side test coverage gap closed by refactor: consolidated two parallel maps into `std::map<std::string, GiveupRateState>` + extracted `stepGiveupDiagnostic` helper into `giveup_diagnostic.h`. Six new tests cover first-call init, two-call sequence (map-update ordering), counter reset across calls, zero-elapsed between steps, multi-state independence, and threshold-change-takes-effect-on-next-step.
 
 ### Notes
 - Cross-source convergence on must-fix #1: both Claude Adv. (in-context sub-agent) and Copilot Adv. (CLI) independently flagged the parameter live-update gap. Strongest signal class per ADR-0013.

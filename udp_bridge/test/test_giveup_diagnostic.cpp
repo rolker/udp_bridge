@@ -1,30 +1,47 @@
 // Tests for the resend-give-up rate / threshold computation (#22).
 //
-// These tests exercise the free function `computeGiveupDiagnostic`
-// directly — no UDPBridge instance, no rclcpp executor, no clock
-// fixture. The time-dependence is moved out of the function into the
-// caller (elapsed_s is a parameter), so tests are deterministic and
-// instantaneous.
+// Two layers of tests live here:
 //
-// Wrapper-side behavior (per-remote map state, lock discipline,
-// integration with diagnostic_updater) is intentionally NOT covered
-// here — see issue #22 plan §4.
+// 1. `computeGiveupDiagnostic` (pure free function) — exhaustive
+//    arithmetic and threshold-boundary coverage. No state, no clock.
+//
+// 2. `stepGiveupDiagnostic` (stateful helper used by
+//    UDPBridge::diagnoseRemoteGiveups) — wrapper-side behavior:
+//    first-call initialization, sequential state-update ordering,
+//    counter reset across calls, multi-state independence. These
+//    tests cover the map-update-ordering invariant that the
+//    UDPBridge wrapper depends on without needing to bring up a
+//    real UDPBridge node (which would require sockets / executors).
+//
+// Mutex discipline of the UDPBridge wrapper is not directly testable
+// here (no thread safety harness); the helper's pure-by-design
+// semantics mean the only way the wrapper can go wrong is by failing
+// to hold the lock — caught by code review, not unit test.
 
 #include "udp_bridge/giveup_diagnostic.h"
 
 #include <gtest/gtest.h>
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "rclcpp/time.hpp"
 
 namespace
 {
 
 using udp_bridge::computeGiveupDiagnostic;
 using udp_bridge::GiveupDiagnostic;
+using udp_bridge::GiveupRateState;
+using udp_bridge::stepGiveupDiagnostic;
 using DS = diagnostic_msgs::msg::DiagnosticStatus;
 
 constexpr double kWarn = 5.0;
 constexpr double kError = 50.0;
+constexpr rcl_clock_type_t kClock = RCL_ROS_TIME;
+
+rclcpp::Time t_at(double seconds)
+{
+  return rclcpp::Time(static_cast<int64_t>(seconds * 1e9), kClock);
+}
 
 }  // namespace
 
@@ -134,4 +151,129 @@ TEST(GiveupDiagnostic, CustomThresholdsRespected)
   GiveupDiagnostic d = computeGiveupDiagnostic(0, 2, 1.0, /*warn=*/1.0, /*error=*/10.0);
   EXPECT_EQ(d.level, DS::WARN);
   EXPECT_DOUBLE_EQ(d.rate_per_s, 2.0);
+}
+
+// ----- stepGiveupDiagnostic (wrapper-side state) -----
+
+// First call: state starts with has_previous=false. Must NOT compute
+// a rate from the default-constructed last_publish_time (which is
+// epoch=0 — the difference against a real `now` would be huge). Rate
+// must be 0/OK regardless of current_count. State is then populated
+// so the second call has a baseline.
+TEST(GiveupRateState, FirstCallReportsZeroRateAndPopulatesState)
+{
+  GiveupRateState state;
+  EXPECT_FALSE(state.has_previous);
+
+  GiveupDiagnostic d = stepGiveupDiagnostic(state, 42, t_at(100.0), kWarn, kError);
+  EXPECT_EQ(d.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 0.0);
+  EXPECT_EQ(d.total, 42u);
+
+  EXPECT_TRUE(state.has_previous);
+  EXPECT_EQ(state.last_count, 42u);
+  EXPECT_DOUBLE_EQ(state.last_publish_time.seconds(), 100.0);
+}
+
+// Two-call sequence: second call sees the first's count + time as
+// `prev`. This pins the map-update-ordering invariant — if
+// stepGiveupDiagnostic wrote the new sample before reading the
+// previous, this test would fail with rate=0 instead of rate=4.
+TEST(GiveupRateState, SecondCallComputesRateFromFirstCallBaseline)
+{
+  GiveupRateState state;
+  stepGiveupDiagnostic(state, 100, t_at(10.0), kWarn, kError);
+
+  GiveupDiagnostic d = stepGiveupDiagnostic(state, 104, t_at(11.0), kWarn, kError);
+  EXPECT_EQ(d.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 4.0);
+  EXPECT_EQ(d.total, 104u);
+
+  EXPECT_EQ(state.last_count, 104u);
+  EXPECT_DOUBLE_EQ(state.last_publish_time.seconds(), 11.0);
+}
+
+// Counter reset across calls (sender restart per #21). The second
+// call sees current < prev. Wrapper must NOT underflow the subtract;
+// computeGiveupDiagnostic's reset branch returns rate=0/OK, and the
+// state must update to the new (smaller) count so the third call
+// continues from the new baseline.
+TEST(GiveupRateState, CounterResetAcrossCallsHandledByWrapper)
+{
+  GiveupRateState state;
+  stepGiveupDiagnostic(state, 1'000'000, t_at(10.0), kWarn, kError);
+
+  GiveupDiagnostic d = stepGiveupDiagnostic(state, 5, t_at(11.0), kWarn, kError);
+  EXPECT_EQ(d.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 0.0);
+  EXPECT_EQ(d.total, 5u);
+  EXPECT_EQ(state.last_count, 5u);
+
+  // Third call, post-reset: rate computed from the new baseline.
+  GiveupDiagnostic d2 = stepGiveupDiagnostic(state, 8, t_at(12.0), kWarn, kError);
+  EXPECT_EQ(d2.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d2.rate_per_s, 3.0);
+}
+
+// Same-remote queried twice within the same `now()` tick: elapsed=0,
+// rate=0/OK regardless of count delta. State updates so subsequent
+// calls with real elapsed see the latest count as prev.
+TEST(GiveupRateState, ZeroElapsedBetweenStepsReturnsZeroRate)
+{
+  GiveupRateState state;
+  stepGiveupDiagnostic(state, 100, t_at(10.0), kWarn, kError);
+
+  GiveupDiagnostic d = stepGiveupDiagnostic(state, 200, t_at(10.0), kWarn, kError);
+  EXPECT_EQ(d.level, DS::OK);
+  EXPECT_DOUBLE_EQ(d.rate_per_s, 0.0);
+  EXPECT_EQ(d.total, 200u);
+
+  // Third call moves time forward; rate computed from the second-call
+  // count (state was correctly updated even when rate was suppressed).
+  GiveupDiagnostic d2 = stepGiveupDiagnostic(state, 210, t_at(11.0), kWarn, kError);
+  EXPECT_EQ(d2.level, DS::WARN);
+  EXPECT_DOUBLE_EQ(d2.rate_per_s, 10.0);
+}
+
+// Two independent states track separately. This is the wrapper's
+// multi-remote independence story: each remote has its own
+// GiveupRateState in the giveup_rate_state_ map, so stepping one does
+// not perturb the other. (UDPBridge::diagnoseRemoteGiveups indexes
+// the map by remote_name to get the per-remote state; this test
+// exercises the underlying separation invariant.)
+TEST(GiveupRateState, TwoIndependentStatesDoNotInterfere)
+{
+  GiveupRateState alpha;
+  GiveupRateState beta;
+
+  stepGiveupDiagnostic(alpha, 100, t_at(10.0), kWarn, kError);
+  stepGiveupDiagnostic(beta, 500, t_at(10.0), kWarn, kError);
+
+  GiveupDiagnostic da = stepGiveupDiagnostic(alpha, 104, t_at(11.0), kWarn, kError);
+  GiveupDiagnostic db = stepGiveupDiagnostic(beta, 1000, t_at(11.0), kWarn, kError);
+
+  EXPECT_DOUBLE_EQ(da.rate_per_s, 4.0);    // alpha rate over its own window
+  EXPECT_DOUBLE_EQ(db.rate_per_s, 500.0);  // beta rate, far above ERROR
+  EXPECT_EQ(da.level, DS::OK);
+  EXPECT_EQ(db.level, DS::ERROR);
+}
+
+// Wrapper-side threshold change: if the caller passes new thresholds
+// on a subsequent step (simulating an OnSetParametersCallback live
+// update), the new thresholds take effect immediately — the state
+// struct holds no copy of the thresholds.
+TEST(GiveupRateState, ThresholdChangeTakesEffectOnNextStep)
+{
+  GiveupRateState state;
+  stepGiveupDiagnostic(state, 100, t_at(10.0), kWarn, kError);
+
+  // First call at the original 5/50 thresholds: rate=4 -> OK.
+  GiveupDiagnostic d1 = stepGiveupDiagnostic(state, 104, t_at(11.0), kWarn, kError);
+  EXPECT_EQ(d1.level, DS::OK);
+
+  // Operator tightens WARN to 1/s mid-session; next call fires WARN
+  // immediately at the same rate=4.
+  GiveupDiagnostic d2 = stepGiveupDiagnostic(state, 108, t_at(12.0), /*warn=*/1.0, kError);
+  EXPECT_EQ(d2.level, DS::WARN);
+  EXPECT_DOUBLE_EQ(d2.rate_per_s, 4.0);
 }
