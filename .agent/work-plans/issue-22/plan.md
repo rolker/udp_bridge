@@ -16,9 +16,9 @@ This is also a worked instance of the workspace pattern documented in memory `fe
 
 1. **Demote per-event WARN to DEBUG** at `remote_node.cpp:329-334`. One-line change (`RCLCPP_WARN_STREAM` → `RCLCPP_DEBUG_STREAM`). Per-event detail stays available in bags for forensic analysis; live operator log panels stay clean. Independently testable — restores quiet logs even if step 2 spills.
 
-2. **Add per-remote diagnostic task** that publishes give-up rate + cumulative count + threshold-based level. Hook into the existing `diagnostic_updater_` at the per-`RemoteNode` level (parallel to existing per-connection tasks in `udp_bridge.cpp:1495-1507`). New helper `UDPBridge::diagnoseRemoteGiveups(remote_name, stat)` mirrors `diagnoseConnection`'s shape. State needed: a `last_published_count_` and `last_publish_time_` per remote, reset-safe (if `current < last`, publish rate=0 — handles counter reset per observation in [#21](https://github.com/rolker/udp_bridge/issues/21)).
+2. **Add per-remote diagnostic task** that publishes give-up rate + cumulative count + threshold-based level. Hook into the existing `diagnostic_updater_` at the per-`RemoteNode` level (parallel to existing per-connection tasks in `udp_bridge.cpp:1495-1507`). New helper `UDPBridge::diagnoseRemoteGiveups(remote_name, stat)` mirrors `diagnoseConnection`'s shape. Diagnostic task name follows the existing convention: `"udp_bridge " + name_ + ": " + remote_name + ": resend give-ups"` (mirrors the per-connection format at `udp_bridge.cpp:1498`). State needed: a `last_published_count_` and `last_publish_time_` per remote, reset-safe (if `current < last`, publish rate=0 — handles counter reset per observation in [#21](https://github.com/rolker/udp_bridge/issues/21)).
 
-3. **Declare thresholds as ROS 2 parameters**, not `const`. Defaults: `resend_giveup_warn_rate_per_s=5.0`, `resend_giveup_error_rate_per_s=50.0` (calibrated against the 2026-05-19 storm at ~700/s peak / ~3.9/s average — both would have correctly fired ERROR at 50/s). Allows field tuning via YAML without rebuild.
+3. **Declare thresholds as ROS 2 parameters**, not `const`. Defaults: `resend_giveup_warn_rate_per_s=5.0`, `resend_giveup_error_rate_per_s=50.0` — confirmed with owner. Calibrated against the 2026-05-19 storm (~700/s peak / ~3.9/s average steady): the average correctly fires WARN, the burst correctly fires ERROR. Lower-WARN-threshold question (Open Question 2 below) deferred — start with 5/50 and revisit if operators report missing mild-loss signal. Parameters allow field tuning via YAML without rebuild.
 
 4. **Tests** — extend `test/test_remote_node_resend.cpp` is *not* the right home for the publisher tests (RemoteNode doesn't know about the diagnostic infrastructure — only exposes `resendGiveupCount()`). Add a new `test/test_remote_giveup_diagnostic.cpp` exercising the rate-calculation logic in isolation (counter-reset case, threshold transitions OK↔WARN↔ERROR, zero-rate steady state, multi-remote independence).
 
@@ -62,11 +62,14 @@ This is also a worked instance of the workspace pattern documented in memory `fe
 
 ## Open Questions
 
-1. **Annunciator filter behavior**: does the operator-side annunciator allowlist diagnostic task names, or does it accept any `udp_bridge: *` pattern? If allowlisted, this PR needs a paired follow-up commit on `unh_echoboats_project11`. Spot-check before opening this for review.
+1. **Annunciator filter behavior**: does the operator-side annunciator allowlist diagnostic task names, or does it accept any `udp_bridge: *` pattern? If allowlisted, this PR needs a paired follow-up commit on `unh_echoboats_project11`. Owner deferred — spot-check during implementation by reading the annunciator's diagnostic-subscription config; if allowlisted, file a paired follow-up issue rather than block this PR.
 
-2. **Threshold defaults**: starting suggestion is 5/s WARN, 50/s ERROR. Field data point (2026-05-19): ~3.9/s average steady storm, ~700/s burst. The averages would have shown WARN, not ERROR — is that the operator-desired indication, or should the WARN threshold be lower (e.g., 1/s) to flag even mild loss? Surfacing for owner input.
+2. **Threshold lower-WARN question** (deferred): owner accepted 5/50 starting defaults. The deferred question is whether the WARN threshold should be lowered (e.g., to 1/s) in a future tuning pass to flag mild loss earlier. Not blocking this PR — surface as a follow-up if operators report missing-signal in the field.
 
-3. **Per-remote vs. aggregate diagnostic name**: owner's comment proposed `"udp_bridge: resend give-ups for '<remote_name>'"`. Confirming this matches the existing naming convention in `udp_bridge.cpp:1498` (`"udp_bridge " + name_ + ": " + remote_name + ": " + connection_id`). Slight format inconsistency — should the new task use `"udp_bridge " + name_ + ": " + remote_name + ": resend give-ups"` for uniformity? Recommend yes; will confirm before coding.
+## Decided (during planning, after owner input 2026-05-20)
+
+- **Thresholds**: 5/s WARN, 50/s ERROR (starting defaults; parameter-tunable per Approach step 3).
+- **Diagnostic task naming**: use the existing convention from `udp_bridge.cpp:1498` — `"udp_bridge " + name_ + ": " + remote_name + ": resend give-ups"`.
 
 ## Estimated Scope
 
