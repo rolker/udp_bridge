@@ -26,3 +26,18 @@ issue: 22
 - One Copilot false positive dismissed: claim that `.agent/work-plans/issue-22/plan.md` is "review noise" — it's the canonical plan-first artifact per ADR-0013, ships with the PR by design.
 - Static analysis skipped: `cpplint` / `cppcheck` not installed on this host. CI will run them if configured upstream.
 - Plan §4's deferred "annunciator allowlist check" (Open Question 1) is still open — required during deployment integration, not blocking this PR.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-20 18:50 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 — 1 review (Copilot), 5 inline comments, 4 valid, 1 false positive
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [ ] Fix (udp_bridge.cpp:165–178): add `std::isfinite` per value and `warn_thresh <= error_thresh` cross-check in OnSetParameters validation; reject batch with actionable `result.reason`.
+- [ ] Fix (udp_bridge.cpp:1716): clamp `elapsed_s` to `>= 0` for `window_s` KeyValue (`stat.add("window_s", std::max(0.0, elapsed_s))`).
+- [ ] Fix (udp_bridge.h:180–185): update `diagnoseRemoteGiveups` docstring — drop the "last_giveup_*_ maps" reference, point to `giveup_rate_state_` / `GiveupRateState` from `giveup_diagnostic.h`.
+- [ ] Fix (README.md:19–21): clarify DiagnosticStatus is the default operator surface; per-event DEBUG log requires enabling DEBUG severity to land in `/rosout` / bags.
+- [ ] (Optional) Reply or dismiss Copilot's `as_double()` type-check thread — false positive (strict typing rejects mismatched `param set` server-side; `dynamic_typing` not enabled).
