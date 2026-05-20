@@ -21,6 +21,7 @@
 // matches the clock RemoteNode itself would observe under sim time.
 
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 #include <sys/socket.h>
@@ -627,6 +628,57 @@ TEST_F(ResendFixture, DispatchHonorsTruncatedConnectionId)
          "contract is broken — any id longer than 7 chars silently "
          "loses resends in the field.";
   }
+}
+
+// Routing case 5: bookkeeping cap. dispatchResendRequest tracks
+// already-WARNed ids in a bounded FIFO to keep memory pressure
+// proportional to the configured connection-id space, not to whatever
+// the peer sends (a peer that streamed many distinct ids could
+// otherwise grow the table without bound — see the field comment on
+// dispatch_miss_warned_ids_ in remote_node.h). This test pumps more
+// distinct ids than the cap and asserts the table size stops growing.
+// The "ids each cause one dispatch call" wiring is irrelevant here —
+// no connection is registered, so every dispatch is a lookup miss,
+// which is exactly the path we're stressing.
+TEST_F(ResendFixture, DispatchMissWarnedIdsAreBounded)
+{
+  // The implementation cap is RemoteNode::kDispatchMissWarnedCap (256
+  // at the time of writing). We don't import the constant directly —
+  // the assertion is "size stays <= the cap and converges to the cap
+  // when we push past it", expressed in terms of the count returned
+  // by dispatchMissWarnedIdCountForTest(). The specific cap value is
+  // an implementation choice, not a wire contract.
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+
+  const std::size_t kPushCount = 1024;  // safely past any reasonable cap
+  for(std::size_t i = 0; i < kPushCount; ++i)
+  {
+    udp_bridge_interfaces::msg::ResendRequest rr;
+    rr.missing_packets = {1u};
+    // 7-char ids (the post-clamp wire size). Make each one unique by
+    // appending a small alpha suffix derived from i. The actual
+    // string values don't matter — only that they're distinct.
+    char id[8];
+    std::snprintf(id, sizeof(id), "m%05zu", i % 100000);
+    rr.connection_id = id;
+    remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0 + static_cast<double>(i) * 0.001));
+  }
+
+  // After pushing kPushCount distinct ids, the bookkeeping must have
+  // stopped growing well below kPushCount. The exact ceiling is the
+  // implementation's cap; we just assert it's bounded.
+  std::size_t count = remote_->dispatchMissWarnedIdCountForTest();
+  EXPECT_LT(count, kPushCount)
+    << "Bookkeeping grew with every distinct id — the cap is missing "
+       "or broken. A misbehaving peer could now drive memory growth.";
+  EXPECT_LE(count, 512u)
+    << "Bookkeeping size exceeded a generous upper bound. Cap is "
+       "likely much larger than intended (or absent).";
+  EXPECT_GE(count, 1u)
+    << "Bookkeeping is empty — the WARN-once path didn't insert "
+       "anything. The dispatch lookup-miss branch is probably not "
+       "being exercised.";
 }
 
 int main(int argc, char** argv)

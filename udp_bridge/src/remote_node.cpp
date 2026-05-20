@@ -151,13 +151,34 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
       known_ids.reserve(connections_.size());
       for(const auto& kv : connections_)
         known_ids.push_back(kv.first);
-      // First-miss-per-id bookkeeping: insert returns {iterator, true}
-      // when the id was newly added. We use that to pick WARN vs DEBUG
-      // below — first occurrence per id surfaces (so a real config
+      // First-miss-per-id bookkeeping with a bounded FIFO. We pick
+      // WARN vs DEBUG below by whether this id has already been
+      // warned for: first occurrence surfaces (so a real config
       // mismatch is diagnosable at default log levels); subsequent
       // occurrences drop to DEBUG so legitimate CONNECT-cycle races
-      // don't spam.
-      first_miss_for_id = dispatch_miss_warned_ids_.insert(rr.connection_id).second;
+      // don't spam. When the bookkeeping table is full, we evict the
+      // oldest entry FIFO-style — that id becomes WARN-eligible
+      // again if seen later, which is the right behavior for a
+      // rate-limit table (vs permanently silencing a stale id). See
+      // the field comment on dispatch_miss_warned_ids_ in
+      // remote_node.h for the threat-model rationale (network-
+      // supplied strings shouldn't be able to grow this table
+      // without bound, even with the 7-byte size clamp).
+      if(dispatch_miss_warned_ids_.count(rr.connection_id) != 0)
+      {
+        first_miss_for_id = false;
+      }
+      else
+      {
+        if(dispatch_miss_warned_order_.size() >= kDispatchMissWarnedCap)
+        {
+          dispatch_miss_warned_ids_.erase(dispatch_miss_warned_order_.front());
+          dispatch_miss_warned_order_.pop_front();
+        }
+        dispatch_miss_warned_order_.push_back(rr.connection_id);
+        dispatch_miss_warned_ids_.insert(rr.connection_id);
+        first_miss_for_id = true;
+      }
     }
   }
   if(target)
@@ -324,6 +345,12 @@ void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp:
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   recordPacketArrival(packet_number, time);
+}
+
+std::size_t RemoteNode::dispatchMissWarnedIdCountForTest() const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return dispatch_miss_warned_ids_.size();
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

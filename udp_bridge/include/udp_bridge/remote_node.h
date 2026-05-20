@@ -9,8 +9,9 @@
 #include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge/types.h"
 
+#include <deque>
 #include <mutex>
-#include <set>
+#include <unordered_set>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/node_interfaces/node_interfaces.hpp"
@@ -119,6 +120,15 @@ class RemoteNode
   // give-up scenarios. UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the
   // overload above.
   void recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time);
+
+  // Test accessor: returns the current count of ids in the
+  // dispatch-miss WARN bookkeeping. Used by the cap-enforcement test
+  // to verify that pumping > kDispatchMissWarnedCap distinct ids
+  // through dispatchResendRequest doesn't grow the table without
+  // bound. Takes state_mutex_ for the read.
+  // UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the helpers
+  // above.
+  std::size_t dispatchMissWarnedIdCountForTest() const;
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
   // Count of missing-packet resends this RemoteNode has given up on
@@ -185,10 +195,29 @@ private:
   // lookup-miss path. The first miss for an id surfaces as WARN (a
   // genuine coordinated-redeploy mismatch needs to be diagnosable);
   // subsequent misses for the same id drop to DEBUG to avoid spamming
-  // during legitimate CONNECT-cycle races. Guarded by state_mutex_;
-  // never pruned — the set is bounded by the configuration space of
-  // legitimate-then-removed connection ids, which is small.
-  std::set<std::string> dispatch_miss_warned_ids_;
+  // during legitimate CONNECT-cycle races.
+  //
+  // Bounded FIFO with O(1) lookup. The ids come from network-supplied
+  // ResendRequest.connection_id strings (clamped to 7 bytes at the
+  // receive side in UDPBridge::decodeResendRequest, see udp_bridge.cpp
+  // around line 715), so per-entry size is bounded but the *count* of
+  // distinct ids isn't bounded by anything in the wire protocol. A
+  // misbehaving peer or a stream of bit-flipped-but-deserializable
+  // packets could otherwise grow the set unboundedly. We cap the
+  // bookkeeping at kDispatchMissWarnedCap (256) entries:
+  // dispatch_miss_warned_order_ holds insertion order (FIFO), and the
+  // unordered_set holds the same ids for O(1) presence checks. When
+  // the cap is hit, we evict the oldest id from both — that id
+  // becomes WARN-eligible again the next time it's seen, which is the
+  // right behavior for a rate-limit-the-WARN bookkeeping table (vs
+  // permanently silencing it). The cap is comfortably above any
+  // plausible configured id space (typical deployments have 2–4
+  // connections, never more than a few dozen).
+  //
+  // Both containers are guarded by state_mutex_.
+  static constexpr std::size_t kDispatchMissWarnedCap = 256;
+  std::deque<std::string> dispatch_miss_warned_order_;
+  std::unordered_set<std::string> dispatch_miss_warned_ids_;
 
   Defragmenter defragmenter_;
 

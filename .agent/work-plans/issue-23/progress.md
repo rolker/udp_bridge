@@ -43,5 +43,21 @@ CMake/ODR Copilot finding left as-is; existing `UDP_BRIDGE_BUILD_TESTING` namesp
 **CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4)
 
 ### Actions
-- [ ] Decide between (a) comment-only honesty fix on `remote_node.h:184–189`'s `dispatch_miss_warned_ids_` field comment — drop "bounded by the configuration space ... which is small" and replace with the actual trust-model assumption — or (b) hard cap / LRU eviction on the set (~8 LOC + test) so the code enforces what the comment promises. Recommend (b) this round — bot has flagged this concern twice; an LRU cap is small and stops the re-review treadmill.
+- [x] User decision 2026-05-20: option (b). Bounded FIFO with eviction added in round-4 (see entry below).
 - [ ] (Optional) On PR #25, dismiss or reply to the #4 (CMake/ODR) Copilot finding so it stops reappearing in future reviews.
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-20 17:47
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-4 changes addressing Copilot's review-2 sharpening of the unbounded-set concern:
+
+- **`udp_bridge/include/udp_bridge/remote_node.h`** — replaced `std::set<std::string> dispatch_miss_warned_ids_` with a bounded FIFO: `std::deque<std::string> dispatch_miss_warned_order_` (insertion order) plus `std::unordered_set<std::string> dispatch_miss_warned_ids_` (O(1) presence checks), capped at `static constexpr std::size_t kDispatchMissWarnedCap = 256`. Field comment rewritten to describe what's now actually enforced. Added `dispatchMissWarnedIdCountForTest()` accessor under `UDP_BRIDGE_BUILD_TESTING`.
+- **`udp_bridge/src/remote_node.cpp`** — `dispatchResendRequest` updated to use the bounded FIFO: presence check via `unordered_set::count`; on insertion-past-cap, evict from the front of the deque and the corresponding entry from the set. New test accessor implemented (returns `dispatch_miss_warned_ids_.size()` under `state_mutex_`).
+- **`udp_bridge/test/test_remote_node_resend.cpp`** — new `DispatchMissWarnedIdsAreBounded` test pushes 1024 distinct ids through `dispatchResendRequest` (no connections registered, so all are lookup-misses by construction) and asserts `dispatchMissWarnedIdCountForTest()` returns `<= 512` (generous upper bound on the cap), `< 1024` (proves the cap fires), and `>= 1` (proves the WARN-once path is reached). Test name and assertions are written against the observable cap behavior, not a specific cap value — cap value is an implementation choice, not a wire contract.
+- **`.agent/work-plans/issue-23/plan.md`** — added round-4 implementation note describing the FIFO+set design, eviction semantics, and cap rationale.
+
+Build and full test suite (51 tests; +1 cap test) green locally on the worktree.
+
+CMake/ODR Copilot finding still standing as documented false positive.

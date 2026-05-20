@@ -246,3 +246,26 @@ PR #13.
   diagnostic output. Renamed to `DispatchDropsWithoutBroadcast*` and
   reworded the surrounding comments — the invariant under test is
   "no broadcast fallback," not "no log output."
+
+- **Bounded FIFO for dispatch-miss WARN bookkeeping (round-4 fix).**
+  Copilot's second review on PR #25 (against the round-3 push) flagged
+  that the round-3 receive-side clamp only bounded each entry's *size*
+  (7 bytes), not the *count* of distinct ids. A peer could still
+  drive `dispatch_miss_warned_ids_` count upward without bound, and the
+  field comment still claimed boundedness it didn't enforce. Round-4
+  replaces the `std::set<std::string>` with a bounded FIFO: a
+  `std::deque<std::string>` for insertion order plus an
+  `std::unordered_set<std::string>` for O(1) presence checks, capped at
+  `kDispatchMissWarnedCap = 256` entries. On insertion past the cap,
+  the oldest entry is evicted from both containers — that id becomes
+  WARN-eligible again the next time it's seen, which is the right
+  behavior for a rate-limit-the-WARN table (versus permanently
+  silencing a stale id). Cap value is chosen to be comfortably above
+  any plausible configured id space (typical deployments have 2–4
+  connections). A `UDP_BRIDGE_BUILD_TESTING`-gated
+  `dispatchMissWarnedIdCountForTest()` accessor mirrors the existing
+  test-only-accessor pattern and is used by a new
+  `DispatchMissWarnedIdsAreBounded` test that pushes 1024 distinct ids
+  and asserts the bookkeeping size converges well below the push count.
+  Field comment on `dispatch_miss_warned_ids_` rewritten to describe
+  what's actually enforced and why.
