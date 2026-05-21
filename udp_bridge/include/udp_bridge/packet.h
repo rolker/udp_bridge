@@ -19,6 +19,27 @@ namespace udp_bridge
 constexpr uint8_t maximum_node_name_size = 24;
 constexpr uint8_t maximum_connection_id_size = 8;
 
+// Canonical wire form of a connection id: the leading
+// `maximum_connection_id_size - 1` bytes of the input (the trailing
+// byte of the on-wire char array is the null terminator).
+//
+// Centralizing the truncation here keeps the receive-side wire clamp
+// (UDPBridge::decodeResendRequest), the sender-side stamp
+// (UDPBridge::resendMissingPackets), and the connection-map insertion
+// points (RemoteNode::newConnection / connection,
+// Connection::Connection) using the same canonical form. The
+// connections_ map is keyed on this canonical form so that a
+// ResendRequest stamped with the truncated wire id always finds the
+// connection that holds sent_packets_ for that link, even when the
+// configured id is longer than the on-wire field — closes the
+// truncation-contract gap that bit issue #23's round-8 self-review.
+inline std::string truncate_connection_id(const std::string& id)
+{
+  if(id.size() < maximum_connection_id_size)
+    return id;
+  return id.substr(0, maximum_connection_id_size - 1);
+}
+
 /// Packet type identifiers.
 /// \ingroup packet
 enum class PacketType: uint8_t {

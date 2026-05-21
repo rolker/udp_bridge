@@ -14,8 +14,11 @@ namespace udp_bridge
 using namespace udp_bridge_interfaces::msg;
 
 Connection::Connection(std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
-  id_(id), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
+  id_(truncate_connection_id(id)), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
 {
+  // id_ is canonicalized so connection->id() always returns the
+  // on-wire form. Higher-level entry points (RemoteNode::newConnection)
+  // surface a one-time WARN when this truncation actually shortens.
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   resolveHost();  // re-enters mutex (recursive)
 }

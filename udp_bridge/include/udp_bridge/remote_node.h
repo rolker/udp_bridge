@@ -216,10 +216,14 @@ private:
   // during legitimate CONNECT-cycle races.
   //
   // Bounded FIFO with O(1) lookup. The ids come from network-supplied
-  // ResendRequest.connection_id strings (clamped to 7 bytes at the
-  // receive side in UDPBridge::decodeResendRequest), so per-entry size
-  // is bounded but the *count* of distinct ids isn't bounded by
-  // anything in the wire protocol. A
+  // ResendRequest.connection_id strings. Well-behaved peers send them
+  // pre-canonicalized to the wire form (PR #25 runs every connections_
+  // insertion through truncate_connection_id, so connection->id() is
+  // ≤ maximum_connection_id_size - 1 and the sender stamps that), and
+  // a defensive clamp in UDPBridge::decodeResendRequest enforces the
+  // same shape on misbehaving peers. Per-entry size is therefore
+  // bounded by 7 bytes, but the *count* of distinct ids a peer can
+  // stamp isn't bounded by anything in the wire protocol. A
   // misbehaving peer or a stream of bit-flipped-but-deserializable
   // packets could otherwise grow the set unboundedly. We cap the
   // bookkeeping at kDispatchMissWarnedCap (256) entries:

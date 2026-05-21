@@ -825,18 +825,20 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
       << "): " << e.what() << " — dropping packet");
     return;
   }
-  // Enforce the on-wire connection-id limit on the receive side too.
-  // The sender already truncates to maximum_connection_id_size - 1
-  // (udp_bridge.cpp resendMissingPackets) because the receiver's
-  // connections_ map is keyed on the truncated id (packet header is a
-  // fixed char[maximum_connection_id_size]; see wrapped_packet.cpp:31-32).
-  // Clamping here closes two latent gaps:
-  //   1) An older or buggy peer that stamps the full untruncated id
-  //      would otherwise miss the dispatch lookup forever; clamping
-  //      lets its resend route correctly (the truncated form matches
-  //      what arrived in the packet header).
+  // Normalize the incoming id to the canonical wire form. Well-behaved
+  // peers send canonical ids by construction: PR #25's truncation-
+  // contract change runs every connection-id through
+  // truncate_connection_id at insertion (RemoteNode::newConnection and
+  // Connection::Connection), so connection->id() is canonical and the
+  // sender's stamp at resendMissingPackets is canonical too. Clamping
+  // here defends against a misbehaving peer or an older bridge that
+  // stamps the full untruncated id; without it:
+  //   1) The dispatch lookup against the canonical-keyed connections_
+  //      map would miss for any id ≥ maximum_connection_id_size — a
+  //      silent resend-routing failure. Clamping rewrites the stamp
+  //      to the canonical form so dispatch finds the connection.
   //   2) RemoteNode::dispatch_miss_warned_ids_ inserts rr.connection_id
-  //      on lookup miss. Round-4 (PR #25) replaced the unbounded
+  //      on a lookup miss. Round-4 (PR #25) replaced the unbounded
   //      std::set with a FIFO capped at kDispatchMissWarnedCap, so the
   //      bookkeeping count is bounded by code. The receive-side clamp
   //      remains useful on top of that cap: it bounds each table
@@ -1156,14 +1158,16 @@ void UDPBridge::resendMissingPackets()
       // Honor the on-wire connection-id limit. SequencedPacketHeader
       // carries a fixed `char connection_id[maximum_connection_id_size]`
       // (packet.h:82) and WrappedPacket truncates to
-      // `maximum_connection_id_size - 1` (wrapped_packet.cpp:31-32). The
-      // receiver's connections_ map is therefore keyed on the truncated
-      // id (populated via RemoteNode::unwrap from the packet header).
-      // Stamping the full std::string here would cause the receiver's
-      // dispatchResendRequest lookup to miss for any id ≥
-      // maximum_connection_id_size characters — a silent resend-routing
-      // failure that the previous broadcast behavior masked. Truncate
-      // to match the wire format the receiver actually sees.
+      // `maximum_connection_id_size - 1` (wrapped_packet.cpp:31-32). As
+      // of the truncation-contract canonicalization (PR #25), every
+      // path that inserts into connections_ runs the id through
+      // truncate_connection_id at construction (RemoteNode::newConnection
+      // and Connection::Connection), so `connection->id()` is already
+      // canonical here — the assign-with-substring below is a defensive
+      // no-op in the canonical-id steady state. Kept so a future
+      // refactor that lets a longer-than-7 id reach this point still
+      // can't desync the wire stamp from the canonical key the receiver
+      // is keying its connections_ map on.
       rr.connection_id.assign(connection->id(), 0,
                               maximum_connection_id_size - 1);
       RemoteConnectionsList rcl;

@@ -97,6 +97,11 @@ std::string RemoteNode::topicName() const
 
 std::shared_ptr<Connection> RemoteNode::connection(std::string connection_id)
 {
+  // Canonicalize lookup key so callers can pass either the configured
+  // (untruncated) id or the on-wire (truncated) form and get the same
+  // connection. connections_ is keyed on the canonical (truncated)
+  // form by construction (see newConnection / adoptConnection).
+  connection_id = truncate_connection_id(connection_id);
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   if(connections_.find(connection_id) != connections_.end())
     return connections_[connection_id];
@@ -115,9 +120,26 @@ std::vector<std::shared_ptr<Connection> > RemoteNode::connections()
 
 std::shared_ptr<Connection> RemoteNode::newConnection(std::string connection_id, std::string host, uint16_t port)
 {
+  // Canonicalize to the on-wire form so connections_ keys, Connection::id(),
+  // and rr.connection_id (which carries the wire-truncated form on the
+  // resend path) all agree. Surface a WARN when the input actually
+  // shortens so operators learn at startup that an ≥8-char configured
+  // id is being normalized — and that two configured ids with the same
+  // first 7 chars would collide under the canonical form.
+  const std::string canonical_id = truncate_connection_id(connection_id);
+  if(canonical_id != connection_id)
+  {
+    RCLCPP_WARN_STREAM(logger_,
+      "Connection id '" << connection_id << "' truncated to '"
+      << canonical_id << "' for the on-wire form (limit "
+      << (maximum_connection_id_size - 1) << " chars). Rename the "
+         "configured id to avoid the truncation; two configured ids "
+         "sharing the first " << (maximum_connection_id_size - 1)
+      << " characters will collide under this canonical form.");
+  }
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-  connections_[connection_id] = std::make_shared<Connection>(connection_id, host, port);
-  return connections_[connection_id];
+  connections_[canonical_id] = std::make_shared<Connection>(canonical_id, host, port);
+  return connections_[canonical_id];
 }
 
 void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)

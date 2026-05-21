@@ -458,7 +458,8 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 // which amplified resend volume 2-4x and pushed bytes into rx-dead paths
 // under the 2026-05-19 wifi-loss storm.
 //
-// Five tests below cover dispatch routing and the WARN-bookkeeping cap:
+// Six tests below cover dispatch routing, the canonical-id contract,
+// and the WARN-bookkeeping cap:
 //   - DispatchRoutesToStampedConnectionOnly: the matched-id case — a
 //     request stamped for "wifi" reaches only the wifi connection's
 //     resend_packets, not vpn's.
@@ -472,13 +473,16 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 //     coordinated-redeploy bug where the two bridges' connection-id
 //     strings don't agree.
 //   - DispatchDoesNotFuzzyMatchConnectionId: dispatch performs a
-//     strict-equality lookup — a request stamped with the untruncated
-//     form of an id already in the map must miss, not be silently
-//     routed via a prefix match. The wire-contract truncation that
-//     gives an in-band form to compare against lives in the private
-//     receive plumbing of UDPBridge (resendMissingPackets / receive-side
-//     clamp in decodeResendRequest); this test pins the dispatch
-//     contract only, not that wire contract.
+//     strict-equality lookup on the canonical form — a request stamped
+//     with the untruncated form of an id already in the map must miss,
+//     not be silently routed via a prefix match at the dispatch seam.
+//     (The wire-canonicalization at insertion is what actually makes
+//     long configured ids route correctly in production; this test
+//     pins the dispatch seam.)
+//   - NewConnectionCanonicalizesLongId: a configured id ≥ 8 chars is
+//     truncated to the wire form at construction time, so a sender
+//     stamping the canonical form lands on the connection that owns
+//     sent_packets_ for that link.
 //   - DispatchMissWarnedIdsAreBounded: the bookkeeping table that
 //     dedups first-miss WARN logs has a hard cap (kDispatchMissWarnedCap)
 //     with FIFO eviction; a peer streaming distinct ids cannot grow
@@ -598,23 +602,20 @@ TEST_F(ResendFixture, DispatchDropsWithoutBroadcastUnknownConnectionId)
 // length normalization.
 //
 // Scope note: this test verifies the dispatch-side strict-match
-// invariant only. The full wire contract — "any id longer than 7
-// chars routes correctly in production" — is enforced by the
-// combination of (a) sender-side truncation in
-// UDPBridge::resendMissingPackets and (b) receive-side clamp in
-// UDPBridge::decodeResendRequest, both of which apply BEFORE
-// dispatchResendRequest is called. Neither has a dedicated unit
-// test because both are inside the private wire-decode plumbing of
-// UDPBridge; their integration is verified by the package's
-// end-to-end resend behavior in the field rather than at this seam.
-// A regression that re-introduces the pre-fix bug (sender stamps
-// the full untruncated id) would still route correctly today
-// because the receive-side clamp would normalize the id before
-// reaching dispatch. So a strict regression test for the wire
-// contract would require either a friend-declared test entry to
-// decodeResendRequest or a wire-format integration test that
-// constructs and dispatches a real packet — both out of scope for
-// this unit suite.
+// invariant only — dispatch must do strict equality on rr.connection_id,
+// not prefix-match. The wire contract — "any configured id ≥ 8 chars
+// routes correctly" — is enforced one layer up, by canonicalizing all
+// connections_ keys to the on-wire truncated form at every insertion
+// point (RemoteNode::newConnection and Connection::Connection both
+// run through packet.h's truncate_connection_id). With that
+// canonicalization in place, a sender's stamp (which is already
+// canonical because connection->id() returns the canonical form)
+// matches the canonical key in the receiver's connections_ map. The
+// receive-side clamp in UDPBridge::decodeResendRequest remains as a
+// defense against misbehaving peers that stamp the untruncated form.
+// The NewConnectionCanonicalizesLongId test below covers the new
+// contract directly: it constructs a connection with a > 7-char id
+// and asserts that dispatch routes a canonical-form stamp to it.
 TEST_F(ResendFixture, DispatchDoesNotFuzzyMatchConnectionId)
 {
   // The receiver's connection key is the truncated form (what would
@@ -653,7 +654,51 @@ TEST_F(ResendFixture, DispatchDoesNotFuzzyMatchConnectionId)
   }
 }
 
-// Routing case 5: bookkeeping cap. dispatchResendRequest tracks
+// Routing case 5: configured ids ≥ maximum_connection_id_size are
+// canonicalized to the on-wire truncated form at construction time, so
+// a sender stamping the canonical form (which is what
+// UDPBridge::resendMissingPackets does: connection->id() is already
+// canonical) finds the connection that holds sent_packets_ for that
+// link. This is the contract the round-8 self-review thought was held
+// by the wire-decode clamp alone; in production, BridgeInfo carries
+// the full configured id into the receiver's connections_ map under
+// the full key, and the wire-decode clamp would route the stamp to a
+// different (duplicate) Connection instance with empty sent_packets_.
+// Canonicalizing at insertion closes that gap.
+TEST_F(ResendFixture, NewConnectionCanonicalizesLongId)
+{
+  const std::string full_id = "starlink";   // 8 chars (>= max)
+  const std::string canonical_id = "starlin";
+
+  auto link = remote_->newConnection(full_id, "127.0.0.1", 9101);
+  ASSERT_NE(link, nullptr);
+
+  // Connection::id() reports the canonical form.
+  EXPECT_EQ(link->id(), canonical_id);
+
+  // Lookup is canonical-aware: callers passing either the full
+  // configured id or the on-wire truncated form land on the same
+  // connection. (newConnection should not have created a duplicate
+  // entry keyed on the full form.)
+  EXPECT_EQ(remote_->connection(canonical_id), link);
+  EXPECT_EQ(remote_->connection(full_id), link);
+
+  // The contract: a resend stamped with the canonical wire form (what
+  // a well-behaved sender's UDPBridge::resendMissingPackets produces)
+  // routes to the connection that owns sent_packets_ for that link.
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = canonical_id;
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+  EXPECT_EQ(link->resend_call_count_for_test(), 1u)
+    << "Canonical-form stamp must route to the connection created from "
+       "the long configured id. A miss here means the truncation "
+       "contract is back to one-sided.";
+}
+
+// Routing case 6: bookkeeping cap. dispatchResendRequest tracks
 // already-WARNed ids in a bounded FIFO to keep memory pressure
 // proportional to the configured connection-id space, not to whatever
 // the peer sends (a peer that streamed many distinct ids could
