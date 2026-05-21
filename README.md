@@ -13,8 +13,11 @@ via [`diagnostic_updater`](https://github.com/ros/diagnostics) at ~1 Hz. Two tas
 - **Per-connection** — `udp_bridge <name>: <remote>: <connection_id>` — surfaces tx/rx byte rates,
   rx staleness, and tx failure/drop conditions for one outbound or inbound socket.
 - **Per-remote resend give-ups** — `udp_bridge <name>: <remote>: resend give-ups` (issue #22) — surfaces
-  the rate at which the sender has abandoned resending packets (give-up events). High give-up rates
-  indicate sustained packet loss on the link beyond what the resend protocol can compensate.
+  the rate at which missing packets are abandoned by the resend protocol. A give-up event is recorded
+  on the receiving bridge when a missing packet's first-request timestamp passes the sender's
+  retention TTL (the sender no longer has the packet buffered, so further resend requests are futile).
+  High give-up rates indicate sustained packet loss on the link beyond what the resend protocol can
+  compensate.
 
   The aggregated DiagnosticStatus is the default operator surface — it is published whether or not
   any per-event logs are enabled. The per-event log (the `Giving up on resend of packet …` message)
