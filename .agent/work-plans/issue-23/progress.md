@@ -230,3 +230,30 @@ Round-9 changes addressing all three valid Copilot findings from the PR #25 tria
 - **`udp_bridge/test/test_remote_node_resend.cpp`** — rewrote the routing-section block comment to enumerate all five tests by their current names. The pre-round-8 `TruncatedConnectionIdMatches` bullet was still present even though the test had been renamed to `DispatchDoesNotFuzzyMatchConnectionId` in round-8. New bullet describes what the renamed test actually verifies (dispatch strict-equality, not the wire-contract truncation that lives in private receive plumbing).
 - **`udp_bridge/include/udp_bridge/remote_node.h`** — dropped the hard-coded `"see udp_bridge.cpp around line 715"` from the `dispatch_miss_warned_ids_` field comment. `UDPBridge::decodeResendRequest` is already named there, so the line reference is redundant and was already drifted (actual clamp is at udp_bridge.cpp:847 post-merge).
 - **`udp_bridge/src/udp_bridge.cpp`** — dropped the hard-coded `"udp_bridge.cpp:568-614"` line range from the `decodeResendRequest` comment block. The outer `UDPBridge::decode` catch-all is actually at lines 707–715 inside the function at 647, so the range was already wrong.
+
+## External Review
+**Status**: needs-discussion
+**When**: 2026-05-21 13:55
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 — 8 review(s) (all Copilot, no human), 20 inline comments total; 2 new on R8 (against `20e67cb`), both substantive and **not addressed**
+**CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4)
+
+R8 raised two views of one underlying contract gap. Both **valid** and **substantive** (not comment drift):
+
+- `udp_bridge/src/udp_bridge.cpp:1173` and `udp_bridge/src/remote_node.cpp:149`: **The truncation contract is one-sided.** Sender truncates `rr.connection_id` to 7 chars (`maximum_connection_id_size - 1`). Receiver's `connections_` map, however, is populated from BridgeInfo (`rc.connection_id = connection->id();` at `udp_bridge.cpp:1474` — **full configured id**) and from config — never canonicalized to the 7-char wire form. The duplicate "starlin" entry created by `unwrap()` on packet arrival is what `dispatchResendRequest` actually finds. That duplicate connection's `sent_packets_` is empty (the real sends went through the "starlink" connection). Resend response is silently empty for any configured id ≥8 chars.
+
+The round-8 self-review explicitly stated a contract that turns out not to hold. `test_remote_node_resend.cpp:600-617` (the scope note above `DispatchDoesNotFuzzyMatchConnectionId`) says:
+
+> "A regression that re-introduces the pre-fix bug (sender stamps the full untruncated id) would still route correctly today because the receive-side clamp would normalize the id before reaching dispatch."
+
+This argument assumes the receiver's `connections_` is keyed on the truncated wire form. The BridgeInfo population path keeps the full configured id. Test setup at line 623 (`newConnection("starlin", ...)`) doesn't mirror production where the map would also contain "starlink" from BridgeInfo.
+
+**Mitigating context (why this isn't a live-loss bug today)**: current production configs in `unh_echoboats_project11/izzyboat_project11/config/{izzyboat,operator}.yaml` use connection ids `"wifi"` (4 chars) and `"vpn"` (3 chars). No production config in this branch has an id ≥8 chars. The contract gap is latent, not actively breaking field resends. But the team has discussed Starlink-named links (see workspace memory on link calibration); a future config that names an id "starlink" or similar would silently lose resend recovery on that link.
+
+### Actions
+- [ ] **Decision needed**: scope of fix for PR #25 vs follow-up. Three options:
+  - **(a) In scope for PR #25**: canonicalize ids to the 7-char wire form at every insertion point (param ingestion, `RemoteNode::update(Remote)`, `RemoteNode::update(BridgeInfo)`, `unwrap()`, CONNECT path); reject collisions at config time; add a wire-contract integration test (a real `WrappedPacket` round-trip — neither sender truncation nor receive-side clamp has a unit test today, by design per the round-8 scope note).
+  - **(b) Follow-up issue**: file a sequel to #23 with both Copilot citations + the BridgeInfo/unwrap analysis above; close R8 threads with a link to the new issue so the signal isn't lost.
+  - **(c) Documented invariant**: accept "configured ids must be ≤7 chars" as a hard rule. Add a runtime check at param ingestion that rejects/warns on ids ≥8 chars; update the field comment on `dispatch_miss_warned_ids_` to state the invariant; **fix the round-8 scope-note in `test_remote_node_resend.cpp:600-617`** — it's currently asserting a contract that doesn't hold.
+- [ ] (Optional) Dismiss the stale R1–R7 Copilot threads in the GitHub UI.
