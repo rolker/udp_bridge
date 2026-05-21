@@ -336,3 +336,18 @@ Round-11 changes addressing all four valid R9 findings (which also matched the l
 
 Build clean, full suite green (85 tests, +2 vs round-10). Direct gtest filter confirmed both new tests exercise the regression paths and the ERROR log fires on the collision case.
 
+## External Review
+**Status**: complete
+**When**: 2026-05-21 15:30
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 — 10 review(s) (all Copilot, no human), 23 inline comments total; R10 against `b571148` generated **no new comments** ("Copilot reviewed 11 out of 11 changed files in this pull request and generated no new comments").
+**CI**: all-pass (4/4)
+
+Round-11 closes all four R9 findings (the two must-fixes + the two comment-drift suggestions). Cross-vendor signal converged: Claude fresh-context Adversarial, Governance, Copilot CLI synchronous, and Copilot R9 all flagged the same regression in round-10; the round-11 fix addressed it; Copilot's R10 confirms clean.
+
+### Actions
+- [ ] (Optional) Dismiss R1–R9 stale Copilot threads in the GitHub UI.
+- [ ] Verify PR body carries the coordinated-redeploy notice for whoever cuts the deployment (carry-over from the local /review-code Governance section).
+- [ ] Consider marking PR #25 ready for human review / out of draft.
+
