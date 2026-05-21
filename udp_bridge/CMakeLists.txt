@@ -120,6 +120,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_connection_cleanup test/test_connection_cleanup.cpp)
   target_compile_definitions(test_connection_cleanup PRIVATE UDP_BRIDGE_BUILD_TESTING)
   target_link_libraries(test_connection_cleanup ${PROJECT_NAME})
+
+  ament_add_gtest(test_giveup_diagnostic test/test_giveup_diagnostic.cpp)
+  target_link_libraries(test_giveup_diagnostic ${PROJECT_NAME})
 endif()
 
 ament_package()

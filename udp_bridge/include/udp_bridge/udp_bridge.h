@@ -23,6 +23,7 @@
 #include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 
 #include "connection.h"
+#include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
 #include "udp_bridge/types.h"
@@ -176,6 +177,31 @@ private:
                           const std::string& connection_id,
                           diagnostic_updater::DiagnosticStatusWrapper& stat);
 
+  /// Populate a diagnostic status message summarizing resend give-up
+  /// activity for one remote. Computes rate from a window since the
+  /// previous publish (per-remote state kept in giveup_rate_state_, a
+  /// std::map<std::string, GiveupRateState> guarded by
+  /// remote_nodes_mutex_; step + threshold-evaluation live in
+  /// stepGiveupDiagnostic() / computeGiveupDiagnostic() in
+  /// giveup_diagnostic.h so they can be unit-tested without a
+  /// UDPBridge instance.
+  void diagnoseRemoteGiveups(const std::string& remote_name,
+                             diagnostic_updater::DiagnosticStatusWrapper& stat);
+
+  /// Lifecycle-safe wrapper around `declare_parameter`. Parameters
+  /// declared during `on_configure` persist across a
+  /// cleanup→configure transition (`on_cleanup` does not
+  /// `undeclare_parameter`), so a second `declare_parameter` for the
+  /// same name throws `ParameterAlreadyDeclaredException` and breaks
+  /// reconfiguration. Use this everywhere in `on_configure` instead
+  /// of bare `declare_parameter` to keep the lifecycle reentrant.
+  template <typename T>
+  void declareIfMissing(const std::string& name, const T& default_value)
+  {
+    if(!has_parameter(name))
+      declare_parameter(name, default_value);
+  }
+
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();
 
@@ -298,6 +324,36 @@ private:
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
+
+  // Per-remote diagnostic state for the resend-give-up rate
+  // computation (issue #22). Guarded by remote_nodes_mutex_ —
+  // extended scope, not a new mutex; entries are small
+  // integer/timestamp structs and the diagnostic callback's read is
+  // brief. Cleared in on_cleanup alongside diagnostic_task_names_ so
+  // an activate→deactivate→activate cycle starts from a known state.
+  // Consolidating the (count, time, has_previous) tuple into one
+  // struct (vs. two parallel maps) makes the wrapper's update logic
+  // testable via the stepGiveupDiagnostic helper in
+  // giveup_diagnostic.h — see test_giveup_diagnostic.cpp's
+  // wrapper-side cases.
+  std::map<std::string, GiveupRateState> giveup_rate_state_;
+
+  // Thresholds for the resend-give-up DiagnosticStatus level. Declared
+  // as ROS 2 parameters in on_configure so deployments can override
+  // without rebuild; defaults calibrated against the 2026-05-19
+  // BizzyBoat storm (~3.9/s steady, ~700/s burst). Live-updated via
+  // an OnSetParameters callback (handle below), so operators can tune
+  // mid-storm without restarting the bridge. Reads/writes are guarded
+  // by remote_nodes_mutex_ — diagnoseRemoteGiveups holds the lock when
+  // it samples these values, the callback holds the lock when it
+  // updates them.
+  double resend_giveup_warn_rate_per_s_ {5.0};
+  double resend_giveup_error_rate_per_s_ {50.0};
+
+  // Handle for the parameter-change callback. Reset in on_cleanup so
+  // re-configure cycles don't accumulate stale handles.
+  rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
+    on_set_parameters_handle_;
 };
 
 } // namespace udp_bridge
