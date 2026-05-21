@@ -127,3 +127,16 @@ Round-6 changes addressing Copilot's review-4 polish findings:
 - **`.agent/work-plans/issue-23/plan.md`** — round-6 implementation note documenting all three changes.
 
 Build and full test suite (51 tests) green locally on the worktree.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-20 19:25
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 (after round-6 push) — 5 reviews (Copilot). Reviews 1–4 status unchanged. Review 5 against current HEAD `f7d5977` adds 2 comments — same finding presented twice (one on the `.msg` file, one on the C++ decode site).
+**CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4)
+
+The finding: round-3's try/catch comment in `decodeResendRequest` (and the matching wording in `ResendRequest.msg`) overstates the benefit. Both comments claim that without the local try/catch a deserialization exception would propagate to the executor and kill the bridge. Verified false: `UDPBridge::decode()` at `udp_bridge.cpp:568-614` already has an outer catch-all around every `decode*` call (`decodeResendRequest` is invoked at line 596-598). The inner try/catch's actual benefit is diagnostic — it emits a specific WARN naming the source (node_name, host, port) and the failure kind, instead of falling through to the outer's generic "decoding error on packet of type N" ERROR. Useful for operators chasing a coordinated-redeploy mismatch, but not load-bearing for executor survival.
+
+### Actions
+- [ ] Fix #12 + #13 (bundle): update the inner try/catch comment in `udp_bridge.cpp` and the matching note in `ResendRequest.msg` to describe the real benefit (specific WARN vs generic ERROR; site-specific diagnostic) and explicitly note that executor survival is the outer catch's responsibility, not this one. Comment-only.
