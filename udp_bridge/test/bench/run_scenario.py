@@ -23,13 +23,13 @@ import argparse
 import atexit
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 _INSIDE_ENV = 'UDP_BRIDGE_BENCH_INSIDE'
 _DEBUG_ENV = 'UDP_BRIDGE_BENCH_DEBUG'
@@ -59,24 +59,49 @@ BOAT_DOMAIN = 43
 class _Child:
     proc: subprocess.Popen
     name: str
+    pgid: int
 
     def stop(self, timeout: float = 3.0) -> None:
         if self.proc.poll() is not None:
             return
-        self.proc.terminate()
+        # Kill the whole process group — `ros2 run` spawns the C++ node
+        # as a grandchild and SIGTERM to the parent doesn't always
+        # propagate cleanly.
+        try:
+            os.killpg(self.pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
         try:
             self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
+            try:
+                os.killpg(self.pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             self.proc.wait()
 
 
 _children: list[_Child] = []
+_cleanup_ran = False
 
 
 def _cleanup_all() -> None:
+    global _cleanup_ran
+    if _cleanup_ran:
+        return
+    _cleanup_ran = True
     for c in reversed(_children):
         c.stop()
+
+
+def _install_signal_handlers() -> None:
+    def handler(signum, _frame):
+        _cleanup_all()
+        # 128 + signum is the conventional shell-style exit code.
+        os._exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
 
 
 def _debug() -> bool:
@@ -139,11 +164,25 @@ def _env_for(domain: int) -> dict[str, str]:
     return env
 
 
+def _spawn(cmd: list[str], env: dict, name: str,
+           stderr=None) -> _Child:
+    """Popen helper that detaches the child into its own session/pgid
+    so `os.killpg` can take down the whole subtree on cleanup.
+    """
+    proc = subprocess.Popen(
+        cmd, env=env, stderr=stderr, start_new_session=True, text=True,
+    )
+    pgid = os.getpgid(proc.pid)
+    child = _Child(proc, name, pgid)
+    _children.append(child)
+    return child
+
+
 def launch_bridge(node_name: str, params_file: Path, domain: int) -> _Child:
     """Spawn a udp_bridge lifecycle node; transition to ACTIVATE."""
     env = _env_for(domain)
     stderr = None if _debug() else subprocess.DEVNULL
-    proc = subprocess.Popen(
+    child = _spawn(
         [
             'ros2', 'run', 'udp_bridge', 'udp_bridge_node',
             '--ros-args',
@@ -151,10 +190,9 @@ def launch_bridge(node_name: str, params_file: Path, domain: int) -> _Child:
             '--params-file', str(params_file),
         ],
         env=env,
+        name=node_name,
         stderr=stderr,
     )
-    child = _Child(proc, node_name)
-    _children.append(child)
     time.sleep(2)  # let the node register with DDS
     for transition in ('configure', 'activate'):
         _run(
@@ -168,31 +206,25 @@ def launch_bridge(node_name: str, params_file: Path, domain: int) -> _Child:
 def launch_pub(domain: int, tier: str, duration_s: float) -> _Child:
     env = _env_for(domain)
     script = Path(__file__).parent / 'pub.py'
-    proc = subprocess.Popen(
+    return _spawn(
         [sys.executable, str(script), '--tier', tier,
          '--duration-s', str(duration_s)],
         env=env,
+        name=f'pub-{tier}',
         stderr=subprocess.PIPE,
-        text=True,
     )
-    child = _Child(proc, f'pub-{tier}')
-    _children.append(child)
-    return child
 
 
 def launch_sub(domain: int, topic: str, msg_type: str, duration_s: float) -> _Child:
     env = _env_for(domain)
     script = Path(__file__).parent / 'sub.py'
-    proc = subprocess.Popen(
+    return _spawn(
         [sys.executable, str(script), '--topic', topic, '--msg-type', msg_type,
          '--duration-s', str(duration_s)],
         env=env,
+        name=f'sub-{topic}',
         stderr=subprocess.PIPE,
-        text=True,
     )
-    child = _Child(proc, f'sub-{topic}')
-    _children.append(child)
-    return child
 
 
 def _parse_count(child: _Child) -> int:
@@ -254,6 +286,7 @@ def main(argv: list[str] | None = None) -> None:
         _reexec_under_unshare(argv)
 
     atexit.register(_cleanup_all)
+    _install_signal_handlers()
     outdir = args.outdir or Path(tempfile.mkdtemp(prefix='udp_bridge_bench_'))
     outdir.mkdir(parents=True, exist_ok=True)
     print(f'BENCH_OUTDIR={outdir}')

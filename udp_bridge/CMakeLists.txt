@@ -168,6 +168,16 @@ if(BUILD_TESTING)
   # gap-filler can be published first, instead of hard-dropping the late
   # arrival. Uses injected fake time (no real-time sleeps).
   add_udp_bridge_gtest(test_reorder_buffer test/test_reorder_buffer.cpp)
+
+  # Bench-harness smoke test (issue #18). Runs the orchestrator under
+  # an unprivileged user namespace; skips cleanly if unshare -Urn is
+  # unavailable on the host (see test/bench/README.md "Prerequisites").
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_bench_smoke
+    test/bench/test_smoke.py
+    TIMEOUT 180
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
 
 ament_package()

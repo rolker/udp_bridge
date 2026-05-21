@@ -29,17 +29,14 @@ operator_bridge:
             host: "10.0.10.2"
             port: 4300
             maximum_bytes_per_second: 4000000
-            topics_list: []
           cell:
             host: "10.0.20.2"
             port: 4300
             maximum_bytes_per_second: 625000
-            topics_list: []
           starlink:
             host: "10.0.30.2"
             port: 4300
             maximum_bytes_per_second: 1000000
-            topics_list: []
 
 boat_bridge:
   ros__parameters:
