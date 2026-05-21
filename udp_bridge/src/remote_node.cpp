@@ -437,7 +437,7 @@ ResendRequest RemoteNode::getMissingPacketsAt(rclcpp::Time now)
     // zero-attempts entry would otherwise log "after 0 attempts"
     // silently.
     assert(s.attempts > 0);
-    RCLCPP_WARN_STREAM(logger_,
+    RCLCPP_DEBUG_STREAM(logger_,
       "Giving up on resend of packet " << m << " from remote '"
       << name_ << "' after " << s.attempts
       << " attempts (first requested "

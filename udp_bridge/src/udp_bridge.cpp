@@ -47,6 +47,9 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <poll.h>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <unordered_set>
 
 #include "udp_bridge_interfaces/msg/remote_subscribe_internal.hpp"
@@ -56,6 +59,7 @@
 #include "udp_bridge_interfaces/msg/resend_request.hpp"
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
+#include "udp_bridge/giveup_diagnostic.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/utilities.h"
 #include "lifecycle_msgs/msg/state.hpp"
@@ -80,14 +84,14 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   auto last_slash = name.rfind('/');
   if(last_slash != std::string::npos)
     name = name.substr(last_slash+1);
-  declare_parameter( "name", name);
+  declareIfMissing( "name", name);
   // This is the name of the UDPBridge node, not the ROS2 node name
   setName(get_parameter("name").as_string());
 
 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
 
-  declare_parameter("port", port_);
+  declareIfMissing("port", port_);
   // ROS 2 parameters are int64. port_ is uint16_t; out-of-range values
   // would silently wrap and bind to an unintended port. Clamp + warn.
   {
@@ -108,7 +112,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   }
   RCLCPP_INFO_STREAM(get_logger(), "port: " << port_);
 
-  declare_parameter("maximum_packet_size", max_packet_size_);
+  declareIfMissing("maximum_packet_size", max_packet_size_);
   // Bound the packet size to a sensible UDP range. Lower bound is the
   // minimum that still leaves room for a Packet header + a meaningful
   // payload after fragmentation; upper bound is the IPv4/UDP maximum.
@@ -135,6 +139,89 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     max_packet_size_ = static_cast<int>(configured_packet_size);
   }
   RCLCPP_INFO_STREAM(get_logger(), "maximum_packet_size: " << max_packet_size_);
+
+  // Resend give-up rate thresholds (issue #22). Defaults calibrated
+  // against the 2026-05-19 BizzyBoat storm (~3.9/s steady, ~700/s
+  // burst): steady fires WARN, burst fires ERROR. Live-tunable: the
+  // OnSetParameters callback below propagates `ros2 param set` to the
+  // cached members under remote_nodes_mutex_, so operators can adjust
+  // mid-storm without a reconfigure cycle.
+  declareIfMissing("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
+  declareIfMissing("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
+  resend_giveup_warn_rate_per_s_ = get_parameter("resend_giveup_warn_rate_per_s").as_double();
+  resend_giveup_error_rate_per_s_ = get_parameter("resend_giveup_error_rate_per_s").as_double();
+  // Validate launch-time values. Launch-line overrides
+  // (`-p resend_giveup_warn_rate_per_s:=100.0`) bypass the
+  // OnSetParameters callback below, so a bad pair would otherwise
+  // silently disable or invert the diagnostic. Fail fast and visibly
+  // — same bug class as a runtime `ros2 param set`, closed at the same
+  // entry point.
+  {
+    auto validation = validateGiveupThresholds(
+      resend_giveup_warn_rate_per_s_, resend_giveup_error_rate_per_s_);
+    if(!validation.ok)
+    {
+      RCLCPP_ERROR(get_logger(),
+        "Invalid resend give-up thresholds at on_configure: %s",
+        validation.reason.c_str());
+      return CallbackReturn::FAILURE;
+    }
+  }
+  RCLCPP_INFO_STREAM(get_logger(),
+    "resend_giveup thresholds: warn=" << resend_giveup_warn_rate_per_s_
+    << "/s, error=" << resend_giveup_error_rate_per_s_ << "/s");
+
+  on_set_parameters_handle_ = add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter>& params)
+        -> rcl_interfaces::msg::SetParametersResult
+    {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      // Take the reader's lock so the (read current → validate batch →
+      // apply) sequence is atomic against another concurrent set call,
+      // and so the reader can never observe a half-applied pair.
+      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+      // Compute the (warn, error) pair that would result from applying
+      // the batch on top of the current values, then validate the
+      // combined state in one pass — catches per-value problems
+      // (NaN/inf, negative) and cross-value problems (warn > error)
+      // together. See validateGiveupThresholds() in giveup_diagnostic.h.
+      bool warn_changed = false;
+      bool error_changed = false;
+      double proposed_warn = resend_giveup_warn_rate_per_s_;
+      double proposed_error = resend_giveup_error_rate_per_s_;
+      for(const auto& p: params)
+      {
+        if(p.get_name() == "resend_giveup_warn_rate_per_s")
+        {
+          proposed_warn = p.as_double();
+          warn_changed = true;
+        }
+        else if(p.get_name() == "resend_giveup_error_rate_per_s")
+        {
+          proposed_error = p.as_double();
+          error_changed = true;
+        }
+      }
+      auto validation = validateGiveupThresholds(proposed_warn, proposed_error);
+      if(!validation.ok)
+      {
+        result.successful = false;
+        result.reason = validation.reason;
+        return result;
+      }
+      resend_giveup_warn_rate_per_s_ = proposed_warn;
+      resend_giveup_error_rate_per_s_ = proposed_error;
+      if(warn_changed)
+        RCLCPP_INFO_STREAM(get_logger(),
+          "resend_giveup_warn_rate_per_s updated to "
+          << resend_giveup_warn_rate_per_s_ << "/s");
+      if(error_changed)
+        RCLCPP_INFO_STREAM(get_logger(),
+          "resend_giveup_error_rate_per_s updated to "
+          << resend_giveup_error_rate_per_s_ << "/s");
+      return result;
+    });
 
   //maximum_packet_size_subscriber_ = ros::NodeHandle("~").subscribe("maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
 
@@ -223,7 +310,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   bridge_info_publisher_ = create_publisher<BridgeInfo>(node_name+"/bridge_info", latching_qos);
 
-  declare_parameter("remotes_list", std::vector<std::string>());
+  declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
   for(auto remote_name: remotes_list)
   {
@@ -234,7 +321,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
 
     std::string connections_list_param = "remotes."+remote_name+".connections_list";
-    declare_parameter(connections_list_param, std::vector<std::string>());
+    declareIfMissing(connections_list_param, std::vector<std::string>());
     auto connections_list = get_parameter(connections_list_param).as_string_array();
     for(auto connection_name: connections_list)
     {
@@ -242,23 +329,23 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       connection.connection_id = connection_name;
       
       std::string host_param = "remotes." + remote_name + ".connections." + connection_name + ".host";
-      declare_parameter(host_param, "");
+      declareIfMissing(host_param, "");
       connection.host = get_parameter(host_param).as_string();
 
       std::string port_param = "remotes." + remote_name + ".connections." + connection_name + ".port";
-      declare_parameter(port_param, 0);
+      declareIfMissing(port_param, 0);
       connection.port = get_parameter(port_param).as_int();
       
       std::string return_host_param = "remotes." + remote_name + ".connections." + connection_name + ".return_host";
-      declare_parameter(return_host_param, "");
+      declareIfMissing(return_host_param, "");
       connection.return_host = get_parameter(return_host_param).as_string();
 
       std::string return_port_param = "remotes." + remote_name + ".connections." + connection_name + ".return_port";
-      declare_parameter(return_port_param, 0);
+      declareIfMissing(return_port_param, 0);
       connection.return_port = get_parameter(return_port_param).as_int();
 
       std::string maximum_bytes_per_second_param = "remotes." + remote_name + ".connections." + connection_name + ".maximum_bytes_per_second";
-      declare_parameter(maximum_bytes_per_second_param, 0);
+      declareIfMissing(maximum_bytes_per_second_param, 0);
       int mbps = get_parameter(maximum_bytes_per_second_param).as_int();
       if(mbps > 0)
         connection.maximum_bytes_per_second = mbps;
@@ -267,37 +354,37 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       remote_nodes_[remote_info.name]->update(remote_info);
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
-      declare_parameter(topics_list_param, std::vector<std::string>());
+      declareIfMissing(topics_list_param, std::vector<std::string>());
       auto topics_list = get_parameter(topics_list_param).as_string_array();
       for(auto topic: topics_list)
       {
         std::string queue_size_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".queue_size";
-        declare_parameter(queue_size_param, 10);
+        declareIfMissing(queue_size_param, 10);
         int queue_size = get_parameter(queue_size_param).as_int();
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
-        declare_parameter(period_param, 0.0);
+        declareIfMissing(period_param, 0.0);
         double period = get_parameter(period_param).as_double();
 
         std::string source_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".source";
-        declare_parameter(source_param, topic);
+        declareIfMissing(source_param, topic);
         std::string source = get_parameter(source_param).as_string();
         source = get_node_base_interface()->resolve_topic_or_service_name(source, false, false);
 
         std::string destination_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".destination";
-        declare_parameter(destination_param, source);
+        declareIfMissing(destination_param, source);
         auto destination = get_parameter(destination_param).as_string();
 
         std::string reliability_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".reliability";
-        declare_parameter(reliability_param, std::string());
+        declareIfMissing(reliability_param, std::string());
         std::string reliability = get_parameter(reliability_param).as_string();
 
         std::string durability_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".durability";
-        declare_parameter(durability_param, std::string());
+        declareIfMissing(durability_param, std::string());
         std::string durability = get_parameter(durability_param).as_string();
 
         std::string history_depth_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".history_depth";
-        declare_parameter(history_depth_param, 0);
+        declareIfMissing(history_depth_param, 0);
         // ROS 2 parameters are int64; an unchecked static_cast<uint32_t>
         // of a negative or out-of-range value wraps to a billions-large
         // depth and triggers a huge KEEP_LAST allocation in the rmw
@@ -362,6 +449,20 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
   diagnostic_timer_.reset();
   diagnostic_updater_.reset();
   diagnostic_task_names_.clear();
+  // Drop the parameter-change callback handle so a subsequent
+  // on_configure cycle starts fresh; otherwise the previous handle
+  // would still be live and a duplicate would accumulate.
+  on_set_parameters_handle_.reset();
+  // Per-remote diagnostic state: also clear, so an
+  // activate→deactivate→activate cycle starts from a known baseline
+  // rather than carrying stale GiveupRateState entries that would
+  // compute a huge "elapsed" on the next publish. Guarded by
+  // remote_nodes_mutex_ per the lifecycle-state contract for this
+  // map (declaration in udp_bridge.h).
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    giveup_rate_state_.clear();
+  }
   return LifecycleNode::on_cleanup(state);
 }
 
@@ -1567,16 +1668,18 @@ void UDPBridge::syncDiagnosticTasks()
 {
   if(!diagnostic_updater_)
     return;
-  // Snapshot (remote_name, connection_id) pairs under the lock; the
-  // diagnostic_updater_->add call captures by value so the registered task
-  // does not need to outlive the lock.
+  // Snapshot (remote_name, connection_id) pairs and remote names under
+  // the lock; the diagnostic_updater_->add call captures by value so
+  // registered tasks don't need to outlive the lock.
   std::vector<std::pair<std::string, std::string>> remote_connection_pairs;
+  std::vector<std::string> remote_names;
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     for(auto& remote_entry: remote_nodes_)
     {
       if(!remote_entry.second)
         continue;
+      remote_names.push_back(remote_entry.first);
       for(auto& connection: remote_entry.second->connections())
       {
         if(!connection)
@@ -1596,6 +1699,24 @@ void UDPBridge::syncDiagnosticTasks()
       [this, remote_name, connection_id](diagnostic_updater::DiagnosticStatusWrapper& stat)
       {
         diagnoseConnection(remote_name, connection_id, stat);
+      });
+    diagnostic_task_names_.insert(task_name);
+  }
+  // Per-remote resend-give-up diagnostic (issue #22). Task name format
+  // mirrors the per-connection convention above so the aggregator
+  // groups them next to the related connection statuses. The
+  // diagnostic_task_names_ gate prevents double-add if a remote of the
+  // same name is removed and re-added in the same activate cycle —
+  // diagnostic_updater::Updater has no per-task remove() API.
+  for(const auto& remote_name: remote_names)
+  {
+    std::string task_name = "udp_bridge " + name_ + ": " + remote_name + ": resend give-ups";
+    if(diagnostic_task_names_.count(task_name))
+      continue;
+    diagnostic_updater_->add(task_name,
+      [this, remote_name](diagnostic_updater::DiagnosticStatusWrapper& stat)
+      {
+        diagnoseRemoteGiveups(remote_name, stat);
       });
     diagnostic_task_names_.insert(task_name);
   }
@@ -1664,6 +1785,74 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
   {
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, summary);
   }
+}
+
+void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,
+                                      diagnostic_updater::DiagnosticStatusWrapper& stat)
+{
+  // Snapshot the remote pointer + the give-up counter + step the
+  // per-remote rate state + sample the thresholds all under
+  // remote_nodes_mutex_. The lock is brief — the counter read
+  // (RemoteNode::resendGiveupCount() in remote_node.cpp) takes only
+  // the recursive RemoteNode::state_mutex_ and does not re-acquire
+  // remote_nodes_mutex_, so it is lock-friendly here; the state-step
+  // is a tiny struct copy + compute. Sampling the thresholds under
+  // the same lock the OnSetParameters callback takes pins them
+  // against mid-callback runtime changes from `ros2 param set`. The
+  // STALE return mirrors diagnoseConnection() above: the remote may
+  // have been removed between task registration and the diagnostic
+  // callback firing.
+  rclcpp::Time now_time = now();
+  GiveupDiagnostic diag;
+  double elapsed_s = 0.0;
+  double warn_thresh = 0.0;
+  double error_thresh = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote_it = remote_nodes_.find(remote_name);
+    if(remote_it == remote_nodes_.end() || !remote_it->second)
+    {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "remote not registered");
+      return;
+    }
+    uint32_t current_count = remote_it->second->resendGiveupCount();
+    warn_thresh = resend_giveup_warn_rate_per_s_;
+    error_thresh = resend_giveup_error_rate_per_s_;
+    // operator[] default-constructs a fresh GiveupRateState (with
+    // has_previous=false) if this is the first call for remote_name,
+    // matching stepGiveupDiagnostic's first-call contract. Capture
+    // the elapsed window from the state's prior timestamp before the
+    // step writes the new sample back.
+    GiveupRateState& state = giveup_rate_state_[remote_name];
+    if(state.has_previous)
+      elapsed_s = (now_time - state.last_publish_time).seconds();
+    diag = stepGiveupDiagnostic(state, current_count, now_time, warn_thresh, error_thresh);
+  }
+
+  stat.add("remote", remote_name);
+  stat.add("give_ups_total", diag.total);
+  stat.add("give_up_rate_per_s", diag.rate_per_s);
+  // Clamp the published window to >= 0 so a backward clock jump
+  // (NTP correction, sim-time rewind) doesn't surface a negative
+  // window_s. computeGiveupDiagnostic already treats elapsed_s <= 0
+  // as zero-rate / OK, so this just keeps the KeyValue consistent.
+  stat.add("window_s", std::max(0.0, elapsed_s));
+  stat.add("warn_threshold_per_s", warn_thresh);
+  stat.add("error_threshold_per_s", error_thresh);
+
+  // Two-decimal formatting keeps the summary string operator-friendly
+  // in aggregator UIs; std::to_string(double) defaults to 6 fractional
+  // digits which is noisy ("5.000000/s exceeds warn threshold"). The
+  // structured KeyValues above still carry the raw doubles.
+  std::ostringstream summary;
+  summary << std::fixed << std::setprecision(2);
+  if(diag.level == diagnostic_msgs::msg::DiagnosticStatus::ERROR)
+    summary << "give-up rate " << diag.rate_per_s << "/s exceeds error threshold";
+  else if(diag.level == diagnostic_msgs::msg::DiagnosticStatus::WARN)
+    summary << "give-up rate " << diag.rate_per_s << "/s exceeds warn threshold";
+  else
+    summary << "give-up rate " << diag.rate_per_s << "/s (total " << diag.total << ")";
+  stat.summary(diag.level, summary.str());
 }
 
 // void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)

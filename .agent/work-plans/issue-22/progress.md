@@ -1,0 +1,92 @@
+---
+issue: 22
+---
+
+# Issue #22 — 'Giving up on resend' WARN log too loud — rate-limit or surface as DiagnosticStatus
+
+## Local Review
+**Status**: complete
+**When**: 2026-05-20 14:10 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: changes-requested
+
+**PR**: #24 at `cfd57d3`
+**Mode**: post-PR
+**Depth**: Standard (reason: new C++ surface + new ROS 2 params + new threaded state on `UDPBridge`; 8 files +506/-4)
+**Must-fix**: 1 | **Suggestions**: 2
+
+### Findings
+- [x] (must-fix, Claude Adv. + Copilot Adv. cross-source) Thresholds latched at `on_configure`, README implies runtime-tunable. Resolved by adding `OnSetParametersCallback` — `udp_bridge.cpp` `on_configure` registers the handle, validates non-negative thresholds, applies under `remote_nodes_mutex_` (matches reader's lock). `on_cleanup` resets the handle. Reader now samples thresholds inside the lock too.
+- [x] (suggestion, Claude Adv.) `std::to_string(double)` in summary text replaced with `std::ostringstream` + `std::fixed << std::setprecision(2)`. Structured KeyValues (raw doubles) unaffected.
+- [x] (suggestion, Copilot Adv.) Wrapper-side test coverage gap closed by refactor: consolidated two parallel maps into `std::map<std::string, GiveupRateState>` + extracted `stepGiveupDiagnostic` helper into `giveup_diagnostic.h`. Six new tests cover first-call init, two-call sequence (map-update ordering), counter reset across calls, zero-elapsed between steps, multi-state independence, and threshold-change-takes-effect-on-next-step.
+
+### Notes
+- Cross-source convergence on must-fix #1: both Claude Adv. (in-context sub-agent) and Copilot Adv. (CLI) independently flagged the parameter live-update gap. Strongest signal class per ADR-0013.
+- Process miss: this review was run **post-push**, not pre-push. AGENTS.md Post-Task Verification §5 requires pre-push. Captured in the broader pattern tracked at workspace umbrella issue #480.
+- One Copilot false positive dismissed: claim that `.agent/work-plans/issue-22/plan.md` is "review noise" — it's the canonical plan-first artifact per ADR-0013, ships with the PR by design.
+- Static analysis skipped: `cpplint` / `cppcheck` not installed on this host. CI will run them if configured upstream.
+- Plan §4's deferred "annunciator allowlist check" (Open Question 1) is still open — required during deployment integration, not blocking this PR.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-20 18:50 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 — 1 review (Copilot), 5 inline comments, 4 valid, 1 false positive
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [x] Fix (udp_bridge.cpp OnSetParameters): refactored to single-pass validator. Added `validateGiveupThresholds` to `giveup_diagnostic.h` — rejects NaN/inf, negatives, and `warn > error` with operator-actionable reason strings. Callback computes proposed_warn/proposed_error from batch + current under `remote_nodes_mutex_`, then validates once.
+- [x] Fix (udp_bridge.cpp on_configure): same validator called after `get_parameter` so launch-line overrides (`-p resend_giveup_warn_rate_per_s:=…`) can't slip a bad pair past startup. Fails the lifecycle transition with `RCLCPP_ERROR` + `CallbackReturn::FAILURE` — scope expansion beyond Copilot's flagged surface, approved by user.
+- [x] Fix (udp_bridge.cpp:1716 → now 1740): `stat.add("window_s", std::max(0.0, elapsed_s))` so a backward clock jump (NTP correction, sim-time rewind) doesn't surface a negative published window.
+- [x] Fix (udp_bridge.h diagnoseRemoteGiveups docstring): dropped stale `last_giveup_*_` reference, points at `giveup_rate_state_` / `GiveupRateState` / `stepGiveupDiagnostic`.
+- [x] Fix (README.md diagnostic surface paragraph): DiagnosticStatus called out as the default surface; per-event DEBUG log capture now documented as requiring `--ros-args --log-level udp_bridge:=DEBUG` or `RCUTILS_LOGGING_SEVERITY_THRESHOLD=DEBUG`.
+- [x] Test coverage: +9 gtests in `test_giveup_diagnostic.cpp` for the validator — defaults pass, equal warn=error passes, 0/0 passes, negative warn/error rejected per side, NaN warn/error rejected per side, +inf rejected (finite check), inverted pair rejected with both values in the reason string. 65 → 74 tests, all passing.
+- [ ] (Optional) Reply or dismiss Copilot's `as_double()` type-check thread — false positive (strict typing rejects mismatched `param set` server-side; `dynamic_typing` not enabled). Deferred to user.
+
+### Notes
+- One scope expansion beyond Copilot's flagged surface: launch-line overrides bypass the OnSetParameters callback. Same bug class (NaN/negative/inverted pair → silently broken diagnostic), closed at the launch entry point too. Authorized via AskUserQuestion before committing.
+
+## External Review (round 2)
+**Status**: complete
+**When**: 2026-05-20 22:00 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 at `87e8b6e` — Copilot re-reviewed after the round-1 push. 3 new inline comments; round-1's 5 comments are now stale (concerns addressed by the round-1 push).
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [x] Fix (diagnoseRemoteGiveups lock comment): dropped both stale line-number citations (`udp_bridge.cpp:1271` and `diagnoseConnection() at line 1543`). Replaced with the durable invariants (`RemoteNode::resendGiveupCount()` takes only `RemoteNode::state_mutex_`; `STALE` return mirrors `diagnoseConnection()` above).
+- [x] Scope decision (declare_parameter reconfigure-safety): user authorized repo-wide fix in this PR. Added `declareIfMissing<T>(name, default)` private template helper to `UDPBridge`; replaced all 18 `declare_parameter` call sites in `on_configure` (port, maximum_packet_size, resend-giveup pair, and the remotes/connections/topics loops). Reconfigure cycle (cleanup→configure) now reentrant for parameter declaration.
+- [ ] (Pending) Resolve 4 unresolved round-1 threads + 1 round-2 `||` FP thread on GitHub. (Round-1 `as_double()` FP already resolved.)
+
+### Notes
+- `declareIfMissing` is a template member function defined inline in `udp_bridge.h` — needs `has_parameter()` on the `LifecycleNode` base, so couldn't go in `giveup_diagnostic.h` (the pure header). No new unit test: testing the guard requires bringing up the node and a real cleanup→configure cycle, which is out of proportion for a 2-line guard. The build and existing 74 tests still pass.
+- Scope creep authorized in advance — Copilot flagged only my new params, but the pre-existing pattern (lines 87, 94, 115, …, 387) had the same defect. Fixing only my pair would have been cosmetic; the reconfigure cycle would still throw at line 87. Repo-wide fix lands the property Copilot wanted.
+
+## External Review (round 3)
+**Status**: complete
+**When**: 2026-05-20 22:25 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 at `be6e9e6` — Copilot's third re-review. 1 new inline comment, classified Valid (real defect).
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [x] Fix (`giveup_diagnostic.h`): added the "no activity → OK" short-circuit (`current_count == prev_count` returns rate=0/OK before threshold comparison). The function's edge-case docstring was extended with the new case.
+- [x] Test (`test_giveup_diagnostic.cpp`): 3 new gtests — `NoActivityReturnsOk` (current==prev with default thresholds), `ZeroDeltaWithZeroThresholdsStaysOk` (the round-3 regression), `ZeroWarnFiresOnAnyActivity` (companion — warn=0 still fires on real activity). Also rewrote the misleading comment in `ZeroThresholdsAreAccepted` to describe the actual semantics. 74 → 77 tests, all green.
+
+## External Review (round 4)
+**Status**: complete
+**When**: 2026-05-20 23:55 -04:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #24 at `b5946c2` — Copilot's fourth re-review. 2 new inline comments — 1 valid (README wording), 1 false positive (repeat `||` hallucination).
+**CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
+
+### Actions
+- [x] Fix (`README.md` Diagnostic surface bullet): reworded to drop "sender has abandoned" framing. Now says "missing packets are abandoned by the resend protocol" with the actual mechanism named — receiver-side give-up at sender's retention TTL.
+- [x] Resolve round-4 `||` README thread on GitHub — repeat FP, same as round 2.
+
+### Notes
+- Round-4 `||` claim is the second instance of the same hallucination on the same unchanged source (round-2 instance was resolved as FP). Copilot's own diff hunk in the comment body shows the correct single-pipe markup — the false claim is purely in the natural-language prose. Pattern: this specific false positive may keep recurring on each re-review pass. Worth noting for future agents that "yet another `||` claim against this table" should be triaged as FP without re-investigating.
