@@ -694,12 +694,23 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const Sour
 
 void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
-  // Catch deserialization failure here so a mismatched/corrupt
-  // ResendRequest packet logs+drops instead of propagating through
-  // the executor and killing the bridge. The ResendRequest.msg comment
-  // promises this; the catch makes the promise true. Mirror the same
-  // pattern at other decode* sites in a follow-up — see the parallel
-  // gap in decodeMessageInternal (predates this change).
+  // Catch deserialization failure here for diagnostic clarity on
+  // the coordinated-redeploy / mismatched-schema scenario. Executor
+  // survival is already provided by UDPBridge::decode's outer
+  // catch-all (udp_bridge.cpp:568-614), which logs an ERROR and
+  // continues for any exception thrown by a decode* path. What this
+  // inner catch buys is a more specific WARN that names this site
+  // ("Failed to deserialize ResendRequest from <node> (<host>:
+  // <port>)") instead of the outer's generic
+  // "decoding error on packet of type N from <node>" — useful when
+  // an operator is chasing a known coordinated-redeploy mismatch
+  // and wants to confirm it's the ResendRequest schema that's
+  // out of sync. The ResendRequest.msg comment documents this
+  // site-specific contract. Mirror the pattern at other decode*
+  // sites in a follow-up only if the diagnostic-clarity payoff is
+  // worth the duplication — see the parallel gap in
+  // decodeMessageInternal (predates this change); the outer catch
+  // is enough for survival there too.
   ResendRequest rr;
   try
   {

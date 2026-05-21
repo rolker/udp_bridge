@@ -139,4 +139,17 @@ Build and full test suite (51 tests) green locally on the worktree.
 The finding: round-3's try/catch comment in `decodeResendRequest` (and the matching wording in `ResendRequest.msg`) overstates the benefit. Both comments claim that without the local try/catch a deserialization exception would propagate to the executor and kill the bridge. Verified false: `UDPBridge::decode()` at `udp_bridge.cpp:568-614` already has an outer catch-all around every `decode*` call (`decodeResendRequest` is invoked at line 596-598). The inner try/catch's actual benefit is diagnostic — it emits a specific WARN naming the source (node_name, host, port) and the failure kind, instead of falling through to the outer's generic "decoding error on packet of type N" ERROR. Useful for operators chasing a coordinated-redeploy mismatch, but not load-bearing for executor survival.
 
 ### Actions
-- [ ] Fix #12 + #13 (bundle): update the inner try/catch comment in `udp_bridge.cpp` and the matching note in `ResendRequest.msg` to describe the real benefit (specific WARN vs generic ERROR; site-specific diagnostic) and explicitly note that executor survival is the outer catch's responsibility, not this one. Comment-only.
+- [x] Fix #12 + #13 (bundle): updated both the inner try/catch comment in `udp_bridge.cpp:697-712` and the matching note in `ResendRequest.msg` to describe the real benefit (site-specific WARN vs outer's generic ERROR) and explicitly note that executor survival comes from `UDPBridge::decode`'s outer catch-all, not this site-specific one. Comment-only change; build + 51/0/0 tests green.
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-20 19:35
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-7 changes addressing Copilot's review-5 (same finding presented twice):
+
+- **`udp_bridge/src/udp_bridge.cpp:697-712`** — rewrote the inner try/catch rationale to describe the actual contract: diagnostic clarity (site-specific WARN naming source bridge + failure kind) vs the outer catch-all's generic "decoding error on packet of type N" ERROR. Explicitly notes that executor survival comes from the outer catch in `UDPBridge::decode` (line 568-614), not this one. The follow-up note about other `decode*` sites was also softened — mirroring the pattern is a diagnostic-payoff judgment call, not a survival requirement.
+- **`udp_bridge_interfaces/msg/ResendRequest.msg`** — matched the corrected framing on the message side: site-specific catch is about diagnosability of the coordinated-redeploy scenario, not survival; survival is provided by the outer catch in `UDPBridge::decode`.
+- **`.agent/work-plans/issue-23/plan.md`** — round-7 implementation note documenting the correction.
+
+Build and full test suite (51 tests) green locally on the worktree.

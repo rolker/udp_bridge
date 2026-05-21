@@ -247,6 +247,31 @@ PR #13.
   reworded the surrounding comments — the invariant under test is
   "no broadcast fallback," not "no log output."
 
+- **try/catch comment correction (round-7 fix).** Copilot's fifth
+  review caught that round-3's try/catch rationale in
+  `decodeResendRequest` (and the matching wording in
+  `ResendRequest.msg`) overstated the benefit. Both comments
+  claimed the site-specific catch was load-bearing for executor
+  survival ("logs+drops … rather than letting the exception
+  propagate to the executor and kill the bridge"). Verified false:
+  `UDPBridge::decode()` at `udp_bridge.cpp:568-614` already wraps
+  every `decode*` dispatch (including `decodeResendRequest` at line
+  596-598) in a catch-all that logs an ERROR and continues. The
+  inner catch's real benefit is **diagnostic clarity** — it emits
+  a site-specific WARN naming the source bridge and the failure
+  kind ("Failed to deserialize ResendRequest from <node> (<host>:
+  <port>)") so an operator chasing a known coordinated-redeploy
+  mismatch can confirm it's the ResendRequest schema that's out of
+  sync, instead of having to interpret the outer's generic
+  "decoding error on packet of type N" ERROR. Both comments
+  rewritten to describe the actual contract and explicitly call
+  out that executor survival comes from the outer catch, not this
+  one. The follow-up note about other `decode*` sites (notably
+  `decodeMessageInternal`) was also updated to reflect that the
+  outer catch is enough for survival there too — mirroring the
+  site-specific pattern is now framed as a diagnostic-payoff
+  judgment call, not a survival requirement.
+
 - **Comment + DEBUG-path + test-log polish (round-6 fix).** Three
   small follow-ups from Copilot's fourth review (against the round-5
   push at `3f40162`):
