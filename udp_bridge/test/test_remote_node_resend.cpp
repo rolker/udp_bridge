@@ -21,14 +21,24 @@
 // matches the clock RemoteNode itself would observe under sim time.
 
 #include <cstdint>
+#include <cstdio>
 #include <vector>
+
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rcutils/logging.h"
 
+#include "udp_bridge_interfaces/msg/resend_request.hpp"
+#include "udp_bridge_interfaces/msg/remote.hpp"
+#include "udp_bridge_interfaces/msg/remote_connection.hpp"
+#include "udp_bridge/connection.h"
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
+#include "udp_bridge/packet.h"   // truncate_connection_id, maximum_connection_id_size
 
 namespace
 {
@@ -443,6 +453,454 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
   EXPECT_EQ(rr.missing_packets[0], 2u);
   EXPECT_EQ(rr.missing_packets[1], 3u);
   EXPECT_EQ(rr.missing_packets[2], 4u);
+}
+
+// Issue #23: ResendRequests carry connection_id and dispatchResendRequest
+// routes the response to that one connection only — replacing the
+// previous broadcast across every active connection to the source remote,
+// which amplified resend volume 2-4x and pushed bytes into rx-dead paths
+// under the 2026-05-19 wifi-loss storm.
+//
+// Eight tests below cover dispatch routing, the canonical-id contract,
+// and the WARN-bookkeeping cap:
+//   - DispatchRoutesToStampedConnectionOnly: the matched-id case — a
+//     request stamped for "wifi" reaches only the wifi connection's
+//     resend_packets, not vpn's.
+//   - DispatchDropsWithoutBroadcastWhenStampedIdAbsent: receiver knows
+//     a subset of the connection ids the sender knows about. Models
+//     the transient post-restart / pre-BridgeInfo-reconciliation
+//     window where the sender stamps for an id the receiver hasn't
+//     (re-)registered yet.
+//   - DispatchDropsWithoutBroadcastUnknownConnectionId: stamped id was
+//     never registered on the receiver at all. Models a config-mismatch
+//     coordinated-redeploy bug where the two bridges' connection-id
+//     strings don't agree.
+//   - DispatchDoesNotFuzzyMatchConnectionId: dispatch performs a
+//     strict-equality lookup on the canonical form — a request stamped
+//     with the untruncated form of an id already in the map must miss,
+//     not be silently routed via a prefix match at the dispatch seam.
+//     (The wire-canonicalization at insertion is what actually makes
+//     long configured ids route correctly in production; this test
+//     pins the dispatch seam.)
+//   - NewConnectionCanonicalizesLongId: a configured id ≥ 8 chars is
+//     truncated to the wire form at construction time, so a sender
+//     stamping the canonical form lands on the connection that owns
+//     sent_packets_ for that link.
+//   - UpdateRemoteWithLongIdDoesNotOrphanOrClobber: drives the
+//     RemoteNode::update(const Remote&) path with a long configured
+//     id and asserts no orphan untruncated-key entry is created and
+//     that a second update call doesn't replace the existing
+//     Connection instance (regression for the bare-operator[] bug
+//     R9 flagged on round-10).
+//   - NewConnectionRejectsCanonicalIdCollision: two distinct
+//     configured ids that share the first 7 chars (canonicalize to
+//     the same wire form) — the second call must return the
+//     first-registered Connection rather than constructing a fresh
+//     one and clobbering the entry.
+//   - DispatchMissWarnedIdsAreBounded: the bookkeeping table that
+//     dedups first-miss WARN logs has a hard cap (kDispatchMissWarnedCap)
+//     with FIFO eviction; a peer streaming distinct ids cannot grow
+//     the table without bound.
+// The lookup-miss cases share dispatch's miss branch (which emits
+// WARN-on-first-miss-per-id, DEBUG thereafter — see
+// dispatchResendRequest in remote_node.cpp). The behavioral invariant
+// these tests assert is "no broadcast fallback to other connections",
+// not "no log output". The test split documents the operational
+// scenarios an operator might be chasing when that WARN/DEBUG log fires.
+
+namespace
+{
+
+// Open a real UDP socket for the dispatch tests. Connection::send
+// will hand this to sendto(); the loopback destination resolves to
+// a real port whose receiver is no one, so the kernel cheerfully
+// accepts the datagram. The assertion target is the per-connection
+// counter, NOT the I/O — Connection::resend_packets increments the
+// counter at function entry before any sendto call, so empty payloads
+// or undeliverable destinations don't affect the test outcome. Caller
+// closes via RAII.
+class ScopedFd
+{
+public:
+  ScopedFd() : fd_(::socket(AF_INET, SOCK_DGRAM, 0)) {}
+  ~ScopedFd() { if(fd_ >= 0) ::close(fd_); }
+  ScopedFd(const ScopedFd&) = delete;
+  ScopedFd& operator=(const ScopedFd&) = delete;
+  int get() const { return fd_; }
+private:
+  int fd_;
+};
+
+}  // namespace
+
+// Routing case 1: a ResendRequest stamped for "wifi" reaches only the
+// wifi connection's resend_packets — not vpn's.
+TEST_F(ResendFixture, DispatchRoutesToStampedConnectionOnly)
+{
+  auto wifi = remote_->newConnection("wifi", "127.0.0.1", 9001);
+  auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);
+  ASSERT_NE(wifi, nullptr);
+  ASSERT_NE(vpn,  nullptr);
+
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = "wifi";
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+
+  EXPECT_EQ(wifi->resend_call_count_for_test(), 1u)
+    << "Stamped-for connection should receive exactly one resend dispatch.";
+  EXPECT_EQ(vpn->resend_call_count_for_test(), 0u)
+    << "Non-stamped connection must not receive a resend — this is the "
+       "amplification bug issue #23 is fixing.";
+}
+
+// Routing case 2: stamped id is absent from the receiver's connections_
+// (subset state). Models the race window where the receiver hasn't
+// re-registered the connection yet but the sender already stamped for
+// it. Dispatch must no-op (no broadcast fallback to other live
+// connections — that's the old behavior this issue removes). Dispatch
+// also emits a WARN log on the first such miss per id; this test
+// asserts the routing invariant, not the log output.
+TEST_F(ResendFixture, DispatchDropsWithoutBroadcastWhenStampedIdAbsent)
+{
+  // Receiver knows only "vpn" right now; sender stamped for "wifi".
+  auto vpn = remote_->newConnection("vpn", "127.0.0.1", 9002);
+  ASSERT_NE(vpn, nullptr);
+
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = "wifi";
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+
+  EXPECT_EQ(vpn->resend_call_count_for_test(), 0u)
+    << "Lookup miss must not fan out to the other live connection — "
+       "that would reintroduce the broadcast behavior issue #23 removes.";
+}
+
+// Routing case 3: stamped id was never registered (config mismatch
+// across coordinated redeploys). Same no-broadcast-fallback invariant
+// as case 2; differs in known_ids log content (which is operator-facing,
+// not asserted here).
+TEST_F(ResendFixture, DispatchDropsWithoutBroadcastUnknownConnectionId)
+{
+  auto wifi = remote_->newConnection("wifi", "127.0.0.1", 9001);
+  auto vpn  = remote_->newConnection("vpn",  "127.0.0.1", 9002);
+  ASSERT_NE(wifi, nullptr);
+  ASSERT_NE(vpn,  nullptr);
+
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = "iridium";  // never registered on this RemoteNode
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+
+  EXPECT_EQ(wifi->resend_call_count_for_test(), 0u);
+  EXPECT_EQ(vpn->resend_call_count_for_test(),  0u);
+}
+
+// Routing case 4: dispatch is strict-match — it does not fuzzy-match
+// or auto-truncate. The receiver's connections_ map is keyed on the
+// truncated id (the on-wire SequencedPacketHeader is a fixed
+// char[maximum_connection_id_size]; WrappedPacket truncates to 7
+// chars + null at wrapped_packet.cpp:31-32, and connections_ is
+// populated from packet headers). Dispatch looks up
+// connections_[rr.connection_id] exactly — no prefix match, no
+// length normalization.
+//
+// Scope note: this test verifies the dispatch-side strict-match
+// invariant only — dispatch must do strict equality on rr.connection_id,
+// not prefix-match. The wire contract — "any configured id ≥ 8 chars
+// routes correctly" — is enforced one layer up, by canonicalizing all
+// connections_ keys to the on-wire truncated form at every insertion
+// point (RemoteNode::newConnection and Connection::Connection both
+// run through packet.h's truncate_connection_id). With that
+// canonicalization in place, a sender's stamp (which is already
+// canonical because connection->id() returns the canonical form)
+// matches the canonical key in the receiver's connections_ map. The
+// receive-side clamp in UDPBridge::decodeResendRequest remains as a
+// defense against misbehaving peers that stamp the untruncated form.
+// The NewConnectionCanonicalizesLongId test below covers the new
+// contract directly: it constructs a connection with a > 7-char id
+// and asserts that dispatch routes a canonical-form stamp to it.
+TEST_F(ResendFixture, DispatchDoesNotFuzzyMatchConnectionId)
+{
+  // The receiver's connection key is the truncated form (what would
+  // arrive in the wire packet header). "starlink" (8 chars) becomes
+  // "starlin" (7 chars + implicit null in the char array).
+  auto truncated = remote_->newConnection("starlin", "127.0.0.1", 9003);
+  ASSERT_NE(truncated, nullptr);
+
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+
+  {
+    // Exact-match: rr stamped with the truncated key → routes.
+    udp_bridge_interfaces::msg::ResendRequest rr;
+    rr.missing_packets = {1u};
+    rr.connection_id = "starlin";
+    remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+    EXPECT_EQ(truncated->resend_call_count_for_test(), 1u)
+      << "Exact-key stamp must match the connection's key.";
+  }
+  {
+    // No fuzzy match: rr stamped with the untruncated form — even
+    // though "starlink" begins with "starlin", dispatch must do a
+    // strict equality lookup. If a future refactor introduces
+    // prefix-match behavior at the dispatch site, this counter
+    // bumps and the test fails — surfacing the change before it
+    // can silently mis-route a forged id.
+    udp_bridge_interfaces::msg::ResendRequest rr;
+    rr.missing_packets = {1u};
+    rr.connection_id = "starlink";
+    remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+    EXPECT_EQ(truncated->resend_call_count_for_test(), 1u)
+      << "Dispatch lookup must be strict-equality. A counter bump "
+         "here would mean dispatch is fuzzy-matching ids, which "
+         "could mis-route a forged or stale id to a real connection.";
+  }
+}
+
+// Routing case 5: configured ids ≥ maximum_connection_id_size are
+// canonicalized to the on-wire truncated form at construction time, so
+// a sender stamping the canonical form (which is what
+// UDPBridge::resendMissingPackets does: connection->id() is already
+// canonical) finds the connection that holds sent_packets_ for that
+// link. This is the contract the round-8 self-review thought was held
+// by the wire-decode clamp alone; in production, BridgeInfo carries
+// the full configured id into the receiver's connections_ map under
+// the full key, and the wire-decode clamp would route the stamp to a
+// different (duplicate) Connection instance with empty sent_packets_.
+// Canonicalizing at insertion closes that gap.
+TEST_F(ResendFixture, NewConnectionCanonicalizesLongId)
+{
+  const std::string full_id = "starlink";   // 8 chars (>= max)
+  const std::string canonical_id = "starlin";
+
+  auto link = remote_->newConnection(full_id, "127.0.0.1", 9101);
+  ASSERT_NE(link, nullptr);
+
+  // Connection::id() reports the canonical form.
+  EXPECT_EQ(link->id(), canonical_id);
+
+  // Lookup is canonical-aware: callers passing either the full
+  // configured id or the on-wire truncated form land on the same
+  // connection. (newConnection should not have created a duplicate
+  // entry keyed on the full form.)
+  EXPECT_EQ(remote_->connection(canonical_id), link);
+  EXPECT_EQ(remote_->connection(full_id), link);
+
+  // The contract: a resend stamped with the canonical wire form (what
+  // a well-behaved sender's UDPBridge::resendMissingPackets produces)
+  // routes to the connection that owns sent_packets_ for that link.
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+  udp_bridge_interfaces::msg::ResendRequest rr;
+  rr.missing_packets = {1u};
+  rr.connection_id = canonical_id;
+  remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
+  EXPECT_EQ(link->resend_call_count_for_test(), 1u)
+    << "Canonical-form stamp must route to the connection created from "
+       "the long configured id. A miss here means the truncation "
+       "contract is back to one-sided.";
+}
+
+// Regression for Copilot R9 finding (PR #25): RemoteNode::update(const
+// Remote&) used a bare `connections_[c.connection_id]` index with the
+// untruncated configured id. For ids ≥ maximum_connection_id_size the
+// canonical key from newConnection() and the untruncated key from
+// operator[] were distinct, leaving a null-shared_ptr orphan slot at
+// the untruncated key and (more dangerously) re-entering newConnection's
+// overwrite path on every subsequent update — which clobbered the live
+// Connection's sent_packets_ / stats. This test drives the
+// update(Remote) path with a long configured id and asserts:
+//   - the canonical-keyed Connection exists,
+//   - no orphan slot lives at the untruncated key
+//     (RemoteNode::connection(untruncated) finds the canonical one,
+//     not an orphan null),
+//   - a second update(Remote) call returns the same Connection
+//     instance (no clobber).
+TEST_F(ResendFixture, UpdateRemoteWithLongIdDoesNotOrphanOrClobber)
+{
+  const std::string full_id = "starlink";   // 8 chars (>= max)
+  const std::string canonical_id = "starlin";
+
+  udp_bridge_interfaces::msg::Remote remote_msg;
+  remote_msg.name = "test-remote";  // matches the fixture's RemoteNode name_
+  udp_bridge_interfaces::msg::RemoteConnection rc;
+  rc.connection_id = full_id;
+  rc.host = "127.0.0.1";
+  rc.port = 9201;
+  rc.maximum_bytes_per_second = 1000000;
+  remote_msg.connections.push_back(rc);
+
+  remote_->update(remote_msg);
+
+  // The Connection landed at the canonical key.
+  auto via_canonical = remote_->connection(canonical_id);
+  ASSERT_NE(via_canonical, nullptr) << "update(Remote) did not create a "
+    "Connection at the canonical key — canonicalization isn't being "
+    "applied on this path.";
+  EXPECT_EQ(via_canonical->id(), canonical_id);
+
+  // Lookup via the untruncated configured id finds the same Connection
+  // (because RemoteNode::connection canonicalizes its input). If the
+  // bare-operator[] regression were back, this would either return
+  // a different shared_ptr (orphan null at untruncated key) or be
+  // unequal to via_canonical.
+  auto via_full = remote_->connection(full_id);
+  EXPECT_EQ(via_full, via_canonical) << "RemoteNode::connection lookup "
+    "with the untruncated configured id must canonicalize and land on "
+    "the same Connection instance.";
+
+  // Second update — must NOT clobber. We can't observe sent_packets_
+  // directly from the public API, but a clobber would replace the
+  // shared_ptr with a freshly-constructed Connection at the same
+  // canonical key. Pointer equality after a second update proves the
+  // entry survived.
+  auto* expected_raw = via_canonical.get();
+  remote_->update(remote_msg);
+  auto via_canonical_after = remote_->connection(canonical_id);
+  ASSERT_NE(via_canonical_after, nullptr);
+  EXPECT_EQ(via_canonical_after.get(), expected_raw)
+    << "Second update(Remote) replaced the live Connection at the "
+       "canonical key — newConnection's overwrite path was re-entered, "
+       "which would have wiped sent_packets_ / received-rate state in "
+       "production.";
+}
+
+// Regression for Copilot R9 finding (PR #25): newConnection's
+// unconditional `connections_[canonical_id] = make_shared(...)` would
+// silently clobber an existing Connection when two distinct configured
+// ids share the first `maximum_connection_id_size - 1` chars and so
+// collide under the canonical form. This test creates a Connection
+// under "starlink", then asks for one under "starlink-vp" (same
+// canonical "starlin", different host/port). The expected behavior:
+// the first Connection survives, the second is rejected with an ERROR
+// log, and the existing Connection is returned to the caller.
+TEST_F(ResendFixture, NewConnectionRejectsCanonicalIdCollision)
+{
+  auto first = remote_->newConnection("starlink", "127.0.0.1", 9301);
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(first->id(), "starlin");
+  EXPECT_EQ(first->host(), "127.0.0.1");
+  EXPECT_EQ(first->port(), 9301u);
+
+  // "starlink-vp" also canonicalizes to "starlin". newConnection must
+  // return the existing first-registered Connection rather than
+  // constructing a second one and clobbering the entry.
+  auto second = remote_->newConnection("starlink-vp", "192.168.42.1", 9302);
+  ASSERT_NE(second, nullptr);
+  EXPECT_EQ(second.get(), first.get())
+    << "Second newConnection call with a different configured id that "
+       "collides under the canonical form must return the existing "
+       "Connection, not replace it.";
+  // Existing host/port preserved — clobber would have moved these.
+  EXPECT_EQ(first->host(), "127.0.0.1");
+  EXPECT_EQ(first->port(), 9301u);
+
+  // Idempotent same-input case: calling with the original full id and
+  // matching host/port should also return the same Connection without
+  // logging an ERROR (the "caller missed a connection() lookup" path).
+  auto third = remote_->newConnection("starlink", "127.0.0.1", 9301);
+  ASSERT_NE(third, nullptr);
+  EXPECT_EQ(third.get(), first.get());
+}
+
+// Routing case 6: bookkeeping cap. dispatchResendRequest tracks
+// already-WARNed ids in a bounded FIFO to keep memory pressure
+// proportional to the configured connection-id space, not to whatever
+// the peer sends (a peer that streamed many distinct ids could
+// otherwise grow the table without bound — see the field comment on
+// dispatch_miss_warned_ids_ in remote_node.h). This test pumps more
+// distinct ids than the cap and asserts the table size stops growing.
+// The "ids each cause one dispatch call" wiring is irrelevant here —
+// no connection is registered, so every dispatch is a lookup miss,
+// which is exactly the path we're stressing.
+TEST_F(ResendFixture, DispatchMissWarnedIdsAreBounded)
+{
+  // The implementation cap is RemoteNode::kDispatchMissWarnedCap (256
+  // at the time of writing). We don't import the constant directly —
+  // the assertion is "size stays <= the cap and converges to the cap
+  // when we push past it", expressed in terms of the count returned
+  // by dispatchMissWarnedIdCountForTest(). The specific cap value is
+  // an implementation choice, not a wire contract.
+  ScopedFd sock;
+  ASSERT_GE(sock.get(), 0);
+
+  // Every distinct id in this loop fires a first-miss WARN. To keep
+  // the captured test log readable (and CI fast) we silence the
+  // node's logger for the duration of the push, then restore. The
+  // cap-enforcement assertion uses dispatchMissWarnedIdCountForTest,
+  // not log inspection, so silencing has no effect on what the test
+  // proves.
+  auto logger = node_->get_logger();
+  auto prev_level = rcutils_logging_get_logger_level(logger.get_name());
+  logger.set_level(rclcpp::Logger::Level::Error);
+
+  // 32 above any plausible cap — the test was previously pushing
+  // 1024, which emitted ~1024 WARN lines per run. The cap is 256 at
+  // the time of writing; pushing 288 still proves eviction fires
+  // with comfortable margin (32 distinct evictions exercised).
+  const std::size_t kPushCount = 288;
+  for(std::size_t i = 0; i < kPushCount; ++i)
+  {
+    udp_bridge_interfaces::msg::ResendRequest rr;
+    rr.missing_packets = {1u};
+    // 7-char ids (the post-clamp wire size). Make each one unique by
+    // appending a small alpha suffix derived from i. The actual
+    // string values don't matter — only that they're distinct.
+    char id[8];
+    std::snprintf(id, sizeof(id), "m%05zu", i % 100000);
+    rr.connection_id = id;
+    remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0 + static_cast<double>(i) * 0.001));
+  }
+
+  // Restore the prior logger level so subsequent tests behave
+  // normally. RCUTILS_LOG_SEVERITY_* and rclcpp::Logger::Level use
+  // the same integer values (0/10/20/30/40/50 for unset/debug/info/
+  // warn/error/fatal), so the cast is well-defined.
+  logger.set_level(static_cast<rclcpp::Logger::Level>(prev_level));
+
+  // After pushing kPushCount distinct ids, the bookkeeping must
+  // hold exactly the cap (we pushed kPushCount > cap, so it must
+  // saturate to the cap value). Importing the constant directly
+  // here is a small coupling to implementation, but it lets the
+  // test catch a "doubled cap" regression that the previous loose
+  // ceiling (<= 512u) would have permitted.
+  std::size_t count = remote_->dispatchMissWarnedIdCountForTest();
+  EXPECT_EQ(count, udp_bridge::RemoteNode::dispatchMissWarnedCapForTest())
+    << "Bookkeeping size does not match the configured cap. Either "
+       "the cap regressed (likely doubled), or eviction failed to "
+       "run at the right boundary.";
+
+  // FIFO order check: of the kPushCount ids inserted in sequence,
+  // the most-recently-pushed should still be in the table (it was
+  // just inserted at the tail), and the earliest pushed ids should
+  // have been evicted (they fell off the head when the table
+  // saturated). A regression that evicted from the tail instead of
+  // the head — or evicted arbitrarily — would still satisfy the
+  // size assertion above but would fail these.
+  char head_id[8];   // earliest inserted (should be evicted)
+  char tail_id[8];   // most recent (should be retained)
+  std::snprintf(head_id, sizeof(head_id), "m%05zu", static_cast<std::size_t>(0));
+  std::snprintf(tail_id, sizeof(tail_id), "m%05zu", kPushCount - 1);
+  EXPECT_FALSE(remote_->isDispatchMissWarnedForTest(head_id))
+    << "Earliest-inserted id (" << head_id << ") is still in the "
+       "bookkeeping after pushing kPushCount > cap entries. FIFO "
+       "eviction is broken — likely evicting from the tail or "
+       "evicting arbitrarily.";
+  EXPECT_TRUE(remote_->isDispatchMissWarnedForTest(tail_id))
+    << "Most-recently-inserted id (" << tail_id << ") is missing "
+       "from the bookkeeping. Insert is broken — or eviction "
+       "happened immediately after insert.";
 }
 
 int main(int argc, char** argv)

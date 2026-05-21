@@ -9,8 +9,10 @@
 #include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge/types.h"
 
+#include <deque>
 #include <mutex>
 #include <set>
+#include <unordered_set>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/node_interfaces/node_interfaces.hpp"
@@ -60,6 +62,39 @@ class RemoteNode
 
   std::vector<std::vector<uint8_t> > getPacketsToResend(const udp_bridge_interfaces::msg::ResendRequest& resend_request);
 
+  // Route a ResendRequest to the single connection it was stamped for
+  // (issue #23). Does a strict-equality lookup on `rr.connection_id`
+  // in `connections_` and forwards to the matching connection's
+  // `resend_packets`. The caller is responsible for ensuring
+  // `rr.connection_id` is already in the canonical wire form —
+  // production callers go through `UDPBridge::decodeResendRequest`,
+  // whose receive-side clamp normalizes the incoming string before
+  // dispatch. (Unit tests that exercise dispatch directly may pass
+  // either a canonical id, or a non-canonical id to assert a miss; see
+  // `DispatchDoesNotFuzzyMatchConnectionId`.) If the id is not in
+  // connections_, no-op and emit a log naming both the stamped id and
+  // the set of currently known connection ids: WARN on the first miss
+  // per stamped id
+  // (a genuine coordinated-redeploy mismatch needs to be diagnosable
+  // at default log levels), DEBUG on subsequent misses for the same id
+  // (legitimate CONNECT-cycle races shouldn't spam). The known-ids
+  // payload gives an operator enough context to distinguish the two
+  // operational scenarios that share this path:
+  //   - Legitimate race: the receiver tore the connection down for a
+  //     CONNECT cycle or config reload between the sender stamping
+  //     the request and us decoding it; resolves on the next BridgeInfo.
+  //   - Coordinated-redeploy mismatch: the two bridges' connection-id
+  //     strings don't agree; does not self-resolve.
+  // First-miss bookkeeping lives in dispatch_miss_warned_ids_ (see
+  // field comment below).
+  //
+  // Caller MUST NOT hold state_mutex_. The method takes it briefly for
+  // the lookup, then releases it before invoking
+  // Connection::resend_packets (which does socket I/O) — mirrors the
+  // snapshot-then-iterate locking discipline elsewhere in this class.
+  void dispatchResendRequest(const udp_bridge_interfaces::msg::ResendRequest& rr,
+                             int socket, rclcpp::Time now);
+
   Defragmenter& defragmenter();
 
   void publishTopicStatistics(const udp_bridge_interfaces::msg::TopicStatisticsArray& statistics);
@@ -94,6 +129,32 @@ class RemoteNode
   // give-up scenarios. UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the
   // overload above.
   void recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp::Time time);
+
+  // Test accessor: returns the current count of ids in the
+  // dispatch-miss WARN bookkeeping. Used by the cap-enforcement test
+  // to verify that pumping > kDispatchMissWarnedCap distinct ids
+  // through dispatchResendRequest doesn't grow the table without
+  // bound. Takes state_mutex_ for the read.
+  // UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the helpers
+  // above.
+  std::size_t dispatchMissWarnedIdCountForTest() const;
+
+  // Test accessor: returns true iff `id` is currently in the
+  // dispatch-miss WARN bookkeeping (i.e., the next miss for this id
+  // would log at DEBUG, not WARN). Used by the FIFO-order assertion
+  // in the cap-enforcement test to verify that the eviction policy
+  // is in-order (oldest dropped first, not random/newest). Takes
+  // state_mutex_ for the read.
+  // UDP_BRIDGE_BUILD_TESTING-gated.
+  bool isDispatchMissWarnedForTest(const std::string& id) const;
+
+  // Test accessor: returns the dispatch-miss WARN bookkeeping cap.
+  // Lets the cap-enforcement test assert against the exact cap value
+  // (catching a "doubled cap" regression) without making
+  // kDispatchMissWarnedCap part of the public API.
+  // UDP_BRIDGE_BUILD_TESTING-gated.
+  static constexpr std::size_t dispatchMissWarnedCapForTest()
+  { return kDispatchMissWarnedCap; }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
   // Count of missing-packet resends this RemoteNode has given up on
@@ -155,6 +216,38 @@ private:
   mutable std::recursive_mutex state_mutex_;
 
   std::map<std::string, std::shared_ptr<Connection> > connections_;
+
+  // Ids we've already emitted a WARN for in dispatchResendRequest's
+  // lookup-miss path. The first miss for an id surfaces as WARN (a
+  // genuine coordinated-redeploy mismatch needs to be diagnosable);
+  // subsequent misses for the same id drop to DEBUG to avoid spamming
+  // during legitimate CONNECT-cycle races.
+  //
+  // Bounded FIFO with O(1) lookup. The ids come from network-supplied
+  // ResendRequest.connection_id strings. Well-behaved peers send them
+  // pre-canonicalized to the wire form (PR #25 runs every connections_
+  // insertion through truncate_connection_id, so connection->id() is
+  // ≤ maximum_connection_id_size - 1 and the sender stamps that), and
+  // a defensive clamp in UDPBridge::decodeResendRequest enforces the
+  // same shape on misbehaving peers. Per-entry size is therefore
+  // bounded by 7 bytes, but the *count* of distinct ids a peer can
+  // stamp isn't bounded by anything in the wire protocol. A
+  // misbehaving peer or a stream of bit-flipped-but-deserializable
+  // packets could otherwise grow the set unboundedly. We cap the
+  // bookkeeping at kDispatchMissWarnedCap (256) entries:
+  // dispatch_miss_warned_order_ holds insertion order (FIFO), and the
+  // unordered_set holds the same ids for O(1) presence checks. When
+  // the cap is hit, we evict the oldest id from both — that id
+  // becomes WARN-eligible again the next time it's seen, which is the
+  // right behavior for a rate-limit-the-WARN bookkeeping table (vs
+  // permanently silencing it). The cap is comfortably above any
+  // plausible configured id space (typical deployments have 2–4
+  // connections, never more than a few dozen).
+  //
+  // Both containers are guarded by state_mutex_.
+  static constexpr std::size_t kDispatchMissWarnedCap = 256;
+  std::deque<std::string> dispatch_miss_warned_order_;
+  std::unordered_set<std::string> dispatch_miss_warned_ids_;
 
   Defragmenter defragmenter_;
 

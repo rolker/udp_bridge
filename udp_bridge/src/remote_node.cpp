@@ -32,7 +32,17 @@ void RemoteNode::update(const Remote& remote_message)
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   for(auto c: remote_message.connections)
   {
-    auto connection = connections_[c.connection_id];
+    // Use the canonicalizing helper rather than a raw `connections_[]`
+    // index — bare `operator[]` with the untruncated configured id
+    // would default-construct a null shared_ptr at the *uncanonical*
+    // key for any id ≥ maximum_connection_id_size. That left an orphan
+    // slot alongside the real canonical-keyed entry from
+    // newConnection(), and on the next refresh through this loop the
+    // (still-null) orphan re-entered the `if(!connection)` branch and
+    // newConnection's overwrite path wiped the live Connection's
+    // sent_packets_ / stats. Caught by R9 review on PR #25 and three
+    // independent local reviewers (Adversarial, Governance, Copilot CLI).
+    auto connection = this->connection(c.connection_id);
     if(!connection)
       connection = newConnection(c.connection_id, c.host, c.port);
     connection->setReturnHostAndPort(c.return_host, c.return_port);
@@ -97,6 +107,11 @@ std::string RemoteNode::topicName() const
 
 std::shared_ptr<Connection> RemoteNode::connection(std::string connection_id)
 {
+  // Canonicalize lookup key so callers can pass either the configured
+  // (untruncated) id or the on-wire (truncated) form and get the same
+  // connection. connections_ is keyed on the canonical (truncated)
+  // form by construction (see newConnection / adoptConnection).
+  connection_id = truncate_connection_id(connection_id);
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   if(connections_.find(connection_id) != connections_.end())
     return connections_[connection_id];
@@ -115,9 +130,59 @@ std::vector<std::shared_ptr<Connection> > RemoteNode::connections()
 
 std::shared_ptr<Connection> RemoteNode::newConnection(std::string connection_id, std::string host, uint16_t port)
 {
+  // Canonicalize to the on-wire form so connections_ keys, Connection::id(),
+  // and rr.connection_id (which carries the wire-truncated form on the
+  // resend path) all agree. Surface a WARN when the input actually
+  // shortens so operators learn at startup that an ≥8-char configured
+  // id is being normalized — and that two configured ids with the same
+  // first 7 chars would collide under the canonical form.
+  const std::string canonical_id = truncate_connection_id(connection_id);
+  if(canonical_id != connection_id)
+  {
+    RCLCPP_WARN_STREAM(logger_,
+      "Connection id '" << connection_id << "' truncated to '"
+      << canonical_id << "' for the on-wire form (limit "
+      << (maximum_connection_id_size - 1) << " chars). Rename the "
+         "configured id to avoid the truncation; two configured ids "
+         "sharing the first " << (maximum_connection_id_size - 1)
+      << " characters will collide under this canonical form.");
+  }
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-  connections_[connection_id] = std::make_shared<Connection>(connection_id, host, port);
-  return connections_[connection_id];
+  auto& slot = connections_[canonical_id];
+  if(slot)
+  {
+    // A Connection already exists at this canonical key. Two cases:
+    //   1) Same (host, port): caller missed a connection() lookup and
+    //      reached us defensively. Return the existing entry — clobbering
+    //      it would wipe sent_packets_ / received-rate state for no
+    //      benefit. The other call sites already do the
+    //      `if(!c) c = newConnection(...)` dance; the no-op here makes
+    //      the rule "newConnection is idempotent for a given canonical
+    //      key" hold for any future caller too.
+    //   2) Different (host, port): canonical-id collision — two distinct
+    //      configured ids share the first `maximum_connection_id_size - 1`
+    //      chars (e.g. "starlink-ku" / "starlink-vp" both canonicalize
+    //      to "starlin"). The first-registered Connection is kept; the
+    //      second is rejected. Log an ERROR so a misconfigured
+    //      deployment surfaces at startup rather than presenting as
+    //      silent state-clobber on the next RemoteNode::update(Remote)
+    //      refresh.
+    if(slot->host() != host || slot->port() != port)
+    {
+      RCLCPP_ERROR_STREAM(logger_,
+        "Connection id collision: '" << connection_id
+        << "' canonicalizes to '" << canonical_id
+        << "' but a Connection already exists at that key with "
+           "host=" << slot->host() << " port=" << slot->port()
+        << "; new request was host=" << host << " port=" << port
+        << ". The first-registered connection is kept. Rename one of "
+           "the configured ids so they don't share the first "
+        << (maximum_connection_id_size - 1) << " characters.");
+    }
+    return slot;
+  }
+  slot = std::make_shared<Connection>(canonical_id, host, port);
+  return slot;
 }
 
 void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)
@@ -128,6 +193,113 @@ void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)
   auto& slot = connections_[connection->id()];
   if(!slot)
     slot = connection;
+}
+
+void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclcpp::Time now)
+{
+  // Snapshot the target connection (or, on miss, the set of known ids
+  // and a flag for whether this is the first miss for this id) under
+  // state_mutex_, then release the mutex before calling resend_packets
+  // / emitting the log — Connection::resend_packets does socket I/O
+  // and rclcpp logging macros do their own internal locking that we
+  // don't want nested under state_mutex_.
+  std::shared_ptr<Connection> target;
+  std::vector<std::string> known_ids;
+  bool first_miss_for_id = false;
+  {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    auto it = connections_.find(rr.connection_id);
+    if(it != connections_.end())
+      target = it->second;
+    if(!target)
+    {
+      // First-miss-per-id bookkeeping with a bounded FIFO. We pick
+      // WARN vs DEBUG below by whether this id has already been
+      // warned for: first occurrence surfaces (so a real config
+      // mismatch is diagnosable at default log levels); subsequent
+      // occurrences drop to DEBUG so legitimate CONNECT-cycle races
+      // don't spam. When the bookkeeping table is full, we evict the
+      // oldest entry FIFO-style — that id becomes WARN-eligible
+      // again if seen later, which is the right behavior for a
+      // rate-limit table (vs permanently silencing a stale id). See
+      // the field comment on dispatch_miss_warned_ids_ in
+      // remote_node.h for the threat-model rationale (network-
+      // supplied strings shouldn't be able to grow this table
+      // without bound, even with the 7-byte size clamp).
+      if(dispatch_miss_warned_ids_.count(rr.connection_id) != 0)
+      {
+        first_miss_for_id = false;
+      }
+      else
+      {
+        if(dispatch_miss_warned_order_.size() >= kDispatchMissWarnedCap)
+        {
+          dispatch_miss_warned_ids_.erase(dispatch_miss_warned_order_.front());
+          dispatch_miss_warned_order_.pop_front();
+        }
+        dispatch_miss_warned_order_.push_back(rr.connection_id);
+        dispatch_miss_warned_ids_.insert(rr.connection_id);
+        first_miss_for_id = true;
+      }
+      // Snapshot known ids only when we'll WARN below — the DEBUG
+      // branch omits the list (already shown on the prior WARN line)
+      // so building it here would be wasted work on the common
+      // repeated-miss / cap-saturated paths.
+      if(first_miss_for_id)
+      {
+        known_ids.reserve(connections_.size());
+        for(const auto& kv : connections_)
+          known_ids.push_back(kv.first);
+      }
+    }
+  }
+  if(target)
+  {
+    target->resend_packets(rr.missing_packets, socket, now);
+    return;
+  }
+  // Lookup miss. Two operational scenarios share this path:
+  //   - Legitimate race: receiver tore the connection down for a
+  //     CONNECT cycle or config reload between the sender stamping the
+  //     request and us decoding it. Resolves on the next BridgeInfo.
+  //   - Coordinated-redeploy mismatch: the two bridges' connection-id
+  //     strings don't agree (or, with this PR's truncation, an id
+  //     ≥ maximum_connection_id_size that was somehow stamped
+  //     untruncated reaches the receiver). Does not self-resolve.
+  // Both deserve diagnostic output. The known-ids list and the
+  // first-vs-subsequent split together let an operator distinguish:
+  // a one-shot WARN that never repeats is a transient race; repeated
+  // hits on the same id (now DEBUG) suggest the race is ongoing. The
+  // DEBUG path omits the known-ids list — the WARN that fired on the
+  // first miss already showed it, and avoiding the per-DEBUG join
+  // keeps the lookup-miss path cheap even when the table is
+  // saturated (cap-eviction scenarios re-WARN with a fresh known_ids
+  // list, so an operator chasing a repeating issue always has the
+  // current ids on the most recent WARN line).
+  if(first_miss_for_id)
+  {
+    std::string joined;
+    for(size_t i = 0; i < known_ids.size(); ++i)
+    {
+      if(i > 0) joined += ", ";
+      joined += known_ids[i];
+    }
+    RCLCPP_WARN_STREAM(logger_,
+      "Dropping ResendRequest from " << name_
+      << " stamped for connection_id='" << rr.connection_id
+      << "' (no matching connection; known ids: [" << joined << "]). "
+         "Further misses for this id will log at DEBUG (until the "
+         "rate-limit table evicts this id under pressure, at which "
+         "point the WARN re-fires on next sighting).");
+  }
+  else
+  {
+    RCLCPP_DEBUG_STREAM(logger_,
+      "Dropping ResendRequest from " << name_
+      << " stamped for connection_id='" << rr.connection_id
+      << "' (no matching connection; see the prior WARN line for "
+         "this id for the known-ids snapshot)");
+  }
 }
 
 
@@ -254,6 +426,18 @@ void RemoteNode::recordReceivedPacketTimeForTest(uint64_t packet_number, rclcpp:
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   recordPacketArrival(packet_number, time);
+}
+
+std::size_t RemoteNode::dispatchMissWarnedIdCountForTest() const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return dispatch_miss_warned_ids_.size();
+}
+
+bool RemoteNode::isDispatchMissWarnedForTest(const std::string& id) const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return dispatch_miss_warned_ids_.count(id) != 0;
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

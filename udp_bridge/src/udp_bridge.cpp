@@ -795,20 +795,76 @@ void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const Sour
 
 void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
-  auto rr = deserialize<ResendRequest>(message);
+  // Catch deserialization failure here for diagnostic clarity on
+  // the coordinated-redeploy / mismatched-schema scenario. Executor
+  // survival is already provided by UDPBridge::decode's outer
+  // catch-all, which logs an ERROR and continues for any exception
+  // thrown by a decode* path. What this
+  // inner catch buys is a more specific WARN that names this site
+  // ("Failed to deserialize ResendRequest from <node> (<host>:
+  // <port>)") instead of the outer's generic
+  // "decoding error on packet of type N from <node>" — useful when
+  // an operator is chasing a known coordinated-redeploy mismatch
+  // and wants to confirm it's the ResendRequest schema that's
+  // out of sync. The ResendRequest.msg comment documents this
+  // site-specific contract. Mirror the pattern at other decode*
+  // sites in a follow-up only if the diagnostic-clarity payoff is
+  // worth the duplication — see the parallel gap in
+  // decodeMessageInternal (predates this change); the outer catch
+  // is enough for survival there too.
+  ResendRequest rr;
+  try
+  {
+    rr = deserialize<ResendRequest>(message);
+  }
+  catch(const std::exception& e)
+  {
+    RCLCPP_WARN_STREAM(get_logger(),
+      "Failed to deserialize ResendRequest from " << source_info.node_name
+      << " (" << source_info.host << ":" << source_info.port
+      << "): " << e.what() << " — dropping packet");
+    return;
+  }
+  // Normalize the incoming id to the canonical wire form. Well-behaved
+  // peers send canonical ids by construction: PR #25's truncation-
+  // contract change runs every connection-id through
+  // truncate_connection_id at insertion (RemoteNode::newConnection and
+  // Connection::Connection), so connection->id() is canonical and the
+  // sender's stamp at resendMissingPackets is canonical too. Clamping
+  // here defends against a misbehaving peer or an older bridge that
+  // stamps the full untruncated id; without it:
+  //   1) The dispatch lookup against the canonical-keyed connections_
+  //      map would miss for any id ≥ maximum_connection_id_size — a
+  //      silent resend-routing failure. Clamping rewrites the stamp
+  //      to the canonical form so dispatch finds the connection.
+  //   2) RemoteNode::dispatch_miss_warned_ids_ inserts rr.connection_id
+  //      on a lookup miss. Round-4 (PR #25) replaced the unbounded
+  //      std::set with a FIFO capped at kDispatchMissWarnedCap, so the
+  //      bookkeeping count is bounded by code. The receive-side clamp
+  //      remains useful on top of that cap: it bounds each table
+  //      entry's *size* to 7 bytes so the table stays small even at
+  //      full capacity, and it normalizes incoming ids so the
+  //      bookkeeping doesn't double-track an id under its truncated
+  //      and untruncated forms.
+  if(rr.connection_id.size() > maximum_connection_id_size - 1)
+    rr.connection_id.resize(maximum_connection_id_size - 1);
   auto now = get_clock()->now();
 
-  std::vector<std::shared_ptr<Connection>> connections;
+  // Issue #23: route the resend response back via the single connection
+  // the request was stamped for, not a broadcast across every active path.
+  // The routing logic lives on RemoteNode (which owns the connection map);
+  // we snapshot the RemoteNode shared_ptr here under remote_nodes_mutex_
+  // and call dispatchResendRequest outside the lock so its socket I/O
+  // doesn't run under our map mutex.
+  std::shared_ptr<RemoteNode> remote_node;
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-    auto remote_node = remote_nodes_.find(source_info.node_name);
-    if(remote_node != remote_nodes_.end() && remote_node->second)
-      connections = remote_node->second->connections();
+    auto it = remote_nodes_.find(source_info.node_name);
+    if(it != remote_nodes_.end())
+      remote_node = it->second;
   }
-  // resend_packets does network I/O — call without remote_nodes_mutex_ held.
-  for(auto& connection: connections)
-    if(connection)
-      connection->resend_packets(rr.missing_packets, socket_, now);
+  if(remote_node)
+    remote_node->dispatchResendRequest(rr, socket_, now);
 }
 
 void UDPBridge::decodeTopicStatistics(std::vector<uint8_t> const &message, const SourceInfo& source_info)
@@ -1065,22 +1121,66 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
 
 void UDPBridge::resendMissingPackets()
 {
-  // Snapshot remotes under the lock; getMissingPackets and send() run unlocked.
+  // Snapshot remotes under the lock; getMissingPackets, connections(),
+  // and send() run unlocked.
   std::vector<std::pair<std::string, std::shared_ptr<RemoteNode>>> remotes;
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
   }
   for(auto remote: remotes)
-    if(remote.second)
+  {
+    if(!remote.second)
+      continue;
+    auto rr_base = remote.second->getMissingPackets();
+    if(rr_base.missing_packets.empty())
+      continue;
+    // Issue #23: stamp one copy per live connection and send each via
+    // a RemoteConnectionsList that names only that connection — so the
+    // remote bridge gets one ResendRequest per path and can route the
+    // response back via the same path it arrived on (via
+    // RemoteNode::dispatchResendRequest on the receive side). Replaces
+    // the previous broadcast-to-all-connections send, which amplified
+    // resend volume 2-4x in the both-paths-alive and one-path-dead
+    // regimes documented in the issue.
+    auto connections = remote.second->connections();
+    if(connections.empty())
+      continue;
+    RCLCPP_DEBUG_STREAM(get_logger(),
+      "Sending a request to resend " << rr_base.missing_packets.size()
+      << " packets to " << remote.first << " across "
+      << connections.size() << " connection(s)");
+    for(const auto& connection: connections)
     {
-      auto rr = remote.second->getMissingPackets();
-      if(!rr.missing_packets.empty())
-      {
-        RCLCPP_DEBUG_STREAM(get_logger(), "Sending a request to resend " << rr.missing_packets.size() << " packets");
-        send(rr, remote.first, true);
-      }
+      if(!connection)
+        continue;
+      ResendRequest rr = rr_base;
+      // Honor the on-wire connection-id limit. SequencedPacketHeader
+      // carries a fixed `char connection_id[maximum_connection_id_size]`
+      // (packet.h:82) and WrappedPacket truncates to
+      // `maximum_connection_id_size - 1` (wrapped_packet.cpp:31-32). As
+      // of the truncation-contract canonicalization (PR #25), every
+      // path that inserts into connections_ runs the id through
+      // truncate_connection_id at construction (RemoteNode::newConnection
+      // and Connection::Connection), so `connection->id()` is already
+      // canonical here — the assign-with-substring below is a defensive
+      // no-op in the canonical-id steady state. Kept so a future
+      // refactor that lets a longer-than-7 id reach this point still
+      // can't desync the wire stamp from the canonical key the receiver
+      // is keying its connections_ map on.
+      rr.connection_id.assign(connection->id(), 0,
+                              maximum_connection_id_size - 1);
+      RemoteConnectionsList rcl;
+      // Route via the same connection on this bridge's connections_.
+      // Post-PR #25 round-10, `connection->id()` is already the
+      // canonical (truncated) wire form and `RemoteNode::connection()`
+      // canonicalizes its lookup input, so either form works — we use
+      // `connection->id()` for consistency with the rr.connection_id
+      // stamp above.
+      rcl[remote.first] = {connection->id()};
+      send(rr, rcl, true);
     }
+  }
 }
 
 
