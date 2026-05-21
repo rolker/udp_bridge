@@ -232,7 +232,7 @@ Round-9 changes addressing all three valid Copilot findings from the PR #25 tria
 - **`udp_bridge/src/udp_bridge.cpp`** — dropped the hard-coded `"udp_bridge.cpp:568-614"` line range from the `decodeResendRequest` comment block. The outer `UDPBridge::decode` catch-all is actually at lines 707–715 inside the function at 647, so the range was already wrong.
 
 ## External Review
-**Status**: needs-discussion
+**Status**: complete (resolved by round-10 below)
 **When**: 2026-05-21 13:55
 **By**: Claude Code Agent (Claude Opus 4.7 (1M context))
 
@@ -252,8 +252,24 @@ This argument assumes the receiver's `connections_` is keyed on the truncated wi
 **Mitigating context (why this isn't a live-loss bug today)**: current production configs in `unh_echoboats_project11/izzyboat_project11/config/{izzyboat,operator}.yaml` use connection ids `"wifi"` (4 chars) and `"vpn"` (3 chars). No production config in this branch has an id ≥8 chars. The contract gap is latent, not actively breaking field resends. But the team has discussed Starlink-named links (see workspace memory on link calibration); a future config that names an id "starlink" or similar would silently lose resend recovery on that link.
 
 ### Actions
-- [ ] **Decision needed**: scope of fix for PR #25 vs follow-up. Three options:
+- [x] **Decision**: user picked (a) — fix in PR #25 by canonicalizing. Implemented in round-10 below. Three options that were on the table:
   - **(a) In scope for PR #25**: canonicalize ids to the 7-char wire form at every insertion point (param ingestion, `RemoteNode::update(Remote)`, `RemoteNode::update(BridgeInfo)`, `unwrap()`, CONNECT path); reject collisions at config time; add a wire-contract integration test (a real `WrappedPacket` round-trip — neither sender truncation nor receive-side clamp has a unit test today, by design per the round-8 scope note).
   - **(b) Follow-up issue**: file a sequel to #23 with both Copilot citations + the BridgeInfo/unwrap analysis above; close R8 threads with a link to the new issue so the signal isn't lost.
   - **(c) Documented invariant**: accept "configured ids must be ≤7 chars" as a hard rule. Add a runtime check at param ingestion that rejects/warns on ids ≥8 chars; update the field comment on `dispatch_miss_warned_ids_` to state the invariant; **fix the round-8 scope-note in `test_remote_node_resend.cpp:600-617`** — it's currently asserting a contract that doesn't hold.
-- [ ] (Optional) Dismiss the stale R1–R7 Copilot threads in the GitHub UI.
+- [ ] (Optional) Dismiss the stale R1–R8 Copilot threads in the GitHub UI.
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-21 14:35
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-10 changes implementing option (a) for Copilot R8's truncation-contract finding: canonicalize all connection ids to the on-wire truncated form at every connections_ insertion / lookup point. After the change, `connection->id()`, `connections_` keys, and the on-wire stamp always agree on a single canonical form (first `maximum_connection_id_size - 1` bytes), so a ResendRequest stamped with the wire form always lands on the connection that holds `sent_packets_` for the link — even for configured ids ≥ 8 chars.
+
+- **`udp_bridge/include/udp_bridge/packet.h`** — new `truncate_connection_id(const std::string&)` helper. Single source of truth for the canonical form.
+- **`udp_bridge/src/connection.cpp`** — `Connection::Connection` canonicalizes `id_` in its initializer so `connection->id()` is always canonical.
+- **`udp_bridge/src/remote_node.cpp`** — `newConnection` canonicalizes its input and emits a one-time WARN when truncation actually shortens (surfaces the change at startup; flags the collision risk for any two configured ids sharing the first 7 chars). `connection()` canonicalizes its lookup id so callers can pass either form.
+- **`udp_bridge/src/udp_bridge.cpp`** — updated comments on the sender-side stamp (now a defensive no-op since `connection->id()` is canonical) and the receive-side clamp (now a defense against misbehaving peers rather than the primary canonicalization mechanism).
+- **`udp_bridge/include/udp_bridge/remote_node.h`** — field comment on `dispatch_miss_warned_ids_` updated to reflect the new contract.
+- **`udp_bridge/test/test_remote_node_resend.cpp`** — new `NewConnectionCanonicalizesLongId` test exercises the contract end-to-end. Scope note above `DispatchDoesNotFuzzyMatchConnectionId` rewritten — the wire-decode clamp is no longer the primary canonicalization mechanism, the connections_ insertion sites are. Routing-section header updated to "Six tests below…" with the new canonicalization bullet.
+
+Build clean, full suite green (83 tests, +1 vs round-9). New test verified with direct gtest filter — both the WARN-on-truncation and the canonical-form routing assertions fire.
