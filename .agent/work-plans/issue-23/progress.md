@@ -205,3 +205,17 @@ Remaining suggestions from the local review (none must-fix; defer to follow-up i
 - Test logger level restore preserves prior-test state (low risk, by design).
 - WARN known_ids list uses bare comma join (theoretical ambiguity if ids ever contain commas).
 - `rr.connection_id.resize()` doesn't `shrink_to_fit` (bounded; stack-local).
+
+## External Review
+**Status**: complete
+**When**: 2026-05-21 03:10
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 — 7 review(s) (all Copilot, no human), 18 inline comments, 3 valid, 0 false positives (15 addressed by intervening commits)
+**CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4)
+
+### Actions
+- [ ] Fix `udp_bridge/test/test_remote_node_resend.cpp:461` — block comment says "Four tests below cover…" but the routing section now contains five tests (the bookkeeping-cap test is labeled "Routing case 5" at line 647). Update the count or factor the bookkeeping test into its own header section. (Raised twice — R6 line 476, R7 line 463.)
+- [ ] Fix `udp_bridge/include/udp_bridge/remote_node.h:220–221` — replace hard-coded `"udp_bridge.cpp around line 715"` with a function-name reference (`UDPBridge::decodeResendRequest`). Already on the local-review deferred-suggestion list above; Copilot independently flagged it.
+- [ ] Fix `udp_bridge/src/udp_bridge.cpp:801` — replace hard-coded `"udp_bridge.cpp:568-614"` with `UDPBridge::decode` by name. `decode()` is currently at 647–715 with the catch at 707–715, so the existing range is already wrong.
+- [ ] (Optional) Dismiss the stale Copilot review threads (R1–R5, and the R6 finding that R7 superseded) — concerns were resolved by intervening commits but the threads remain marked open in the GitHub UI.
