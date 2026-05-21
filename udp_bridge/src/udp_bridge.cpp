@@ -798,8 +798,8 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
   // Catch deserialization failure here for diagnostic clarity on
   // the coordinated-redeploy / mismatched-schema scenario. Executor
   // survival is already provided by UDPBridge::decode's outer
-  // catch-all (udp_bridge.cpp:568-614), which logs an ERROR and
-  // continues for any exception thrown by a decode* path. What this
+  // catch-all, which logs an ERROR and continues for any exception
+  // thrown by a decode* path. What this
   // inner catch buys is a more specific WARN that names this site
   // ("Failed to deserialize ResendRequest from <node> (<host>:
   // <port>)") instead of the outer's generic

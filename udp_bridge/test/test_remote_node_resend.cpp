@@ -458,27 +458,36 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 // which amplified resend volume 2-4x and pushed bytes into rx-dead paths
 // under the 2026-05-19 wifi-loss storm.
 //
-// Four tests below cover the matched-id case, the two flavors of the
-// "stamped id is absent from the receiver's connections_" path, and the
-// connection-id-length truncation contract:
-//   - StampedIdAbsent: receiver currently knows about a subset of the
-//     connection ids the sender knows about. Models the transient
-//     post-restart / pre-BridgeInfo-reconciliation window where the
-//     sender stamps for an id the receiver hasn't (re-)registered yet.
-//   - UnknownConnectionId: stamped id was never registered on the
-//     receiver at all. Models a config-mismatch coordinated-redeploy bug
-//     where the two bridges' connection-id strings don't agree.
-//   - TruncatedConnectionIdMatches: the sender truncates to
-//     maximum_connection_id_size - 1 chars when stamping; the receiver's
-//     connections_ map is keyed on the truncated id (packet header is a
-//     fixed char array). The truncated-form lookup matches; the
-//     untruncated-form lookup misses. This is the contract the fix in
-//     UDPBridge::resendMissingPackets relies on.
-// The two no-op cases share dispatch's lookup-miss branch (which emits
+// Five tests below cover dispatch routing and the WARN-bookkeeping cap:
+//   - DispatchRoutesToStampedConnectionOnly: the matched-id case — a
+//     request stamped for "wifi" reaches only the wifi connection's
+//     resend_packets, not vpn's.
+//   - DispatchDropsWithoutBroadcastWhenStampedIdAbsent: receiver knows
+//     a subset of the connection ids the sender knows about. Models
+//     the transient post-restart / pre-BridgeInfo-reconciliation
+//     window where the sender stamps for an id the receiver hasn't
+//     (re-)registered yet.
+//   - DispatchDropsWithoutBroadcastUnknownConnectionId: stamped id was
+//     never registered on the receiver at all. Models a config-mismatch
+//     coordinated-redeploy bug where the two bridges' connection-id
+//     strings don't agree.
+//   - DispatchDoesNotFuzzyMatchConnectionId: dispatch performs a
+//     strict-equality lookup — a request stamped with the untruncated
+//     form of an id already in the map must miss, not be silently
+//     routed via a prefix match. The wire-contract truncation that
+//     gives an in-band form to compare against lives in the private
+//     receive plumbing of UDPBridge (resendMissingPackets / receive-side
+//     clamp in decodeResendRequest); this test pins the dispatch
+//     contract only, not that wire contract.
+//   - DispatchMissWarnedIdsAreBounded: the bookkeeping table that
+//     dedups first-miss WARN logs has a hard cap (kDispatchMissWarnedCap)
+//     with FIFO eviction; a peer streaming distinct ids cannot grow
+//     the table without bound.
+// The lookup-miss cases share dispatch's miss branch (which emits
 // WARN-on-first-miss-per-id, DEBUG thereafter — see
 // dispatchResendRequest in remote_node.cpp). The behavioral invariant
 // these tests assert is "no broadcast fallback to other connections",
-// not "no log output". The test split documents the two operational
+// not "no log output". The test split documents the operational
 // scenarios an operator might be chasing when that WARN/DEBUG log fires.
 
 namespace

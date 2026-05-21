@@ -217,9 +217,9 @@ private:
   //
   // Bounded FIFO with O(1) lookup. The ids come from network-supplied
   // ResendRequest.connection_id strings (clamped to 7 bytes at the
-  // receive side in UDPBridge::decodeResendRequest, see udp_bridge.cpp
-  // around line 715), so per-entry size is bounded but the *count* of
-  // distinct ids isn't bounded by anything in the wire protocol. A
+  // receive side in UDPBridge::decodeResendRequest), so per-entry size
+  // is bounded but the *count* of distinct ids isn't bounded by
+  // anything in the wire protocol. A
   // misbehaving peer or a stream of bit-flipped-but-deserializable
   // packets could otherwise grow the set unboundedly. We cap the
   // bookkeeping at kDispatchMissWarnedCap (256) entries:
