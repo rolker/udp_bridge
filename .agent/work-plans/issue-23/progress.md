@@ -295,3 +295,25 @@ Build clean, full suite green (83 tests, +1 vs round-9). New test verified with 
 - [ ] (suggestion) Add tests for `update(Remote)` long-id path + collision case (two configured ids sharing first 7 chars) — `udp_bridge/test/test_remote_node_resend.cpp`
 - [ ] (suggestion) Update plan.md "Files to Change" table to include new `packet.h` helper added in round-10 — `.agent/work-plans/issue-23/plan.md`
 - [ ] (suggestion) Verify PR body carries the coordinated-redeploy notice for whoever cuts the deployment (plan flags this as open question) — PR body
+
+## External Review
+**Status**: complete
+**When**: 2026-05-21 15:00
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 — 9 review(s) (all Copilot, no human), 23 inline comments total; 3 new + 1 suppressed-low-confidence on R9 (against `0697ee0`)
+**CI**: all-pass (4/4)
+
+R9 fully confirms the local /review-code findings from the prior entry. Four-way convergence on the must-fixes (Claude fresh-context Adversarial, Governance, synchronous Copilot CLI, GitHub-side Copilot R9). All four findings target round-10:
+
+- `remote_node.cpp:142` — `newConnection` unconditional overwrite. (Matches local must-fix #2.)
+- `remote_node.cpp:35` (R9 suppressed-low-confidence — Copilot named the pattern but not the specific offending line). `update(Remote)` uses bare `operator[]` with untruncated id. (Matches local must-fix #1.)
+- `remote_node.h:81` — doc/impl drift on `dispatchResendRequest`. (Matches local suggestion: either update doc or route through `connection()`.)
+- `udp_bridge.cpp:1177` — stale "keyed on the full pre-truncation id from config" comment. (Matches local suggestion #1.)
+
+### Actions
+- [ ] Fix must-fix #1 (`remote_node.cpp:35`) and must-fix #2 (`remote_node.cpp:119`) in one round-11 commit.
+- [ ] Resolve `remote_node.h:81` doc/impl drift — most consistent with the new contract: route `dispatchResendRequest` through `connection()` and update the doc comment to match.
+- [ ] Fix stale comment at `udp_bridge.cpp:1175`.
+- [ ] Add tests for `update(Remote)` long-id path + collision case.
+- [ ] (Optional) Dismiss R1–R8 stale Copilot threads in the GitHub UI.
