@@ -51,12 +51,41 @@ Land concrete values in `udp_bridge/test/bench/README.md` before Phase 3:
 
 ### Phase 2: Topic mix + replication
 
-Three-tier mix via `topics_list` replication in `three_path.yaml`. Critical
-replicated on all three paths; Telemetry on WiFi+Starlink; Bulk on WiFi only.
-Message types per tier: Critical / Telemetry use small fixed-shape messages
-(`std_msgs/String` for heartbeat-equivalent, `nav_msgs/Odometry` for odom
-stand-in); Bulk uses `sensor_msgs/Image` filled with synthetic random bytes
-at a calibrated size × rate that lands at the WiFi link cap. No ffmpeg dep.
+Replication is already wired structurally in `three_path.yaml` (Critical on
+all three connections, Telemetry on WiFi+Starlink, Bulk on WiFi only); Phase 2
+activates the full traffic mix and makes the orchestrator launch one publisher
+per tier plus one subscriber per destination topic.
+
+**Tier specs** (also `TIER_DEFAULTS` in `pub.py`; Phase 1 landed Critical and
+Telemetry at these values, Bulk needs to be bumped from the Phase 1 placeholder
+of 5 Hz × 512 KiB):
+
+| Tier | Msg type | Source topic | Rate | Payload | Net rate | Rationale |
+|------|----------|--------------|------|---------|----------|-----------|
+| Critical  | `std_msgs/String`   | `/boat/critical/heartbeat` | 1 Hz  | 64 B           | ~64 B/s    | 1 Hz heartbeat matches udp_bridge `bridge_info` cadence |
+| Telemetry | `nav_msgs/Odometry` | `/boat/telemetry/odom`     | 10 Hz | fixed (~720 B) | ~7.2 kB/s  | 10 Hz nav-rate convention for marine vehicles |
+| Bulk      | `sensor_msgs/Image` | `/boat/bulk/image`         | 10 Hz | 480 KB         | ~4.8 MB/s  | ~120% of WiFi 4 MB/s budget → forces drop-by-tier when WiFi degrades (Phase 4 invariant) |
+
+Bulk image stays 1×N synthetic mono8 (no resolution semantics, payload sized by
+bytes) — no ffmpeg dep. Telemetry+Critical combined are <0.2% of the WiFi
+budget, so Bulk effectively owns the link.
+
+**Topic naming** (already enumerated in `three_path.yaml`; stated here as the
+convention):
+
+- Source (boat side): `/boat/<tier>/<name>`
+- Destination (operator side): `/operator/boat/<tier>/<name>` — explicit
+  per-topic destination string in the YAML, matching production's `<operator>/<boat-name>/...` shape
+- Replication is done by the bridge, not by duplicate publishers: ONE
+  publisher per source topic; udp_bridge fans out across the connections that
+  list the topic in their `topics_list`
+
+**Launch shape**: `run_scenario.py` extends to spawn three `pub.py` processes
+(one per tier, parameterized via the existing `--tier` flag) and three `sub.py`
+processes (one per destination topic). Each sub already emits a
+`BENCH_SUB_COUNT=` stderr line; the orchestrator collects all six counters and
+reports per-tier delivery counts. Smoke remains a 1-publisher/1-subscriber
+Critical-only subset; the full mix is opt-in via a new `--scenario full-mix`.
 
 ### Phase 3: Range-degradation trajectory + base assertions
 
