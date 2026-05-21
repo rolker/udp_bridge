@@ -312,8 +312,27 @@ R9 fully confirms the local /review-code findings from the prior entry. Four-way
 - `udp_bridge.cpp:1177` — stale "keyed on the full pre-truncation id from config" comment. (Matches local suggestion #1.)
 
 ### Actions
-- [ ] Fix must-fix #1 (`remote_node.cpp:35`) and must-fix #2 (`remote_node.cpp:119`) in one round-11 commit.
-- [ ] Resolve `remote_node.h:81` doc/impl drift — most consistent with the new contract: route `dispatchResendRequest` through `connection()` and update the doc comment to match.
-- [ ] Fix stale comment at `udp_bridge.cpp:1175`.
-- [ ] Add tests for `update(Remote)` long-id path + collision case.
+- [x] Fix must-fix #1 (`remote_node.cpp:35`) and must-fix #2 (`remote_node.cpp:119`) in one round-11 commit.
+- [x] Resolve `remote_node.h:81` doc/impl drift — picked the doc-update path (rather than route dispatch through `connection()`) to preserve `DispatchDoesNotFuzzyMatchConnectionId`'s intent.
+- [x] Fix stale comment at `udp_bridge.cpp:1175`.
+- [x] Add tests for `update(Remote)` long-id path + collision case.
 - [ ] (Optional) Dismiss R1–R8 stale Copilot threads in the GitHub UI.
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-21 15:20
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-11 changes addressing all four valid R9 findings (which also matched the local /review-code from the prior entry — four-way convergence).
+
+- **`udp_bridge/src/remote_node.cpp`** (`update(Remote)` at line 33–48): replaced bare `connections_[c.connection_id]` with `this->connection(c.connection_id)`. The canonicalizing helper does a `find()` (no insertion on miss) so a missing entry returns null cleanly without polluting the map with an orphan untruncated-key slot. `recursive_mutex` tolerates the inner re-acquire.
+- **`udp_bridge/src/remote_node.cpp`** (`newConnection` at line 121–171): no-op when the canonical key already maps to a live Connection; returns the existing entry. If `(host, port)` differ between the new request and the existing Connection, logs an ERROR identifying both configured ids and the host/port pair on each (the actual canonical-id collision signal). Same `(host, port)` silently returns the existing — defense-in-depth for callers that miss a `connection()` lookup. `newConnection` is now idempotent for a given canonical key.
+- **`udp_bridge/include/udp_bridge/remote_node.h`** (`dispatchResendRequest` doc comment): updated to document the actual contract — caller pre-canonicalizes; the production caller (`UDPBridge::decodeResendRequest`) does so via the receive-side clamp; tests may pass either form to assert hits or misses. (Chose the doc-update over routing dispatch through `connection()` to preserve `DispatchDoesNotFuzzyMatchConnectionId`'s strict-equality intent.)
+- **`udp_bridge/src/udp_bridge.cpp`** (stale comment at the `RemoteConnectionsList` populate site): rewrote to match the post-round-10 reality (both `connection->id()` and `RemoteNode::connection()` are canonical-form).
+- **`udp_bridge/test/test_remote_node_resend.cpp`** — added two regression tests:
+  - `UpdateRemoteWithLongIdDoesNotOrphanOrClobber` (regression for must-fix #1): drives `update(Remote)` with a long configured id, asserts the canonical-keyed Connection exists, lookup via either form returns the same pointer, and a second `update(Remote)` call returns the same pointer (no clobber).
+  - `NewConnectionRejectsCanonicalIdCollision` (regression for must-fix #2): registers under "starlink" then calls with "starlink-vp" (same canonical, different host/port). Asserts the second call returns the existing pointer, host/port are preserved, and the idempotent same-input case also returns the existing pointer.
+  - Routing-section header bumped from "Six tests below…" to "Eight tests below…" with bullets for both new tests.
+
+Build clean, full suite green (85 tests, +2 vs round-10). Direct gtest filter confirmed both new tests exercise the regression paths and the ERROR log fires on the collision case.
+
