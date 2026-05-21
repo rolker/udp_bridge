@@ -5,3 +5,7 @@ doc/manifest.yaml
 udp_bridge/docs_build/
 udp_bridge/docs_output/
 udp_bridge/cross_reference/
+
+# Python bytecode caches (from bench pytest tests)
+__pycache__/
+*.pyc

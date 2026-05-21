@@ -27,9 +27,17 @@ Land concrete values in `udp_bridge/test/bench/README.md` before Phase 3:
 
 ### Phase 1: Orchestrator + smoke
 
-- `udp_bridge/test/bench/run_scenario.py` — Python orchestrator using `unshare -rn` to
-  create operator+boat netns connected by N veth pairs; applies `tc qdisc
-  netem` per path.
+- `udp_bridge/test/bench/run_scenario.py` — Python orchestrator using
+  `unshare -Urn` to create a single user+net namespace; inside it,
+  creates N veth pairs (one per simulated path) with distinct IPs per
+  endpoint and applies `tc qdisc netem` per path. Both bridges run
+  co-resident in the namespace and reach each other via the per-path
+  IPs. (Nested `ip netns add` inside the user namespace doesn't work
+  on Ubuntu 24.04+ — needs CAP_SYS_ADMIN on `/run/netns` mount — so
+  two-namespace designs are off the table.)
+- **Prerequisite**: Ubuntu 24.04+ defaults `kernel.apparmor_restrict_unprivileged_userns`
+  to 1, which blocks `unshare -Urn` for unprivileged users. Documented
+  one-time setup in `udp_bridge/test/bench/README.md` sets it to 0.
 - `udp_bridge/test/bench/configs/three_path.yaml` — bridge config with WiFi/Cell/Starlink
   Connections.
 - `udp_bridge/test/bench/pub.py`, `udp_bridge/test/bench/sub.py` — rclpy publisher/subscriber driven

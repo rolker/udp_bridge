@@ -1,4 +1,28 @@
-# Bench-test threshold values
+# Bench-test harness
+
+Linux-netns + `tc qdisc netem` bench reproducing field failure modes
+of `udp_bridge` (resend amp, wedge, stats stall, rate-limit overshoot)
+off the boat. See [issue #18](https://github.com/rolker/udp_bridge/issues/18)
+for the design contract.
+
+## Prerequisites
+
+Ubuntu 24.04+ kernels default `apparmor_restrict_unprivileged_userns`
+to 1, which blocks `unshare -Urn` for unprivileged users. The bench
+needs that to work. One-time host setup:
+
+```bash
+echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+echo "kernel.apparmor_restrict_unprivileged_userns = 0" \
+    | sudo tee /etc/sysctl.d/60-apparmor-userns.conf
+```
+
+The pytest smoke test detects whether `unshare -Urn` is available and
+skips with a clear reason if not — so a fresh clone on a hardened
+machine does not false-fail. The full scenario (opt-in via
+`UDP_BRIDGE_BENCH_SCENARIOS=1`) also skips.
+
+## Threshold values
 
 Concrete values for the invariants defined in
 [issue #18](https://github.com/rolker/udp_bridge/issues/18). Feeds the
