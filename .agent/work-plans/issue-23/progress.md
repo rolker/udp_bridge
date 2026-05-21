@@ -153,3 +153,28 @@ Round-7 changes addressing Copilot's review-5 (same finding presented twice):
 - **`.agent/work-plans/issue-23/plan.md`** — round-7 implementation note documenting the correction.
 
 Build and full test suite (51 tests) green locally on the worktree.
+
+## Local Review (Post-PR)
+**Status**: complete
+**When**: 2026-05-20 21:37
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: changes-requested
+
+**PR**: #25 at `3319fcd` (post-jazzy-merge)
+**Mode**: post-PR
+**Depth**: Deep (reason: 1197 added lines, wire-format change, concurrency code, in-package ABI hygiene, network-supplied data)
+**Must-fix**: 2 | **Suggestions**: 10
+
+### Findings
+- [ ] (must-fix) `DispatchHonorsTruncatedConnectionId` bypasses the receive-side clamp — test asserts a false invariant about wire-contract behavior — `udp_bridge/test/test_remote_node_resend.cpp:597-632`
+- [ ] (must-fix) WARN message claims "Further misses for this id will log at DEBUG" but FIFO eviction can re-WARN — comment-vs-code drift — `udp_bridge/src/remote_node.cpp:222`
+- [ ] (suggestion) `DispatchMissWarnedIdsAreBounded` ceiling 512 too loose vs cap 256; also no FIFO-order assertion — `udp_bridge/test/test_remote_node_resend.cpp:700`
+- [ ] (suggestion) Receive-side clamp can route a malformed id to a valid connection by prefix-truncation; document this in the clamp comment — `udp_bridge/src/udp_bridge.cpp:~733`
+- [ ] (suggestion) `dispatchResendRequest` is public on RemoteNode but only one production caller; either mark "public for test access only; production callers must clamp first" or make private+friend — `udp_bridge/include/udp_bridge/remote_node.h:65-86`
+- [ ] (suggestion) Field comment line-number drift: refers to clamp "around line 715" but the clamp is now at ~733 post-merge — `udp_bridge/include/udp_bridge/remote_node.h:~202`
+- [ ] (suggestion) Audit other in-package `add_executable` targets and document the `UDP_BRIDGE_BUILD_TESTING` contract — `udp_bridge/CMakeLists.txt:112`
+- [ ] (suggestion) Per-connection serialize+send adds CPU work vs broadcast; mention the tradeoff in the resendMissingPackets comment — `udp_bridge/src/udp_bridge.cpp:~1129-1151`
+- [ ] (suggestion) `resend_call_count_for_test_` increment isn't atomic; document "counter bumps before any I/O" invariant in code or use `std::atomic` — `udp_bridge/src/connection.cpp:~447-449`
+- [ ] (suggestion) Test logger level restore preserves prior-test state; cheap to add a comment noting this is deliberate — `udp_bridge/test/test_remote_node_resend.cpp:668-688`
+- [ ] (suggestion) WARN known_ids list uses bare comma join; would parse ambiguously if any future id contained a comma. Quote each id — `udp_bridge/src/remote_node.cpp:~226`
+- [ ] (suggestion) `rr.connection_id.resize()` doesn't shrink_to_fit; bounded (rr is stack-local) but the field-comment "table-entry-size" argument depends on copies normalizing capacity. Add note or call shrink_to_fit — `udp_bridge/src/udp_bridge.cpp:~734`
