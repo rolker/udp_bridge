@@ -94,3 +94,22 @@ Round-5 changes addressing Copilot's review-3 findings (against round-4 HEAD `52
 - **`.agent/work-plans/issue-23/plan.md`** — round-5 implementation note documenting both fixes and the corrected classification.
 
 Build and full test suite (51 tests) green locally on the worktree.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-20 18:30
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #25 (after round-5 push) — 4 reviews (Copilot). Reviews 1–3 status unchanged (all earlier findings addressed in rounds 2–5). Review 4 against current HEAD `3f40162` adds 3 new findings, all valid polish items.
+**CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4 on `5225c2e`; new run for `3f40162` not yet queued at triage time)
+
+Three new findings:
+
+1. **`udp_bridge/src/udp_bridge.cpp:716-732`** — receive-side clamp rationale comment claims `dispatch_miss_warned_ids_` "is never pruned" as part of gap #2's framing. Round-4 added FIFO eviction with cap `kDispatchMissWarnedCap`, so the table IS pruned now. The clamp itself still pays off (bounds per-entry size to 7 bytes, aligns wire contract for older/buggy peers), but the "ties the practical bound to the configured id space" wording is stale.
+2. **`udp_bridge/test/test_remote_node_resend.cpp:666`** — `DispatchMissWarnedIdsAreBounded` pushes 1024 distinct ids through dispatch, each emitting a WARN-on-first-miss log line. The captured test log carries ~1024 WARN lines per run. Doesn't affect pass/fail but is CI-noisy.
+3. **`udp_bridge/src/remote_node.cpp:201-206`** — `joined` string and `known_ids` join loop are built unconditionally on every lookup miss, even when the message will only log at DEBUG. Typically 2–4 known ids so the wasted work is small, but it's avoidable.
+
+### Actions
+- [ ] Fix #9: tighten the clamp rationale comment in `udp_bridge.cpp:716–732` to reflect the round-4 FIFO cap (mention the cap+eviction; keep the per-entry-size and older-peer rationales).
+- [ ] Fix #10: reduce `DispatchMissWarnedIdsAreBounded`'s push count to `kDispatchMissWarnedCap + 32` and raise the logger level inside the test to silence the WARN spam (restore on exit).
+- [ ] Fix #11: move the `joined` build into the WARN branch only; simplify the DEBUG-branch message to reference the prior WARN, since the WARN already showed the known_ids list.
