@@ -579,22 +579,34 @@ TEST_F(ResendFixture, DispatchDropsWithoutBroadcastUnknownConnectionId)
   EXPECT_EQ(vpn->resend_call_count_for_test(),  0u);
 }
 
-// Routing case 4: connection-id-length truncation contract. The
-// on-wire SequencedPacketHeader carries
-// `char connection_id[maximum_connection_id_size]` (8 bytes), and
-// WrappedPacket truncates to 7 chars + null when constructing that
-// header (wrapped_packet.cpp:31-32). The receiver's connections_ map
-// is therefore keyed on the truncated id. UDPBridge::resendMissingPackets
-// must stamp the ResendRequest with the truncated id so dispatch's
-// lookup matches what the receiver actually has. This test exercises
-// the dispatch side of that contract: when the sender does the right
-// thing (truncated id), dispatch resolves; when it does the wrong
-// thing (full id ≥ 8 chars), dispatch misses. A regression that
-// reintroduces the full-id stamp would surface as the second
-// assertion succeeding when it shouldn't — but more importantly,
-// would cause silent resend-routing failure in production for any
-// configured id longer than 7 chars (e.g. "starlink", "cellular").
-TEST_F(ResendFixture, DispatchHonorsTruncatedConnectionId)
+// Routing case 4: dispatch is strict-match — it does not fuzzy-match
+// or auto-truncate. The receiver's connections_ map is keyed on the
+// truncated id (the on-wire SequencedPacketHeader is a fixed
+// char[maximum_connection_id_size]; WrappedPacket truncates to 7
+// chars + null at wrapped_packet.cpp:31-32, and connections_ is
+// populated from packet headers). Dispatch looks up
+// connections_[rr.connection_id] exactly — no prefix match, no
+// length normalization.
+//
+// Scope note: this test verifies the dispatch-side strict-match
+// invariant only. The full wire contract — "any id longer than 7
+// chars routes correctly in production" — is enforced by the
+// combination of (a) sender-side truncation in
+// UDPBridge::resendMissingPackets and (b) receive-side clamp in
+// UDPBridge::decodeResendRequest, both of which apply BEFORE
+// dispatchResendRequest is called. Neither has a dedicated unit
+// test because both are inside the private wire-decode plumbing of
+// UDPBridge; their integration is verified by the package's
+// end-to-end resend behavior in the field rather than at this seam.
+// A regression that re-introduces the pre-fix bug (sender stamps
+// the full untruncated id) would still route correctly today
+// because the receive-side clamp would normalize the id before
+// reaching dispatch. So a strict regression test for the wire
+// contract would require either a friend-declared test entry to
+// decodeResendRequest or a wire-format integration test that
+// constructs and dispatches a real packet — both out of scope for
+// this unit suite.
+TEST_F(ResendFixture, DispatchDoesNotFuzzyMatchConnectionId)
 {
   // The receiver's connection key is the truncated form (what would
   // arrive in the wire packet header). "starlink" (8 chars) becomes
@@ -606,28 +618,29 @@ TEST_F(ResendFixture, DispatchHonorsTruncatedConnectionId)
   ASSERT_GE(sock.get(), 0);
 
   {
-    // Sender stamped the truncated form (the fix's behavior).
+    // Exact-match: rr stamped with the truncated key → routes.
     udp_bridge_interfaces::msg::ResendRequest rr;
     rr.missing_packets = {1u};
     rr.connection_id = "starlin";
     remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
     EXPECT_EQ(truncated->resend_call_count_for_test(), 1u)
-      << "Truncated-form stamp must match the truncated-form receiver "
-         "key (the post-fix wire contract).";
+      << "Exact-key stamp must match the connection's key.";
   }
   {
-    // Sender stamped the full untruncated form (the pre-fix bug).
-    // Lookup misses because connections_["starlink"] doesn't exist;
-    // counter must not bump.
+    // No fuzzy match: rr stamped with the untruncated form — even
+    // though "starlink" begins with "starlin", dispatch must do a
+    // strict equality lookup. If a future refactor introduces
+    // prefix-match behavior at the dispatch site, this counter
+    // bumps and the test fails — surfacing the change before it
+    // can silently mis-route a forged id.
     udp_bridge_interfaces::msg::ResendRequest rr;
     rr.missing_packets = {1u};
     rr.connection_id = "starlink";
     remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0));
     EXPECT_EQ(truncated->resend_call_count_for_test(), 1u)
-      << "Untruncated-form stamp must miss the truncated-form receiver "
-         "key. A regression that bumps the counter here means the wire "
-         "contract is broken — any id longer than 7 chars silently "
-         "loses resends in the field.";
+      << "Dispatch lookup must be strict-equality. A counter bump "
+         "here would mean dispatch is fuzzy-matching ids, which "
+         "could mis-route a forged or stale id to a real connection.";
   }
 }
 
@@ -686,20 +699,38 @@ TEST_F(ResendFixture, DispatchMissWarnedIdsAreBounded)
   // warn/error/fatal), so the cast is well-defined.
   logger.set_level(static_cast<rclcpp::Logger::Level>(prev_level));
 
-  // After pushing kPushCount distinct ids, the bookkeeping must have
-  // stopped growing well below kPushCount. The exact ceiling is the
-  // implementation's cap; we just assert it's bounded.
+  // After pushing kPushCount distinct ids, the bookkeeping must
+  // hold exactly the cap (we pushed kPushCount > cap, so it must
+  // saturate to the cap value). Importing the constant directly
+  // here is a small coupling to implementation, but it lets the
+  // test catch a "doubled cap" regression that the previous loose
+  // ceiling (<= 512u) would have permitted.
   std::size_t count = remote_->dispatchMissWarnedIdCountForTest();
-  EXPECT_LT(count, kPushCount)
-    << "Bookkeeping grew with every distinct id — the cap is missing "
-       "or broken. A misbehaving peer could now drive memory growth.";
-  EXPECT_LE(count, 512u)
-    << "Bookkeeping size exceeded a generous upper bound. Cap is "
-       "likely much larger than intended (or absent).";
-  EXPECT_GE(count, 1u)
-    << "Bookkeeping is empty — the WARN-once path didn't insert "
-       "anything. The dispatch lookup-miss branch is probably not "
-       "being exercised.";
+  EXPECT_EQ(count, udp_bridge::RemoteNode::dispatchMissWarnedCapForTest())
+    << "Bookkeeping size does not match the configured cap. Either "
+       "the cap regressed (likely doubled), or eviction failed to "
+       "run at the right boundary.";
+
+  // FIFO order check: of the kPushCount ids inserted in sequence,
+  // the most-recently-pushed should still be in the table (it was
+  // just inserted at the tail), and the earliest pushed ids should
+  // have been evicted (they fell off the head when the table
+  // saturated). A regression that evicted from the tail instead of
+  // the head — or evicted arbitrarily — would still satisfy the
+  // size assertion above but would fail these.
+  char head_id[8];   // earliest inserted (should be evicted)
+  char tail_id[8];   // most recent (should be retained)
+  std::snprintf(head_id, sizeof(head_id), "m%05zu", static_cast<std::size_t>(0));
+  std::snprintf(tail_id, sizeof(tail_id), "m%05zu", kPushCount - 1);
+  EXPECT_FALSE(remote_->isDispatchMissWarnedForTest(head_id))
+    << "Earliest-inserted id (" << head_id << ") is still in the "
+       "bookkeeping after pushing kPushCount > cap entries. FIFO "
+       "eviction is broken — likely evicting from the tail or "
+       "evicting arbitrarily.";
+  EXPECT_TRUE(remote_->isDispatchMissWarnedForTest(tail_id))
+    << "Most-recently-inserted id (" << tail_id << ") is missing "
+       "from the bookkeeping. Insert is broken — or eviction "
+       "happened immediately after insert.";
 }
 
 int main(int argc, char** argv)

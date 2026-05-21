@@ -247,6 +247,55 @@ PR #13.
   reworded the surrounding comments — the invariant under test is
   "no broadcast fallback," not "no log output."
 
+- **Self-review must-fix (round-8 fix).** A local `/review-code` pass
+  (Claude + Copilot adversarial specialists, post-jazzy-merge) caught
+  two real issues that the prior six rounds of Copilot review had
+  missed:
+  1. **`DispatchHonorsTruncatedConnectionId` asserted a false
+     wire-contract invariant.** The test called
+     `dispatchResendRequest` directly with `"starlink"` (8 chars) and
+     claimed that a counter bump there would mean "any id longer
+     than 7 chars silently loses resends in the field." That claim
+     became false in round-3 once the receive-side clamp landed in
+     `UDPBridge::decodeResendRequest`: in production, an unclamped
+     8-char id from a buggy sender now clamps to 7 chars before
+     reaching dispatch, so the resend would route correctly. The
+     test only proves "dispatch doesn't fuzzy-match" — a real
+     invariant but a narrower one. Renamed to
+     `DispatchDoesNotFuzzyMatchConnectionId` and rewrote the comment
+     block to be honest about the integration-test gap (sender-side
+     truncation and receive-side clamp are both inside the private
+     wire-decode plumbing of `UDPBridge`; verifying their full
+     integration would require either friend-declaring a test entry
+     to `decodeResendRequest` or a wire-format integration test that
+     constructs a real packet — both out of scope for this unit
+     suite).
+  2. **WARN log overstated the rate-limit promise.** The WARN at
+     `remote_node.cpp:222` said "Further misses for this id will log
+     at DEBUG." — but with FIFO eviction (cap 256, added round-4),
+     an evicted id re-WARNs the next time it's seen. The field
+     comment explicitly documents this as the desired
+     "WARN-eligible again next time" behavior; the user-facing
+     string contradicted it. Updated to "Further misses for this id
+     will log at DEBUG (until the rate-limit table evicts this id
+     under pressure, at which point the WARN re-fires on next
+     sighting)." Same comment-vs-code drift pattern Copilot had been
+     flagging — this one slipped through the externally-driven
+     rounds because no external review reached this specific string.
+  3. **`DispatchMissWarnedIdsAreBounded` ceiling too loose.** The
+     test asserted `count <= 512u` when the cap is 256, so a
+     "doubled cap" regression would have slipped past. Tightened to
+     `EXPECT_EQ(count, kDispatchMissWarnedCap)` via a new
+     `dispatchMissWarnedCapForTest()` static accessor (the constant
+     is private; the accessor keeps it that way for production code).
+     Also added a FIFO-order assertion via a new
+     `isDispatchMissWarnedForTest(const std::string&)` accessor:
+     after pushing more ids than the cap, the most-recently-pushed
+     id MUST still be in the table and the earliest-pushed id MUST
+     have been evicted. A regression that evicted from the tail
+     (LIFO) or evicted arbitrarily would now fail this — the
+     previous test only checked the bound, not the order.
+
 - **try/catch comment correction (round-7 fix).** Copilot's fifth
   review caught that round-3's try/catch rationale in
   `decodeResendRequest` (and the matching wording in

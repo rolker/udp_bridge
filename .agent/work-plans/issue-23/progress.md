@@ -166,9 +166,9 @@ Build and full test suite (51 tests) green locally on the worktree.
 **Must-fix**: 2 | **Suggestions**: 10
 
 ### Findings
-- [ ] (must-fix) `DispatchHonorsTruncatedConnectionId` bypasses the receive-side clamp — test asserts a false invariant about wire-contract behavior — `udp_bridge/test/test_remote_node_resend.cpp:597-632`
-- [ ] (must-fix) WARN message claims "Further misses for this id will log at DEBUG" but FIFO eviction can re-WARN — comment-vs-code drift — `udp_bridge/src/remote_node.cpp:222`
-- [ ] (suggestion) `DispatchMissWarnedIdsAreBounded` ceiling 512 too loose vs cap 256; also no FIFO-order assertion — `udp_bridge/test/test_remote_node_resend.cpp:700`
+- [x] (must-fix) `DispatchHonorsTruncatedConnectionId` bypasses the receive-side clamp — test asserts a false invariant about wire-contract behavior — `udp_bridge/test/test_remote_node_resend.cpp:597-632`
+- [x] (must-fix) WARN message claims "Further misses for this id will log at DEBUG" but FIFO eviction can re-WARN — comment-vs-code drift — `udp_bridge/src/remote_node.cpp:222`
+- [x] (suggestion) `DispatchMissWarnedIdsAreBounded` ceiling 512 too loose vs cap 256; also no FIFO-order assertion — `udp_bridge/test/test_remote_node_resend.cpp:700`
 - [ ] (suggestion) Receive-side clamp can route a malformed id to a valid connection by prefix-truncation; document this in the clamp comment — `udp_bridge/src/udp_bridge.cpp:~733`
 - [ ] (suggestion) `dispatchResendRequest` is public on RemoteNode but only one production caller; either mark "public for test access only; production callers must clamp first" or make private+friend — `udp_bridge/include/udp_bridge/remote_node.h:65-86`
 - [ ] (suggestion) Field comment line-number drift: refers to clamp "around line 715" but the clamp is now at ~733 post-merge — `udp_bridge/include/udp_bridge/remote_node.h:~202`
@@ -178,3 +178,30 @@ Build and full test suite (51 tests) green locally on the worktree.
 - [ ] (suggestion) Test logger level restore preserves prior-test state; cheap to add a comment noting this is deliberate — `udp_bridge/test/test_remote_node_resend.cpp:668-688`
 - [ ] (suggestion) WARN known_ids list uses bare comma join; would parse ambiguously if any future id contained a comma. Quote each id — `udp_bridge/src/remote_node.cpp:~226`
 - [ ] (suggestion) `rr.connection_id.resize()` doesn't shrink_to_fit; bounded (rr is stack-local) but the field-comment "table-entry-size" argument depends on copies normalizing capacity. Add note or call shrink_to_fit — `udp_bridge/src/udp_bridge.cpp:~734`
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-20 21:50
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-8 changes addressing the two must-fixes (and suggestion #3) from the local `/review-code` pass:
+
+- **`udp_bridge/test/test_remote_node_resend.cpp`** — renamed `DispatchHonorsTruncatedConnectionId` to `DispatchDoesNotFuzzyMatchConnectionId` and rewrote the comment block to be honest about what the test actually verifies (dispatch strict-equality, no fuzzy-match) and what it does NOT verify (the wire contract — sender truncation + receive clamp — which lives in the private wire-decode plumbing of `UDPBridge`). The previous comment block falsely claimed this test caught wire-contract regressions; post-round-3 it didn't, because the receive-side clamp would normalize an unclamped 8-char id before reaching dispatch.
+- **`udp_bridge/src/remote_node.cpp`** — WARN message at line 222 reworded to acknowledge that FIFO eviction can re-fire the WARN: "Further misses for this id will log at DEBUG (until the rate-limit table evicts this id under pressure, at which point the WARN re-fires on next sighting)." Aligns the user-facing string with the field comment's documented design.
+- **`udp_bridge/test/test_remote_node_resend.cpp`** — `DispatchMissWarnedIdsAreBounded` ceiling tightened from `EXPECT_LE(count, 512u)` to `EXPECT_EQ(count, dispatchMissWarnedCapForTest())` (via a new public static accessor on `RemoteNode` that returns `kDispatchMissWarnedCap` without exposing the private constant). Added a FIFO-order assertion using a new `isDispatchMissWarnedForTest(const std::string&)` accessor: after pushing >cap distinct ids, the most-recently-pushed id MUST still be in the bookkeeping and the earliest-pushed id MUST have been evicted. Catches a regression that evicts LIFO or arbitrarily.
+- **`udp_bridge/include/udp_bridge/remote_node.h`** — added `isDispatchMissWarnedForTest(const std::string&)` and `dispatchMissWarnedCapForTest()` accessors under `UDP_BRIDGE_BUILD_TESTING`. Both follow the existing test-accessor pattern.
+- **`udp_bridge/src/remote_node.cpp`** — added the `isDispatchMissWarnedForTest` implementation under the same gate.
+- **`.agent/work-plans/issue-23/plan.md`** — round-8 implementation note documenting the self-review must-fixes and the suggestion tightening.
+
+Build and full test suite (82 tests; +0 vs round-7 — same count, renamed test) green locally on the worktree.
+
+Remaining suggestions from the local review (none must-fix; defer to follow-up if needed):
+- Clamp comment doesn't surface prefix-truncation misroute behavior.
+- `dispatchResendRequest` is public on `RemoteNode`; consider marking "public for test access only".
+- Field-comment line-number reference drift ("around line 715" → 847).
+- Audit other in-package `add_executable` targets for the `UDP_BRIDGE_BUILD_TESTING` discipline.
+- Per-connection serialize+send CPU-cost tradeoff isn't surfaced in the `resendMissingPackets` comment.
+- `resend_call_count_for_test_` increment isn't atomic.
+- Test logger level restore preserves prior-test state (low risk, by design).
+- WARN known_ids list uses bare comma join (theoretical ambiguity if ids ever contain commas).
+- `rr.connection_id.resize()` doesn't `shrink_to_fit` (bounded; stack-local).

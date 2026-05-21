@@ -223,7 +223,9 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
       "Dropping ResendRequest from " << name_
       << " stamped for connection_id='" << rr.connection_id
       << "' (no matching connection; known ids: [" << joined << "]). "
-         "Further misses for this id will log at DEBUG.");
+         "Further misses for this id will log at DEBUG (until the "
+         "rate-limit table evicts this id under pressure, at which "
+         "point the WARN re-fires on next sighting).");
   }
   else
   {
@@ -365,6 +367,12 @@ std::size_t RemoteNode::dispatchMissWarnedIdCountForTest() const
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   return dispatch_miss_warned_ids_.size();
+}
+
+bool RemoteNode::isDispatchMissWarnedForTest(const std::string& id) const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return dispatch_miss_warned_ids_.count(id) != 0;
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

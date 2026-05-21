@@ -130,6 +130,23 @@ class RemoteNode
   // UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the helpers
   // above.
   std::size_t dispatchMissWarnedIdCountForTest() const;
+
+  // Test accessor: returns true iff `id` is currently in the
+  // dispatch-miss WARN bookkeeping (i.e., the next miss for this id
+  // would log at DEBUG, not WARN). Used by the FIFO-order assertion
+  // in the cap-enforcement test to verify that the eviction policy
+  // is in-order (oldest dropped first, not random/newest). Takes
+  // state_mutex_ for the read.
+  // UDP_BRIDGE_BUILD_TESTING-gated.
+  bool isDispatchMissWarnedForTest(const std::string& id) const;
+
+  // Test accessor: returns the dispatch-miss WARN bookkeeping cap.
+  // Lets the cap-enforcement test assert against the exact cap value
+  // (catching a "doubled cap" regression) without making
+  // kDispatchMissWarnedCap part of the public API.
+  // UDP_BRIDGE_BUILD_TESTING-gated.
+  static constexpr std::size_t dispatchMissWarnedCapForTest()
+  { return kDispatchMissWarnedCap; }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
   // Count of missing-packet resends this RemoteNode has given up on
