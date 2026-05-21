@@ -273,3 +273,25 @@ Round-10 changes implementing option (a) for Copilot R8's truncation-contract fi
 - **`udp_bridge/test/test_remote_node_resend.cpp`** — new `NewConnectionCanonicalizesLongId` test exercises the contract end-to-end. Scope note above `DispatchDoesNotFuzzyMatchConnectionId` rewritten — the wire-decode clamp is no longer the primary canonicalization mechanism, the connections_ insertion sites are. Routing-section header updated to "Six tests below…" with the new canonicalization bullet.
 
 Build clean, full suite green (83 tests, +1 vs round-9). New test verified with direct gtest filter — both the WARN-on-truncation and the canonical-form routing assertions fire.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-05-21 14:50
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-23 at `0697ee0`
+**Mode**: pre-push
+**Depth**: Deep (reason: 1533 lines, concurrency-sensitive wire-protocol code, new msg field, build-config change)
+**Must-fix**: 2 | **Suggestions**: 7
+
+### Findings
+- [ ] (must-fix) `RemoteNode::update(const Remote&)` uses bare `operator[]` with untruncated id — orphan null entry + Connection-state clobber on repeat calls — `udp_bridge/src/remote_node.cpp:35`
+- [ ] (must-fix) `RemoteNode::newConnection` unconditionally overwrites canonical-key entries — silent collision when two configured ids share first 7 chars — `udp_bridge/src/remote_node.cpp:119`
+- [ ] (suggestion) Stale comment claims connections_ is keyed on "full pre-truncation id from config" — post-R10 it's canonical — `udp_bridge/src/udp_bridge.cpp:1175`
+- [ ] (suggestion) `dispatchResendRequest` raw `connections_.find` — route through canonical `connection()` for defense-in-depth — `udp_bridge/src/remote_node.cpp:146`
+- [ ] (suggestion) `truncate_connection_id` could be `noexcept` + take `std::string_view` to skip copies on no-truncation common path — `udp_bridge/include/udp_bridge/packet.h`
+- [ ] (suggestion) `adoptConnection` keys on `connection->id()` (canonical by transitivity post-R10); add `assert(connection->id() == truncate_connection_id(connection->id()))` to pin the invariant — `udp_bridge/src/remote_node.cpp:128`
+- [ ] (suggestion) Add tests for `update(Remote)` long-id path + collision case (two configured ids sharing first 7 chars) — `udp_bridge/test/test_remote_node_resend.cpp`
+- [ ] (suggestion) Update plan.md "Files to Change" table to include new `packet.h` helper added in round-10 — `.agent/work-plans/issue-23/plan.md`
+- [ ] (suggestion) Verify PR body carries the coordinated-redeploy notice for whoever cuts the deployment (plan flags this as open question) — PR body
