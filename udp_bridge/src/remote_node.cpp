@@ -148,9 +148,6 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
       target = it->second;
     if(!target)
     {
-      known_ids.reserve(connections_.size());
-      for(const auto& kv : connections_)
-        known_ids.push_back(kv.first);
       // First-miss-per-id bookkeeping with a bounded FIFO. We pick
       // WARN vs DEBUG below by whether this id has already been
       // warned for: first occurrence surfaces (so a real config
@@ -179,6 +176,16 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
         dispatch_miss_warned_ids_.insert(rr.connection_id);
         first_miss_for_id = true;
       }
+      // Snapshot known ids only when we'll WARN below — the DEBUG
+      // branch omits the list (already shown on the prior WARN line)
+      // so building it here would be wasted work on the common
+      // repeated-miss / cap-saturated paths.
+      if(first_miss_for_id)
+      {
+        known_ids.reserve(connections_.size());
+        for(const auto& kv : connections_)
+          known_ids.push_back(kv.first);
+      }
     }
   }
   if(target)
@@ -197,15 +204,21 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
   // Both deserve diagnostic output. The known-ids list and the
   // first-vs-subsequent split together let an operator distinguish:
   // a one-shot WARN that never repeats is a transient race; repeated
-  // hits on the same id (now DEBUG) suggest the race is ongoing.
-  std::string joined;
-  for(size_t i = 0; i < known_ids.size(); ++i)
-  {
-    if(i > 0) joined += ", ";
-    joined += known_ids[i];
-  }
+  // hits on the same id (now DEBUG) suggest the race is ongoing. The
+  // DEBUG path omits the known-ids list — the WARN that fired on the
+  // first miss already showed it, and avoiding the per-DEBUG join
+  // keeps the lookup-miss path cheap even when the table is
+  // saturated (cap-eviction scenarios re-WARN with a fresh known_ids
+  // list, so an operator chasing a repeating issue always has the
+  // current ids on the most recent WARN line).
   if(first_miss_for_id)
   {
+    std::string joined;
+    for(size_t i = 0; i < known_ids.size(); ++i)
+    {
+      if(i > 0) joined += ", ";
+      joined += known_ids[i];
+    }
     RCLCPP_WARN_STREAM(logger_,
       "Dropping ResendRequest from " << name_
       << " stamped for connection_id='" << rr.connection_id
@@ -217,7 +230,8 @@ void RemoteNode::dispatchResendRequest(const ResendRequest& rr, int socket, rclc
     RCLCPP_DEBUG_STREAM(logger_,
       "Dropping ResendRequest from " << name_
       << " stamped for connection_id='" << rr.connection_id
-      << "' (no matching connection; known ids: [" << joined << "])");
+      << "' (no matching connection; see the prior WARN line for "
+         "this id for the known-ids snapshot)");
   }
 }
 

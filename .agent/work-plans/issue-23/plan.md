@@ -247,6 +247,47 @@ PR #13.
   reworded the surrounding comments — the invariant under test is
   "no broadcast fallback," not "no log output."
 
+- **Comment + DEBUG-path + test-log polish (round-6 fix).** Three
+  small follow-ups from Copilot's fourth review (against the round-5
+  push at `3f40162`):
+  1. **Stale clamp-rationale comment.** Round-3 added the
+     receive-side clamp in `udp_bridge.cpp:decodeResendRequest` with
+     a rationale block that said `dispatch_miss_warned_ids_` "is
+     never pruned." Round-4 added FIFO eviction with cap
+     `kDispatchMissWarnedCap`, so the table IS pruned now. Updated
+     the comment to acknowledge the cap and reframe the clamp's
+     ongoing value (bounds per-entry size to 7 bytes; normalizes
+     incoming ids so the bookkeeping doesn't double-track truncated
+     and untruncated forms).
+  2. **Avoid wasted work on the DEBUG path in
+     `dispatchResendRequest`.** The `known_ids` snapshot (copy of all
+     keys in `connections_`) and the subsequent join into a comma-
+     separated string were built unconditionally on every lookup
+     miss, even though the DEBUG branch's message was the only
+     consumer of the join and DEBUG is typically off in production.
+     Restructured so both the `known_ids` snapshot (inside the lock)
+     and the join (after the lock) only happen when
+     `first_miss_for_id` is true; the DEBUG branch now emits a
+     compact message that references the prior WARN for this id
+     (cap-eviction-induced re-WARNs always carry the current
+     known-ids list, so an operator chasing a repeating issue
+     always has the snapshot on the most recent WARN line). Net
+     effect: repeated dispatch misses for a known-warned id pay no
+     join cost.
+  3. **Silence WARN spam in `DispatchMissWarnedIdsAreBounded`.** The
+     test pushed 1024 distinct ids to exercise the cap, emitting
+     ~1024 WARN log lines into the captured test output per run.
+     Reduced the push count to 288 (32 above the current 256 cap —
+     still proves 32 distinct evictions), and silenced the node's
+     logger for the duration of the loop via
+     `rclcpp::Logger::set_level(Error)` with a restore to the prior
+     level on exit. The cap-enforcement assertion uses
+     `dispatchMissWarnedIdCountForTest`, not log inspection, so the
+     silencing has no effect on what the test proves. Captured test
+     log dropped from ~1024 to 0 "Dropping ResendRequest" lines from
+     this test (the remaining 3 lines in the test log come from the
+     other dispatch-miss tests).
+
 - **Header hygiene + in-package ABI alignment (round-5 fix).** Two
   precise findings from Copilot's third review (against the round-4
   push at `5225c2e`):

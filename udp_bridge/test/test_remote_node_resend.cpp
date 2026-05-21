@@ -30,6 +30,7 @@
 #include <gtest/gtest.h>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rcutils/logging.h"
 
 #include "udp_bridge_interfaces/msg/resend_request.hpp"
 #include "udp_bridge/connection.h"
@@ -651,7 +652,21 @@ TEST_F(ResendFixture, DispatchMissWarnedIdsAreBounded)
   ScopedFd sock;
   ASSERT_GE(sock.get(), 0);
 
-  const std::size_t kPushCount = 1024;  // safely past any reasonable cap
+  // Every distinct id in this loop fires a first-miss WARN. To keep
+  // the captured test log readable (and CI fast) we silence the
+  // node's logger for the duration of the push, then restore. The
+  // cap-enforcement assertion uses dispatchMissWarnedIdCountForTest,
+  // not log inspection, so silencing has no effect on what the test
+  // proves.
+  auto logger = node_->get_logger();
+  auto prev_level = rcutils_logging_get_logger_level(logger.get_name());
+  logger.set_level(rclcpp::Logger::Level::Error);
+
+  // 32 above any plausible cap — the test was previously pushing
+  // 1024, which emitted ~1024 WARN lines per run. The cap is 256 at
+  // the time of writing; pushing 288 still proves eviction fires
+  // with comfortable margin (32 distinct evictions exercised).
+  const std::size_t kPushCount = 288;
   for(std::size_t i = 0; i < kPushCount; ++i)
   {
     udp_bridge_interfaces::msg::ResendRequest rr;
@@ -664,6 +679,12 @@ TEST_F(ResendFixture, DispatchMissWarnedIdsAreBounded)
     rr.connection_id = id;
     remote_->dispatchResendRequest(rr, sock.get(), t_at(2.0 + static_cast<double>(i) * 0.001));
   }
+
+  // Restore the prior logger level so subsequent tests behave
+  // normally. RCUTILS_LOG_SEVERITY_* and rclcpp::Logger::Level use
+  // the same integer values (0/10/20/30/40/50 for unset/debug/info/
+  // warn/error/fatal), so the cast is well-defined.
+  logger.set_level(static_cast<rclcpp::Logger::Level>(prev_level));
 
   // After pushing kPushCount distinct ids, the bookkeeping must have
   // stopped growing well below kPushCount. The exact ceiling is the

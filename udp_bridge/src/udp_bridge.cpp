@@ -724,12 +724,14 @@ void UDPBridge::decodeResendRequest(std::vector<uint8_t> const &message, const S
   //      lets its resend route correctly (the truncated form matches
   //      what arrived in the packet header).
   //   2) RemoteNode::dispatch_miss_warned_ids_ inserts rr.connection_id
-  //      on lookup miss and is never pruned. Without a receive-side
-  //      cap, a misbehaving peer or a stream of bit-flipped-but-
-  //      deserializable packets could grow the set unboundedly. The
-  //      ROS string field is unbounded at the schema level. Clamping
-  //      ties the practical bound to the configured id space, which
-  //      is what the field comment at remote_node.h claims.
+  //      on lookup miss. Round-4 (PR #25) replaced the unbounded
+  //      std::set with a FIFO capped at kDispatchMissWarnedCap, so the
+  //      bookkeeping count is bounded by code. The receive-side clamp
+  //      remains useful on top of that cap: it bounds each table
+  //      entry's *size* to 7 bytes so the table stays small even at
+  //      full capacity, and it normalizes incoming ids so the
+  //      bookkeeping doesn't double-track an id under its truncated
+  //      and untruncated forms.
   if(rr.connection_id.size() > maximum_connection_id_size - 1)
     rr.connection_id.resize(maximum_connection_id_size - 1);
   auto now = get_clock()->now();
