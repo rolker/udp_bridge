@@ -171,7 +171,7 @@ Build and full test suite (51 tests) green locally on the worktree.
 - [x] (suggestion) `DispatchMissWarnedIdsAreBounded` ceiling 512 too loose vs cap 256; also no FIFO-order assertion — `udp_bridge/test/test_remote_node_resend.cpp:700`
 - [ ] (suggestion) Receive-side clamp can route a malformed id to a valid connection by prefix-truncation; document this in the clamp comment — `udp_bridge/src/udp_bridge.cpp:~733`
 - [ ] (suggestion) `dispatchResendRequest` is public on RemoteNode but only one production caller; either mark "public for test access only; production callers must clamp first" or make private+friend — `udp_bridge/include/udp_bridge/remote_node.h:65-86`
-- [ ] (suggestion) Field comment line-number drift: refers to clamp "around line 715" but the clamp is now at ~733 post-merge — `udp_bridge/include/udp_bridge/remote_node.h:~202`
+- [x] (suggestion) Field comment line-number drift: refers to clamp "around line 715" but the clamp is now at ~733 post-merge — `udp_bridge/include/udp_bridge/remote_node.h:~202` (fixed round-9, also dropped a sibling drift in `udp_bridge.cpp` decodeResendRequest comment that referenced "udp_bridge.cpp:568-614")
 - [ ] (suggestion) Audit other in-package `add_executable` targets and document the `UDP_BRIDGE_BUILD_TESTING` contract — `udp_bridge/CMakeLists.txt:112`
 - [ ] (suggestion) Per-connection serialize+send adds CPU work vs broadcast; mention the tradeoff in the resendMissingPackets comment — `udp_bridge/src/udp_bridge.cpp:~1129-1151`
 - [ ] (suggestion) `resend_call_count_for_test_` increment isn't atomic; document "counter bumps before any I/O" invariant in code or use `std::atomic` — `udp_bridge/src/connection.cpp:~447-449`
@@ -215,7 +215,18 @@ Remaining suggestions from the local review (none must-fix; defer to follow-up i
 **CI**: all-pass (Prepare, Agent, Upload results, Cleanup artifacts — 4/4)
 
 ### Actions
-- [ ] Fix `udp_bridge/test/test_remote_node_resend.cpp:461` — block comment says "Four tests below cover…" but the routing section now contains five tests (the bookkeeping-cap test is labeled "Routing case 5" at line 647). Update the count or factor the bookkeeping test into its own header section. (Raised twice — R6 line 476, R7 line 463.)
-- [ ] Fix `udp_bridge/include/udp_bridge/remote_node.h:220–221` — replace hard-coded `"udp_bridge.cpp around line 715"` with a function-name reference (`UDPBridge::decodeResendRequest`). Already on the local-review deferred-suggestion list above; Copilot independently flagged it.
-- [ ] Fix `udp_bridge/src/udp_bridge.cpp:801` — replace hard-coded `"udp_bridge.cpp:568-614"` with `UDPBridge::decode` by name. `decode()` is currently at 647–715 with the catch at 707–715, so the existing range is already wrong.
+- [x] Fix `udp_bridge/test/test_remote_node_resend.cpp:461` — block comment says "Four tests below cover…" but the routing section now contains five tests (the bookkeeping-cap test is labeled "Routing case 5" at line 647). Update the count or factor the bookkeeping test into its own header section. (Raised twice — R6 line 476, R7 line 463.)
+- [x] Fix `udp_bridge/include/udp_bridge/remote_node.h:220–221` — replace hard-coded `"udp_bridge.cpp around line 715"` with a function-name reference (`UDPBridge::decodeResendRequest`). Already on the local-review deferred-suggestion list above; Copilot independently flagged it.
+- [x] Fix `udp_bridge/src/udp_bridge.cpp:801` — replace hard-coded `"udp_bridge.cpp:568-614"` with `UDPBridge::decode` by name. `decode()` is currently at 647–715 with the catch at 707–715, so the existing range is already wrong.
 - [ ] (Optional) Dismiss the stale Copilot review threads (R1–R5, and the R6 finding that R7 superseded) — concerns were resolved by intervening commits but the threads remain marked open in the GitHub UI.
+
+## Address External Review
+**Status**: complete
+**When**: 2026-05-21 03:25
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+Round-9 changes addressing all three valid Copilot findings from the PR #25 triage above. Comment-only edits — no behavior change; build clean, full suite green (82 tests, +0 vs round-8).
+
+- **`udp_bridge/test/test_remote_node_resend.cpp`** — rewrote the routing-section block comment to enumerate all five tests by their current names. The pre-round-8 `TruncatedConnectionIdMatches` bullet was still present even though the test had been renamed to `DispatchDoesNotFuzzyMatchConnectionId` in round-8. New bullet describes what the renamed test actually verifies (dispatch strict-equality, not the wire-contract truncation that lives in private receive plumbing).
+- **`udp_bridge/include/udp_bridge/remote_node.h`** — dropped the hard-coded `"see udp_bridge.cpp around line 715"` from the `dispatch_miss_warned_ids_` field comment. `UDPBridge::decodeResendRequest` is already named there, so the line reference is redundant and was already drifted (actual clamp is at udp_bridge.cpp:847 post-merge).
+- **`udp_bridge/src/udp_bridge.cpp`** — dropped the hard-coded `"udp_bridge.cpp:568-614"` line range from the `decodeResendRequest` comment block. The outer `UDPBridge::decode` catch-all is actually at lines 707–715 inside the function at 647, so the range was already wrong.
