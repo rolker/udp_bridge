@@ -85,8 +85,8 @@ issue: 22
 **CI**: all-pass (Agent, Prepare, Upload results, Cleanup artifacts)
 
 ### Actions
-- [ ] Fix (`README.md` Diagnostic surface bullet): reword "the sender has abandoned resending packets" — the counter is bumped on the *receiver* side in `RemoteNode::getMissingPackets()` when a missing packet's first-request time exceeds `kSentPacketTTL` (the sender's retention window). The receiver gives up because the sender no longer has the packet to resend. Phrase as "missing packets abandoned by the resend protocol" with the TTL mechanism named.
-- [ ] (Optional) Resolve the round-4 `||` README thread on GitHub — same parser-level hallucination Copilot fired in round 2; source still uses single pipes throughout the table.
+- [x] Fix (`README.md` Diagnostic surface bullet): reworded to drop "sender has abandoned" framing. Now says "missing packets are abandoned by the resend protocol" with the actual mechanism named — receiver-side give-up at sender's retention TTL.
+- [x] Resolve round-4 `||` README thread on GitHub — repeat FP, same as round 2.
 
 ### Notes
 - Round-4 `||` claim is the second instance of the same hallucination on the same unchanged source (round-2 instance was resolved as FP). Copilot's own diff hunk in the comment body shows the correct single-pipe markup — the false claim is purely in the natural-language prose. Pattern: this specific false positive may keep recurring on each re-review pass. Worth noting for future agents that "yet another `||` claim against this table" should be triaged as FP without re-investigating.
