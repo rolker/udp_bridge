@@ -32,7 +32,17 @@ void RemoteNode::update(const Remote& remote_message)
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   for(auto c: remote_message.connections)
   {
-    auto connection = connections_[c.connection_id];
+    // Use the canonicalizing helper rather than a raw `connections_[]`
+    // index — bare `operator[]` with the untruncated configured id
+    // would default-construct a null shared_ptr at the *uncanonical*
+    // key for any id ≥ maximum_connection_id_size. That left an orphan
+    // slot alongside the real canonical-keyed entry from
+    // newConnection(), and on the next refresh through this loop the
+    // (still-null) orphan re-entered the `if(!connection)` branch and
+    // newConnection's overwrite path wiped the live Connection's
+    // sent_packets_ / stats. Caught by R9 review on PR #25 and three
+    // independent local reviewers (Adversarial, Governance, Copilot CLI).
+    auto connection = this->connection(c.connection_id);
     if(!connection)
       connection = newConnection(c.connection_id, c.host, c.port);
     connection->setReturnHostAndPort(c.return_host, c.return_port);
@@ -138,8 +148,41 @@ std::shared_ptr<Connection> RemoteNode::newConnection(std::string connection_id,
       << " characters will collide under this canonical form.");
   }
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-  connections_[canonical_id] = std::make_shared<Connection>(canonical_id, host, port);
-  return connections_[canonical_id];
+  auto& slot = connections_[canonical_id];
+  if(slot)
+  {
+    // A Connection already exists at this canonical key. Two cases:
+    //   1) Same (host, port): caller missed a connection() lookup and
+    //      reached us defensively. Return the existing entry — clobbering
+    //      it would wipe sent_packets_ / received-rate state for no
+    //      benefit. The other call sites already do the
+    //      `if(!c) c = newConnection(...)` dance; the no-op here makes
+    //      the rule "newConnection is idempotent for a given canonical
+    //      key" hold for any future caller too.
+    //   2) Different (host, port): canonical-id collision — two distinct
+    //      configured ids share the first `maximum_connection_id_size - 1`
+    //      chars (e.g. "starlink-ku" / "starlink-vp" both canonicalize
+    //      to "starlin"). The first-registered Connection is kept; the
+    //      second is rejected. Log an ERROR so a misconfigured
+    //      deployment surfaces at startup rather than presenting as
+    //      silent state-clobber on the next RemoteNode::update(Remote)
+    //      refresh.
+    if(slot->host() != host || slot->port() != port)
+    {
+      RCLCPP_ERROR_STREAM(logger_,
+        "Connection id collision: '" << connection_id
+        << "' canonicalizes to '" << canonical_id
+        << "' but a Connection already exists at that key with "
+           "host=" << slot->host() << " port=" << slot->port()
+        << "; new request was host=" << host << " port=" << port
+        << ". The first-registered connection is kept. Rename one of "
+           "the configured ids so they don't share the first "
+        << (maximum_connection_id_size - 1) << " characters.");
+    }
+    return slot;
+  }
+  slot = std::make_shared<Connection>(canonical_id, host, port);
+  return slot;
 }
 
 void RemoteNode::adoptConnection(std::shared_ptr<Connection> connection)

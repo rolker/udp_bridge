@@ -33,9 +33,12 @@
 #include "rcutils/logging.h"
 
 #include "udp_bridge_interfaces/msg/resend_request.hpp"
+#include "udp_bridge_interfaces/msg/remote.hpp"
+#include "udp_bridge_interfaces/msg/remote_connection.hpp"
 #include "udp_bridge/connection.h"
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
+#include "udp_bridge/packet.h"   // truncate_connection_id, maximum_connection_id_size
 
 namespace
 {
@@ -458,7 +461,7 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 // which amplified resend volume 2-4x and pushed bytes into rx-dead paths
 // under the 2026-05-19 wifi-loss storm.
 //
-// Six tests below cover dispatch routing, the canonical-id contract,
+// Eight tests below cover dispatch routing, the canonical-id contract,
 // and the WARN-bookkeeping cap:
 //   - DispatchRoutesToStampedConnectionOnly: the matched-id case — a
 //     request stamped for "wifi" reaches only the wifi connection's
@@ -483,6 +486,17 @@ TEST_F(ResendFixture, BurstLossAllGapsFlagTogetherAfterDebounce)
 //     truncated to the wire form at construction time, so a sender
 //     stamping the canonical form lands on the connection that owns
 //     sent_packets_ for that link.
+//   - UpdateRemoteWithLongIdDoesNotOrphanOrClobber: drives the
+//     RemoteNode::update(const Remote&) path with a long configured
+//     id and asserts no orphan untruncated-key entry is created and
+//     that a second update call doesn't replace the existing
+//     Connection instance (regression for the bare-operator[] bug
+//     R9 flagged on round-10).
+//   - NewConnectionRejectsCanonicalIdCollision: two distinct
+//     configured ids that share the first 7 chars (canonicalize to
+//     the same wire form) — the second call must return the
+//     first-registered Connection rather than constructing a fresh
+//     one and clobbering the entry.
 //   - DispatchMissWarnedIdsAreBounded: the bookkeeping table that
 //     dedups first-miss WARN logs has a hard cap (kDispatchMissWarnedCap)
 //     with FIFO eviction; a peer streaming distinct ids cannot grow
@@ -696,6 +710,108 @@ TEST_F(ResendFixture, NewConnectionCanonicalizesLongId)
     << "Canonical-form stamp must route to the connection created from "
        "the long configured id. A miss here means the truncation "
        "contract is back to one-sided.";
+}
+
+// Regression for Copilot R9 finding (PR #25): RemoteNode::update(const
+// Remote&) used a bare `connections_[c.connection_id]` index with the
+// untruncated configured id. For ids ≥ maximum_connection_id_size the
+// canonical key from newConnection() and the untruncated key from
+// operator[] were distinct, leaving a null-shared_ptr orphan slot at
+// the untruncated key and (more dangerously) re-entering newConnection's
+// overwrite path on every subsequent update — which clobbered the live
+// Connection's sent_packets_ / stats. This test drives the
+// update(Remote) path with a long configured id and asserts:
+//   - the canonical-keyed Connection exists,
+//   - no orphan slot lives at the untruncated key
+//     (RemoteNode::connection(untruncated) finds the canonical one,
+//     not an orphan null),
+//   - a second update(Remote) call returns the same Connection
+//     instance (no clobber).
+TEST_F(ResendFixture, UpdateRemoteWithLongIdDoesNotOrphanOrClobber)
+{
+  const std::string full_id = "starlink";   // 8 chars (>= max)
+  const std::string canonical_id = "starlin";
+
+  udp_bridge_interfaces::msg::Remote remote_msg;
+  remote_msg.name = "test-remote";  // matches the fixture's RemoteNode name_
+  udp_bridge_interfaces::msg::RemoteConnection rc;
+  rc.connection_id = full_id;
+  rc.host = "127.0.0.1";
+  rc.port = 9201;
+  rc.maximum_bytes_per_second = 1000000;
+  remote_msg.connections.push_back(rc);
+
+  remote_->update(remote_msg);
+
+  // The Connection landed at the canonical key.
+  auto via_canonical = remote_->connection(canonical_id);
+  ASSERT_NE(via_canonical, nullptr) << "update(Remote) did not create a "
+    "Connection at the canonical key — canonicalization isn't being "
+    "applied on this path.";
+  EXPECT_EQ(via_canonical->id(), canonical_id);
+
+  // Lookup via the untruncated configured id finds the same Connection
+  // (because RemoteNode::connection canonicalizes its input). If the
+  // bare-operator[] regression were back, this would either return
+  // a different shared_ptr (orphan null at untruncated key) or be
+  // unequal to via_canonical.
+  auto via_full = remote_->connection(full_id);
+  EXPECT_EQ(via_full, via_canonical) << "RemoteNode::connection lookup "
+    "with the untruncated configured id must canonicalize and land on "
+    "the same Connection instance.";
+
+  // Second update — must NOT clobber. We can't observe sent_packets_
+  // directly from the public API, but a clobber would replace the
+  // shared_ptr with a freshly-constructed Connection at the same
+  // canonical key. Pointer equality after a second update proves the
+  // entry survived.
+  auto* expected_raw = via_canonical.get();
+  remote_->update(remote_msg);
+  auto via_canonical_after = remote_->connection(canonical_id);
+  ASSERT_NE(via_canonical_after, nullptr);
+  EXPECT_EQ(via_canonical_after.get(), expected_raw)
+    << "Second update(Remote) replaced the live Connection at the "
+       "canonical key — newConnection's overwrite path was re-entered, "
+       "which would have wiped sent_packets_ / received-rate state in "
+       "production.";
+}
+
+// Regression for Copilot R9 finding (PR #25): newConnection's
+// unconditional `connections_[canonical_id] = make_shared(...)` would
+// silently clobber an existing Connection when two distinct configured
+// ids share the first `maximum_connection_id_size - 1` chars and so
+// collide under the canonical form. This test creates a Connection
+// under "starlink", then asks for one under "starlink-vp" (same
+// canonical "starlin", different host/port). The expected behavior:
+// the first Connection survives, the second is rejected with an ERROR
+// log, and the existing Connection is returned to the caller.
+TEST_F(ResendFixture, NewConnectionRejectsCanonicalIdCollision)
+{
+  auto first = remote_->newConnection("starlink", "127.0.0.1", 9301);
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(first->id(), "starlin");
+  EXPECT_EQ(first->host(), "127.0.0.1");
+  EXPECT_EQ(first->port(), 9301u);
+
+  // "starlink-vp" also canonicalizes to "starlin". newConnection must
+  // return the existing first-registered Connection rather than
+  // constructing a second one and clobbering the entry.
+  auto second = remote_->newConnection("starlink-vp", "192.168.42.1", 9302);
+  ASSERT_NE(second, nullptr);
+  EXPECT_EQ(second.get(), first.get())
+    << "Second newConnection call with a different configured id that "
+       "collides under the canonical form must return the existing "
+       "Connection, not replace it.";
+  // Existing host/port preserved — clobber would have moved these.
+  EXPECT_EQ(first->host(), "127.0.0.1");
+  EXPECT_EQ(first->port(), 9301u);
+
+  // Idempotent same-input case: calling with the original full id and
+  // matching host/port should also return the same Connection without
+  // logging an ERROR (the "caller missed a connection() lookup" path).
+  auto third = remote_->newConnection("starlink", "127.0.0.1", 9301);
+  ASSERT_NE(third, nullptr);
+  EXPECT_EQ(third.get(), first.get());
 }
 
 // Routing case 6: bookkeeping cap. dispatchResendRequest tracks

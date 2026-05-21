@@ -1171,10 +1171,12 @@ void UDPBridge::resendMissingPackets()
       rr.connection_id.assign(connection->id(), 0,
                               maximum_connection_id_size - 1);
       RemoteConnectionsList rcl;
-      // RemoteConnectionsList is consumed sender-side via
-      // RemoteNode::connection(id) on this bridge's own connections_
-      // (which is keyed on the full pre-truncation id from config), so
-      // the routing list keeps the full string.
+      // Route via the same connection on this bridge's connections_.
+      // Post-PR #25 round-10, `connection->id()` is already the
+      // canonical (truncated) wire form and `RemoteNode::connection()`
+      // canonicalizes its lookup input, so either form works — we use
+      // `connection->id()` for consistency with the rr.connection_id
+      // stamp above.
       rcl[remote.first] = {connection->id()};
       send(rr, rcl, true);
     }

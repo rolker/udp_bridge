@@ -63,10 +63,18 @@ class RemoteNode
   std::vector<std::vector<uint8_t> > getPacketsToResend(const udp_bridge_interfaces::msg::ResendRequest& resend_request);
 
   // Route a ResendRequest to the single connection it was stamped for
-  // (issue #23). Looks up connection(rr.connection_id) and forwards to
-  // its resend_packets. If the id is not in connections_, no-op and
-  // emit a log naming both the stamped id and the set of currently
-  // known connection ids: WARN on the first miss per stamped id
+  // (issue #23). Does a strict-equality lookup on `rr.connection_id`
+  // in `connections_` and forwards to the matching connection's
+  // `resend_packets`. The caller is responsible for ensuring
+  // `rr.connection_id` is already in the canonical wire form —
+  // production callers go through `UDPBridge::decodeResendRequest`,
+  // whose receive-side clamp normalizes the incoming string before
+  // dispatch. (Unit tests that exercise dispatch directly may pass
+  // either a canonical id, or a non-canonical id to assert a miss; see
+  // `DispatchDoesNotFuzzyMatchConnectionId`.) If the id is not in
+  // connections_, no-op and emit a log naming both the stamped id and
+  // the set of currently known connection ids: WARN on the first miss
+  // per stamped id
   // (a genuine coordinated-redeploy mismatch needs to be diagnosable
   // at default log levels), DEBUG on subsequent misses for the same id
   // (legitimate CONNECT-cycle races shouldn't spam). The known-ids
