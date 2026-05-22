@@ -24,13 +24,13 @@ machine does not false-fail. The full scenario (opt-in via
 
 ## Scenarios
 
-`run_scenario.py` supports two scenarios today (Phase 3 will add
-`range_degradation`):
+`run_scenario.py` supports three scenarios:
 
 | Scenario | Tiers active | How it runs |
 |---|---|---|
-| `smoke`     | Critical only                 | pytest under `colcon test`; asserts sub_count > 0 |
-| `full-mix`  | Critical + Telemetry + Bulk   | manual `run_scenario.py` invocation; exits 0 iff every tier sub_count > 0 |
+| `smoke`              | Critical only                  | pytest under `colcon test`; asserts sub_count > 0 |
+| `full-mix`           | Critical + Telemetry + Bulk    | manual `run_scenario.py` invocation; exits 0 iff every tier sub_count > 0 |
+| `range_degradation`  | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; 5 single-path invariants |
 
 `full-mix` actively generates the pinned three-tier mix
 (Critical 1 Hz × 64 B, Telemetry 10 Hz × ~720 B, Bulk 10 Hz × 480 KB)
@@ -45,6 +45,50 @@ python3 udp_bridge/test/bench/run_scenario.py --scenario full-mix --duration-s 1
 ```
 
 Per-tier counts are printed as `BENCH_RESULT_<TIER>_{PUB,SUB}_COUNT=...`.
+
+`range_degradation` walks the WiFi path through the sail-out-and-return
+trajectory (in_range_clean → fringe → lossy → critical → over_horizon
+→ critical → lossy → fringe → in_range_clean), holding each phase for
+`--hold-s` seconds (default 10), while the full three-tier mix runs.
+A `ros2 bag record` captures `/operator_bridge/bridge_info` and
+`/operator_bridge/topic_statistics` (plus the operator-side mirrors
+of the boat-side equivalents); `recv_q_trace.py` writes a CSV of the
+operator UDP socket's Recv-Q over the run; per-bridge stderr is tee'd
+so the test can scan for ERROR-severity lines during the over-horizon
+window. The orchestrator emits marker lines so the test can find each
+artifact:
+
+```
+BENCH_BAG_DIR=<path>
+BENCH_PHASE_LOG=<path>
+BENCH_RECVQ_OPERATOR=<path>
+BENCH_BRIDGE_STDERR_OPERATOR=<path>
+BENCH_BRIDGE_STDERR_BOAT=<path>
+BENCH_RESULT_<TIER>_{PUB,SUB}_COUNT=<n>
+```
+
+To run the scenario by hand:
+
+```bash
+python3 udp_bridge/test/bench/run_scenario.py --scenario range_degradation --hold-s 10
+```
+
+To run the pytest invariants:
+
+```bash
+UDP_BRIDGE_BENCH_SCENARIOS=1 colcon test --packages-select udp_bridge \
+    --pytest-args -k test_bench_range_degradation
+```
+
+The five single-path invariants checked are:
+
+1. **Recv-Q stability** — no monotonic climb longer than N seconds at any phase boundary.
+2. **No ERROR/FATAL log during over_horizon** — graceful disconnect is a mode, not a fault.
+3. **Recovery completeness** — `message.success_bytes_per_second` reaches ≥ X% of the pre-event in_range baseline (over the final in_range phase, which serves as the T-second convergence window).
+4. **Resend amplification** — `resend.success_bytes_per_second / message.success_bytes_per_second` ≤ F × applied netem loss rate in each lossy phase.
+5. **Stats publication rate floor** — `bridge_info` and `topic_statistics` publication rate stays ≥ R% of the in-range baseline in every phase. Catches #20-class stalls in the stats path while the data plane keeps working.
+
+Threshold values N/X/T/F/R live in the "Values" table below.
 
 ## Threshold values
 

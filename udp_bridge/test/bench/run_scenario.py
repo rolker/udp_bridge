@@ -7,14 +7,21 @@ Re-execs self under `unshare -Urn` on first invocation, then performs
 setup and teardown inside that ephemeral namespace.
 
 Usage:
-    run_scenario.py --scenario smoke [--duration-s 10] [--outdir DIR]
+    run_scenario.py --scenario smoke      [--duration-s 10] [--outdir DIR]
+    run_scenario.py --scenario full-mix   [--duration-s 10] [--outdir DIR]
+    run_scenario.py --scenario range_degradation [--hold-s 10] [--outdir DIR]
 
 Smoke runs the bench in a clean-link configuration and verifies one
 Critical-tier topic flows boat → bridge → operator → subscriber. The
 `full-mix` scenario actively generates all three tiers (Critical /
 Telemetry / Bulk) on a clean link and reports per-tier delivery
-counts; Phase 3 will add `--scenario range_degradation` with
-trajectory walking and the single-path invariants.
+counts. The `range_degradation` scenario walks the WiFi path through
+a sail-out-and-return trajectory, captures a `bridge_info` /
+`topic_statistics` bag plus a Recv-Q CSV trace, and emits the marker
+lines (`BENCH_BAG_DIR=`, `BENCH_PHASE_LOG=`, `BENCH_RECVQ_OPERATOR=`,
+`BENCH_BRIDGE_STDERR_OPERATOR=`, …) that
+`test_range_degradation.py` consumes to evaluate the single-path
+invariants.
 
 Environment:
     UDP_BRIDGE_BENCH_DEBUG=1  — keep child stderr visible.
@@ -24,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 import os
 import shutil
 import signal
@@ -66,6 +74,34 @@ TIER_DESTINATIONS = {
     'telemetry': ('nav_msgs/Odometry', '/operator/boat/telemetry/odom'),
     'bulk': ('sensor_msgs/Image', '/operator/boat/bulk/image'),
 }
+
+# Sail-out-and-return trajectory applied to the WiFi path only (cell
+# and Starlink hold their CLEAN_PROFILE baselines). The phase names
+# are written into the phase log so `test_range_degradation.py` can
+# slice bag data by phase; the over_horizon phase is special-cased
+# because invariant 2 forbids ERROR-severity logs during that window.
+PHASE_TRAJECTORY = [
+    ('in_range_clean', dict(rate='30mbit',  loss='0%',   delay_ms=5,   jitter_ms=1)),
+    ('fringe',         dict(rate='10mbit',  loss='0.5%', delay_ms=15,  jitter_ms=5)),
+    ('lossy',          dict(rate='3mbit',   loss='3%',   delay_ms=40,  jitter_ms=15)),
+    ('critical',       dict(rate='500kbit', loss='10%',  delay_ms=100, jitter_ms=30)),
+    ('over_horizon',   dict(rate='30mbit',  loss='100%', delay_ms=5,   jitter_ms=1)),
+    ('critical',       dict(rate='500kbit', loss='10%',  delay_ms=100, jitter_ms=30)),
+    ('lossy',          dict(rate='3mbit',   loss='3%',   delay_ms=40,  jitter_ms=15)),
+    ('fringe',         dict(rate='10mbit',  loss='0.5%', delay_ms=15,  jitter_ms=5)),
+    ('in_range_clean', dict(rate='30mbit',  loss='0%',   delay_ms=5,   jitter_ms=1)),
+]
+
+# Topics captured by ros2 bag record on the operator domain. The
+# operator bridge mirrors the boat's bridge_info / topic_statistics
+# under `/remotes/boat/...`, so a single recorder on one domain is
+# sufficient for the single-path invariants.
+BAG_TOPICS = [
+    '/operator_bridge/bridge_info',
+    '/operator_bridge/topic_statistics',
+    '/operator_bridge/remotes/boat/bridge_info',
+    '/operator_bridge/remotes/boat/topic_statistics',
+]
 
 
 @dataclass
@@ -240,6 +276,164 @@ def launch_sub(domain: int, topic: str, msg_type: str, duration_s: float) -> _Ch
     )
 
 
+def launch_recv_q_trace(port: int, output_csv: Path,
+                        interval_s: float = 0.5) -> _Child:
+    """Run recv_q_trace.py against a UDP port; writes CSV until SIGTERM."""
+    script = Path(__file__).parent / 'recv_q_trace.py'
+    return _spawn(
+        [sys.executable, str(script),
+         '--port', str(port),
+         '--interval', str(interval_s),
+         '--output', str(output_csv)],
+        env=os.environ.copy(),
+        name=f'recv_q-{port}',
+        stderr=subprocess.DEVNULL if not _debug() else None,
+    )
+
+
+def launch_bag_record(domain: int, topics: list[str], bag_dir: Path) -> _Child:
+    """Run `ros2 bag record` on the operator domain into bag_dir."""
+    env = _env_for(domain)
+    return _spawn(
+        ['ros2', 'bag', 'record', '-o', str(bag_dir)] + topics,
+        env=env,
+        name='bag_record',
+        stderr=subprocess.DEVNULL if not _debug() else None,
+    )
+
+
+def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
+                         stderr_log: Path) -> _Child:
+    """Like `launch_bridge` but tees the bridge's stderr to `stderr_log`.
+
+    Phase 3 needs per-bridge stderr captured so we can check invariant
+    2 (no ERROR-severity log during the over-horizon window). We can't
+    redirect to a file inside the Popen because we still need the
+    lifecycle transitions to be issued; the cleanest approach is to
+    open the log file in append mode and pass it as `stderr=`. Debug
+    mode (UDP_BRIDGE_BENCH_DEBUG=1) additionally tees to the terminal
+    via `tee` so the user sees the live output.
+    """
+    env = _env_for(domain)
+    log_fp = open(stderr_log, 'ab')
+    child = _spawn(
+        [
+            'ros2', 'run', 'udp_bridge', 'udp_bridge_node',
+            '--ros-args',
+            '-r', f'__node:={node_name}',
+            '--params-file', str(params_file),
+        ],
+        env=env,
+        name=node_name,
+        stderr=log_fp,
+    )
+    time.sleep(2)  # let the node register with DDS
+    for transition in ('configure', 'activate'):
+        _run(
+            ['ros2', 'lifecycle', 'set', f'/{node_name}', transition],
+            env=env,
+            stdout=subprocess.DEVNULL,
+        )
+    return child
+
+
+def walk_wifi(hold_s: float, phase_log: list) -> None:
+    """Step the WiFi path through PHASE_TRAJECTORY, holding each entry
+    for `hold_s` seconds. Appends (t_offset_s, phase_name) tuples to
+    `phase_log` at every transition.
+    """
+    t0 = time.monotonic()
+    for phase_name, profile in PHASE_TRAJECTORY:
+        t_offset = time.monotonic() - t0
+        phase_log.append((t_offset, phase_name))
+        apply_impairment('wifi', **profile)
+        time.sleep(hold_s)
+    # Record the end-of-walk marker so the test knows when the
+    # recovery leg's in-range phase ended.
+    phase_log.append((time.monotonic() - t0, 'walk_end'))
+
+
+def run_range_degradation(hold_s: float, outdir: Path) -> dict:
+    """Walk the WiFi path through the trajectory while the full
+    three-tier mix runs; capture bag + Recv-Q + bridge stderr for
+    test_range_degradation.py to evaluate.
+
+    Phase-hold seconds default to 10. Total walk time ≈ 9 × hold_s
+    (5 forward phases + 4 recovery phases). Add ~10s for warmup and
+    ~10s for shutdown/drain. `outdir` collects:
+      - bag/        ros2 bag of operator-side bridge_info / topic_statistics
+      - recv_q_operator.csv
+      - bridge_stderr_operator.log, bridge_stderr_boat.log
+      - phase_log.json   list of {t_offset_s, phase} dicts
+    """
+    config = Path(__file__).parent / 'configs' / 'three_path.yaml'
+    setup_topology()
+
+    operator_stderr = outdir / 'bridge_stderr_operator.log'
+    boat_stderr = outdir / 'bridge_stderr_boat.log'
+    launch_bridge_logged('boat_bridge', config, BOAT_DOMAIN, boat_stderr)
+    launch_bridge_logged('operator_bridge', config, OPERATOR_DOMAIN, operator_stderr)
+    time.sleep(2)  # let the bridges handshake
+
+    bag_dir = outdir / 'bag'
+    bag = launch_bag_record(OPERATOR_DOMAIN, BAG_TOPICS, bag_dir)
+    recvq_csv = outdir / 'recv_q_operator.csv'
+    recvq = launch_recv_q_trace(4200, recvq_csv, interval_s=0.5)
+    time.sleep(2)  # let recorder + tracer settle
+
+    # We need pub/sub to outlive the walk by a couple of seconds so the
+    # final in_range_clean recovery phase has steady-state data.
+    pub_duration = hold_s * len(PHASE_TRAJECTORY) + 4
+    subs = {
+        tier: launch_sub(OPERATOR_DOMAIN, topic, msg_type, pub_duration + 2)
+        for tier, (msg_type, topic) in TIER_DESTINATIONS.items()
+    }
+    time.sleep(0.5)
+    pubs = {
+        tier: launch_pub(BOAT_DOMAIN, tier, pub_duration)
+        for tier in TIER_DESTINATIONS
+    }
+
+    walk_start = time.time()
+    phase_log: list = []
+    walk_wifi(hold_s, phase_log)
+    walk_end = time.time()
+
+    for tier in TIER_DESTINATIONS:
+        pubs[tier].proc.wait(timeout=pub_duration + 10)
+        subs[tier].proc.wait(timeout=pub_duration + 15)
+
+    # Stop the tracers gracefully so files flush before cleanup.
+    recvq.stop(timeout=3.0)
+    # `ros2 bag record` only flushes the metadata on SIGINT; SIGTERM
+    # to the wrapper truncates the bag. Send SIGINT to the whole
+    # process group instead of the SIGTERM path that _Child.stop uses.
+    if bag.proc.poll() is None:
+        try:
+            os.killpg(bag.pgid, signal.SIGINT)
+            bag.proc.wait(timeout=10.0)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            bag.stop(timeout=3.0)
+
+    phase_log_path = outdir / 'phase_log.json'
+    phase_log_path.write_text(json.dumps({
+        'walk_start_unix': walk_start,
+        'walk_end_unix': walk_end,
+        'hold_s': hold_s,
+        'phases': [{'t_offset_s': t, 'phase': name} for t, name in phase_log],
+    }, indent=2))
+
+    return {
+        'bag_dir': bag_dir,
+        'phase_log': phase_log_path,
+        'recvq_operator': recvq_csv,
+        'bridge_stderr_operator': operator_stderr,
+        'bridge_stderr_boat': boat_stderr,
+        'pub_counts': {tier: _parse_count(pubs[tier]) for tier in TIER_DESTINATIONS},
+        'sub_counts': {tier: _parse_count(subs[tier]) for tier in TIER_DESTINATIONS},
+    }
+
+
 def _parse_count(child: _Child) -> int:
     """Read BENCH_*_COUNT=N from a finished child's stderr."""
     if child.proc.stderr is None:
@@ -329,7 +523,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--scenario',
                         choices=['smoke', 'full-mix', 'range_degradation'],
                         required=True)
-    parser.add_argument('--duration-s', type=float, default=10.0)
+    parser.add_argument('--duration-s', type=float, default=10.0,
+                        help='Run duration for smoke and full-mix scenarios.')
+    parser.add_argument('--hold-s', type=float, default=10.0,
+                        help='Per-phase hold time for range_degradation.')
     parser.add_argument('--outdir', type=Path,
                         help='Output directory for bag/log artifacts. '
                              'Defaults to a fresh tempdir (preserved on fail).')
@@ -362,9 +559,31 @@ def main(argv: list[str] | None = None) -> None:
             if ok and not _debug():
                 shutil.rmtree(outdir, ignore_errors=True)
             sys.exit(0 if ok else 1)
+        elif args.scenario == 'range_degradation':
+            result = run_range_degradation(args.hold_s, outdir)
+            print(f'BENCH_BAG_DIR={result["bag_dir"]}')
+            print(f'BENCH_PHASE_LOG={result["phase_log"]}')
+            print(f'BENCH_RECVQ_OPERATOR={result["recvq_operator"]}')
+            print(f'BENCH_BRIDGE_STDERR_OPERATOR={result["bridge_stderr_operator"]}')
+            print(f'BENCH_BRIDGE_STDERR_BOAT={result["bridge_stderr_boat"]}')
+            for tier, count in result['pub_counts'].items():
+                print(f'BENCH_RESULT_{tier.upper()}_PUB_COUNT={count}')
+            for tier, count in result['sub_counts'].items():
+                print(f'BENCH_RESULT_{tier.upper()}_SUB_COUNT={count}')
+            # Pass condition for the orchestrator alone is "the run
+            # completed and produced artifacts". Invariants are
+            # evaluated by test_range_degradation.py.
+            ok = (
+                result['bag_dir'].exists()
+                and result['phase_log'].exists()
+                and any(c > 0 for c in result['sub_counts'].values())
+            )
+            # Preserve artifacts regardless of pass/fail — the
+            # downstream test needs them.
+            sys.exit(0 if ok else 1)
         else:
-            print(f'Scenario {args.scenario} not yet implemented '
-                  f'(Phase 3 of #18)', file=sys.stderr)
+            print(f'Scenario {args.scenario} not recognized',
+                  file=sys.stderr)
             sys.exit(2)
     finally:
         _cleanup_all()

@@ -178,6 +178,17 @@ if(BUILD_TESTING)
     TIMEOUT 180
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   )
+
+  # Bench-harness range-degradation scenario (issue #18). Skipped
+  # unless UDP_BRIDGE_BENCH_SCENARIOS=1 is set in the test
+  # environment; even when run it skips on hosts without `unshare
+  # -Urn`. Generous TIMEOUT because the run is ~9 × hold_s (default
+  # 10 s) plus setup/teardown.
+  ament_add_pytest_test(test_bench_range_degradation
+    test/bench/test_range_degradation.py
+    TIMEOUT 240
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
 
 ament_package()
