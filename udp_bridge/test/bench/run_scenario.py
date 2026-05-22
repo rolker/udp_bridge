@@ -10,8 +10,11 @@ Usage:
     run_scenario.py --scenario smoke [--duration-s 10] [--outdir DIR]
 
 Smoke runs the bench in a clean-link configuration and verifies one
-Critical-tier topic flows boat → bridge → operator → subscriber. Phase 3
-will add `--scenario range_degradation`.
+Critical-tier topic flows boat → bridge → operator → subscriber. The
+`full-mix` scenario actively generates all three tiers (Critical /
+Telemetry / Bulk) on a clean link and reports per-tier delivery
+counts; Phase 3 will add `--scenario range_degradation` with
+trajectory walking and the single-path invariants.
 
 Environment:
     UDP_BRIDGE_BENCH_DEBUG=1  — keep child stderr visible.
@@ -53,6 +56,16 @@ CLEAN_PROFILE = {
 # (UDP across the veth pairs) only.
 OPERATOR_DOMAIN = 42
 BOAT_DOMAIN = 43
+
+# Operator-side destination topics per tier. Must match the `destination`
+# strings in configs/three_path.yaml. The source topics + msg types live
+# in pub.TIER_DEFAULTS; this mapping is the bench-harness view of where
+# delivered messages should land.
+TIER_DESTINATIONS = {
+    'critical': ('std_msgs/String', '/operator/boat/critical/heartbeat'),
+    'telemetry': ('nav_msgs/Odometry', '/operator/boat/telemetry/odom'),
+    'bulk': ('sensor_msgs/Image', '/operator/boat/bulk/image'),
+}
 
 
 @dataclass
@@ -266,6 +279,45 @@ def run_smoke(duration_s: float) -> dict:
     }
 
 
+def run_full_mix(duration_s: float) -> dict:
+    """All three tiers active on a clean link.
+
+    Spawns one publisher per tier on the boat side and one subscriber
+    per destination topic on the operator side. Bulk is sized to ~120%
+    of the WiFi rate budget, so the bridge's rate limiter will trim it
+    even on a clean link — that's intentional (Phase 4 drop-by-tier
+    invariant), and Phase 2 just confirms each tier delivers something.
+    """
+    config = Path(__file__).parent / 'configs' / 'three_path.yaml'
+    setup_topology()
+
+    launch_bridge('boat_bridge', config, BOAT_DOMAIN)
+    launch_bridge('operator_bridge', config, OPERATOR_DOMAIN)
+    time.sleep(2)  # let the bridges handshake
+
+    subs = {
+        tier: launch_sub(OPERATOR_DOMAIN, topic, msg_type, duration_s + 2)
+        for tier, (msg_type, topic) in TIER_DESTINATIONS.items()
+    }
+    time.sleep(0.5)  # let subscriber discovery catch up
+    pubs = {
+        tier: launch_pub(BOAT_DOMAIN, tier, duration_s)
+        for tier in TIER_DESTINATIONS
+    }
+
+    for tier in TIER_DESTINATIONS:
+        pubs[tier].proc.wait(timeout=duration_s + 10)
+        subs[tier].proc.wait(timeout=duration_s + 15)
+
+    return {
+        tier: {
+            'pub_count': _parse_count(pubs[tier]),
+            'sub_count': _parse_count(subs[tier]),
+        }
+        for tier in TIER_DESTINATIONS
+    }
+
+
 def _reexec_under_unshare(argv: list[str]) -> None:
     os.environ[_INSIDE_ENV] = '1'
     os.execvp('unshare', ['unshare', '-Urn', sys.executable, sys.argv[0]] + argv)
@@ -274,7 +326,8 @@ def _reexec_under_unshare(argv: list[str]) -> None:
 def main(argv: list[str] | None = None) -> None:
     argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description='udp_bridge bench orchestrator')
-    parser.add_argument('--scenario', choices=['smoke', 'range_degradation'],
+    parser.add_argument('--scenario',
+                        choices=['smoke', 'full-mix', 'range_degradation'],
                         required=True)
     parser.add_argument('--duration-s', type=float, default=10.0)
     parser.add_argument('--outdir', type=Path,
@@ -297,6 +350,15 @@ def main(argv: list[str] | None = None) -> None:
             print(f'BENCH_RESULT_PUB_COUNT={result["pub_count"]}')
             print(f'BENCH_RESULT_SUB_COUNT={result["sub_count"]}')
             ok = result['sub_count'] > 0
+            if ok and not _debug():
+                shutil.rmtree(outdir, ignore_errors=True)
+            sys.exit(0 if ok else 1)
+        elif args.scenario == 'full-mix':
+            result = run_full_mix(args.duration_s)
+            for tier, counts in result.items():
+                print(f'BENCH_RESULT_{tier.upper()}_PUB_COUNT={counts["pub_count"]}')
+                print(f'BENCH_RESULT_{tier.upper()}_SUB_COUNT={counts["sub_count"]}')
+            ok = all(c['sub_count'] > 0 for c in result.values())
             if ok and not _debug():
                 shutil.rmtree(outdir, ignore_errors=True)
             sys.exit(0 if ok else 1)

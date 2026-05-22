@@ -19,7 +19,7 @@ from std_msgs.msg import String
 TIER_DEFAULTS = {
     'critical': ('std_msgs/String', '/boat/critical/heartbeat', 1.0, 64),
     'telemetry': ('nav_msgs/Odometry', '/boat/telemetry/odom', 10.0, 0),
-    'bulk': ('sensor_msgs/Image', '/boat/bulk/image', 5.0, 524288),
+    'bulk': ('sensor_msgs/Image', '/boat/bulk/image', 10.0, 480000),
 }
 
 

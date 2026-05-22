@@ -22,6 +22,30 @@ skips with a clear reason if not — so a fresh clone on a hardened
 machine does not false-fail. The full scenario (opt-in via
 `UDP_BRIDGE_BENCH_SCENARIOS=1`) also skips.
 
+## Scenarios
+
+`run_scenario.py` supports two scenarios today (Phase 3 will add
+`range_degradation`):
+
+| Scenario | Tiers active | How it runs |
+|---|---|---|
+| `smoke`     | Critical only                 | pytest under `colcon test`; asserts sub_count > 0 |
+| `full-mix`  | Critical + Telemetry + Bulk   | manual `run_scenario.py` invocation; exits 0 iff every tier sub_count > 0 |
+
+`full-mix` actively generates the pinned three-tier mix
+(Critical 1 Hz × 64 B, Telemetry 10 Hz × ~720 B, Bulk 10 Hz × 480 KB)
+on a clean link. Bulk is sized at ~120% of the WiFi rate budget, so
+the bridge's rate limiter trims it even on a clean link — that's
+intentional (Phase 4 drop-by-tier invariant); Phase 2 only confirms
+each tier delivers something. To run:
+
+```bash
+python3 udp_bridge/test/bench/run_scenario.py --scenario full-mix --duration-s 10
+# set UDP_BRIDGE_BENCH_DEBUG=1 to keep child stderr visible and preserve the outdir
+```
+
+Per-tier counts are printed as `BENCH_RESULT_<TIER>_{PUB,SUB}_COUNT=...`.
+
 ## Threshold values
 
 Concrete values for the invariants defined in
