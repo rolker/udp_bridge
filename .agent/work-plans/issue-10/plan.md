@@ -62,22 +62,26 @@ wire reader.
    reassembled image is large) and on overflow it drops the **oldest** item(s)
    and increments an atomic dropped counter. `start()` launches the worker,
    `stop()` signals + joins; `push()` after `stop()` is a no-op (drop), so it is
-   safe to call from any thread at any lifecycle phase.
-2. **Wire into `UDPBridge`** — own a `PublishQueue` member, **constructed in
-   `on_configure`** (matching the package's "all resources in `on_configure`"
-   discipline; `spin_timer_` et al. are created there). The injected sink is a
-   member lambda that runs the existing three-phase lookup-or-create
-   (`udp_bridge.cpp:738-769`), the first-arrival `sendBridgeInfo()`
-   (773-774), and `publisher->publish()` (776) — i.e. that block moves verbatim
-   from `decodeData` into the sink. `decodeData` keeps only the deserialize +
-   inner-`SerializedMessage` build, then `publish_queue_.push(std::move(item))`.
-   Start the worker in `on_configure` (idle until messages arrive, which only
-   happens when ACTIVE per `spin_once`'s state guard); `stop()`+join in
-   `on_cleanup` (and the destructor as a backstop). The join is what gates
-   post-deactivation publishes — destination publishers are **non-lifecycle**
-   `GenericPublisher`s (not state-gated), so the queue must be fully joined
-   before the node/`publishers_` are torn down. Lifecycle re-entrancy: a
-   cleanup→configure cycle re-creates a fresh, re-startable worker.
+   safe to call from any thread at any lifecycle phase. `run()` wraps the sink
+   call in a last-resort `catch(...)` barrier so a throwing sink can never
+   `std::terminate` the process (review finding — see Implementation Notes).
+2. **Wire into `UDPBridge`** — own a `PublishQueue` member. The injected sink
+   is a member lambda (`publishItem`) that runs the existing three-phase
+   lookup-or-create, the first-arrival `sendBridgeInfo()`, and
+   `publisher->publish()` — that block moves out of `decodeData` into the sink,
+   wrapped in a `try/catch` that logs via `RCLCPP_ERROR` (mirroring `decode()`'s
+   catch-all; the work previously ran under that barrier on the executor
+   thread). `decodeData` keeps only the deserialize + inner-`SerializedMessage`
+   build, then `publish_queue_.push(std::move(item))`. Lifecycle: `configure()`
+   the queue in `on_configure`, `start()` in `on_activate`, `stop()`+join in
+   `on_deactivate` (so the worker runs **only while ACTIVE** — matching the
+   state-guard discipline of the other publish paths, and never publishing on
+   the non-lifecycle destination publishers while INACTIVE), with a backstop
+   `stop()` in `on_cleanup` and the destructor. The join gates teardown:
+   destination publishers are **non-lifecycle** `GenericPublisher`s, so the
+   worker must be joined before the node/`publishers_` are torn down (the member
+   is declared last for the destructor-ordering backstop). Re-entrancy: an
+   activate→deactivate→activate cycle stops+restarts a fresh worker.
 3. **Bound + observability** — byte budget as a ROS parameter
    (`publish_queue_max_bytes`, declared via `declareIfMissing`); register a
    single global drop diagnostic via the existing `syncDiagnosticTasks()` /
@@ -87,8 +91,10 @@ wire reader.
    component level, which is also the bug: with a sink that blocks on a latch
    (simulating a stuck `publish()`), assert `push()` still returns promptly and
    the producer is never blocked; FIFO order via a recording sink; drop-oldest
-   + counter when over the byte budget; clean `stop()`/join (including stop while
-   the sink is blocked). Register via `add_udp_bridge_gtest` in `CMakeLists.txt`.
+   + counter when over the byte budget; oversize-item enqueue-then-evict;
+   push-after-stop / push-before-start no-op; clean `stop()`/join while the sink
+   is blocked; and a throwing sink does not kill the worker. Register via
+   `add_udp_bridge_gtest` in `CMakeLists.txt`.
 5. **End-to-end reproduction** — the kill-a-subscriber-mid-forward repro
    (acceptance #1) belongs in the issue #18 bench harness (PR #27 draft, which
    already targets the "wedge" failure mode). Coordinate rather than duplicate:
@@ -110,7 +116,7 @@ wire reader.
 | File | Change |
 |------|--------|
 | `udp_bridge/include/udp_bridge/publish_queue.h` | New header-only bounded publish-worker queue (`PublishItem`, byte-bounded, injected sink, atomic drop counter) |
-| `udp_bridge/src/udp_bridge.cpp` | Move first-arrival create + `sendBridgeInfo` + `publish` (738-776) into the queue sink lambda; `decodeData` deserializes + enqueues; construct/start queue in `on_configure`, `stop()`+join in `on_cleanup`; `declareIfMissing("publish_queue_max_bytes")`; drop diagnostic via `syncDiagnosticTasks` |
+| `udp_bridge/src/udp_bridge.cpp` | Move first-arrival create + `sendBridgeInfo` + `publish` into the queue sink lambda (`publishItem`, wrapped in try/catch+log); `decodeData` deserializes + enqueues; `configure` queue in `on_configure`, `start` in `on_activate`, `stop`+join in `on_deactivate` (backstop in `on_cleanup`); `declareIfMissing("publish_queue_max_bytes")`; drop diagnostic via `syncDiagnosticTasks` |
 | `udp_bridge/include/udp_bridge/udp_bridge.h` | `PublishQueue` member + `publish_queue_max_bytes_`; the sink helper decl |
 | `udp_bridge/src/udp_bridge_node.cpp` | Update the `socket_drain_group_` invariant comment (it predicts this change) |
 | `udp_bridge/test/test_publish_queue.cpp` | New unit test (blocking-sink non-stall, FIFO, byte-budget drop-oldest, join-while-blocked) |
@@ -162,3 +168,28 @@ wire reader.
 
 Single PR for the component + unit test + wiring + docs. The end-to-end
 reproduction (acceptance #1) is coordinated into issue #18's harness.
+
+## Implementation Notes
+
+Rationale-bearing pivots from the local `/review-code` pass (Deep tier;
+Claude + Copilot adversarial agreed), beyond what's visible in the diff:
+
+- **Worker exception barrier.** The sink (`publishItem`) can throw —
+  `create_generic_publisher` on an unknown/cross-version `datatype`,
+  `publish`, and `sendBridgeInfo`'s `ConnectionException` on socket errors.
+  Before #10 this work ran inside `decode()`'s catch-all on the executor
+  thread (logged + dropped). A plain `std::thread` has no such backstop, so an
+  uncaught throw would `std::terminate` the bridge — a regression. Fixed in two
+  layers: `publishItem` catches + logs via `RCLCPP_ERROR` (informative, has the
+  node logger); `PublishQueue::run` has a last-resort `catch(...)` so the
+  worker can never terminate the process even if a future sink forgets.
+- **Worker runs only while ACTIVE.** Moved `start()` to `on_activate` and added
+  `stop()` to `on_deactivate` (was: start in `on_configure`). Otherwise the
+  worker could publish queued items after deactivation onto the
+  lifecycle-gated `bridge_info`/`topic_statistics` publishers (warn + drop) and
+  diverge from the state-guard discipline every other publish path follows.
+- **Shutdown-join bound.** `stop()` discards the backlog and waits at most for
+  one in-flight publish to return (the rmw `max_blocking_time`), not the whole
+  queue — so leaving ACTIVE / cleanup can't hang on the backlog. A single
+  genuinely-infinite `publish()` is the inherent limit of joining a thread
+  blocked in a syscall; documented, not engineered around.

@@ -462,35 +462,45 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   diagnostic_timer_ = create_wall_timer(
     1s, std::bind(&UDPBridge::diagnosticTick, this), periodic_group_);
 
-  // Start the publish worker (issue #10). It idles until decodeData
-  // enqueues, which only happens while ACTIVE (spin_once's state guard), so
-  // starting here — alongside the other on_configure resources — is safe.
-  // Stopped + joined in on_cleanup (and PublishQueue's destructor as a
-  // backstop on the non-lifecycle teardown path).
+  // Configure the publish worker (issue #10) but don't start it yet — the
+  // worker runs only while the node is ACTIVE (started in on_activate,
+  // stopped in on_deactivate), so it never publishes during the INACTIVE
+  // state, matching the state-guard discipline of the other publish paths
+  // (spin_once / statsReportCallback / bridgeInfoCallback).
   publish_queue_.configure(
     [this](PublishItem&& item){ publishItem(std::move(item)); },
     publish_queue_max_bytes_);
-  publish_queue_.start();
 
   return LifecycleNode::on_configure(state);
 }
 
 UDPBridge::CallbackReturn UDPBridge::on_activate(const rclcpp_lifecycle::State & state)
 {
+  // Start the publish worker (issue #10) only for the ACTIVE state, so it
+  // processes (and publishes) exactly while spin_once is enqueuing. start()
+  // is a no-op if already running.
+  publish_queue_.start();
   return LifecycleNode::on_activate(state);
 }
 
 UDPBridge::CallbackReturn UDPBridge::on_deactivate(const rclcpp_lifecycle::State & state)
 {
+  // Stop + join the publish worker on leaving ACTIVE so no republish runs
+  // while INACTIVE. stop() discards any still-queued items (best-effort) and
+  // joins; the join waits at most for one in-flight publish to return (the
+  // rmw max_blocking_time), not the whole backlog. A subsequent on_activate
+  // restarts a fresh worker.
+  publish_queue_.stop();
   return LifecycleNode::on_deactivate(state);
 }
 
 UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & state)
 {
-  // Stop + join the publish worker first (issue #10): no republish should
-  // run during teardown, and the worker must be joined before anything here
-  // touches the maps its sink uses. push() is a no-op after this; a
-  // subsequent on_configure restarts a fresh worker.
+  // Backstop stop + join of the publish worker (issue #10). Normally it was
+  // already stopped in on_deactivate (cleanup follows deactivate); stop() is
+  // idempotent. Belt-and-suspenders for a configure→cleanup path that never
+  // activated (worker never started → no-op) and so the worker is provably
+  // joined before anything here touches the maps its sink uses.
   publish_queue_.stop();
   diagnostic_timer_.reset();
   diagnostic_updater_.reset();
@@ -796,52 +806,69 @@ void UDPBridge::publishItem(PublishItem&& item)
   // blocking here — a RELIABLE publish() to a dead-but-still-matched
   // subscriber, or first-arrival rmw discovery in create_generic_publisher()
   // — stalls only this worker, never the socket-drain thread.
-
-  // Three-phase lookup so create_generic_publisher() runs WITHOUT
-  // publishers_mutex_ held; holding the lock across rmw discovery /
-  // type-support resolution would block every concurrent publisher lookup.
-  // (A single worker today means no concurrent publishItem; the pattern is
-  // retained for the planned per-publisher-worker evolution — see the #10
-  // plan's deferred cross-topic-isolation follow-up.)
-  rclcpp::GenericPublisher::SharedPtr publisher;
-  bool first_arrival = false;
-
-  // Phase 1: check map under lock.
+  //
+  // Catch + log here, mirroring UDPBridge::decode's catch-all: before #10
+  // this work ran inside decode() on the socket-drain executor thread, whose
+  // catch-all logged and dropped bad packets instead of tearing the node
+  // down. The worker is a plain std::thread (PublishQueue has a last-resort
+  // barrier too, but it can't log), and every step here can throw —
+  // create_generic_publisher on an unknown / cross-version datatype, publish
+  // from the rcl layer, and sendBridgeInfo's ConnectionException on socket
+  // errors. Reproduce that survivable-error contract here.
+  try
   {
-    std::lock_guard<std::mutex> lock(publishers_mutex_);
-    auto it = publishers_.find(item.topic);
-    if(it != publishers_.end())
-      publisher = it->second;
-  }
+    // Three-phase lookup so create_generic_publisher() runs WITHOUT
+    // publishers_mutex_ held; holding the lock across rmw discovery /
+    // type-support resolution would block every concurrent publisher lookup.
+    // (A single worker today means no concurrent publishItem; the pattern is
+    // retained for the planned per-publisher-worker evolution — see the #10
+    // plan's deferred cross-topic-isolation follow-up.)
+    rclcpp::GenericPublisher::SharedPtr publisher;
+    bool first_arrival = false;
 
-  // Phase 2: if missing, do the slow rmw call without holding the lock.
-  if(!publisher)
-  {
-    // Resolve per-topic QoS from MessageInternal (sender-advertised),
-    // falling back to package defaults when fields are empty/zero —
-    // see udp_bridge/doc/qos_design.md for the contract.
-    auto qos = resolveDestinationPublisherQos(
-      item.reliability,
-      item.durability,
-      item.history_depth);
-    auto new_publisher = create_generic_publisher(item.topic, item.datatype, qos);
-
-    // Phase 3: re-acquire and try-emplace. If a future multi-worker setup
-    // raced and inserted first, we use theirs and discard ours.
+    // Phase 1: check map under lock.
     {
       std::lock_guard<std::mutex> lock(publishers_mutex_);
-      auto [it, inserted] = publishers_.try_emplace(item.topic, new_publisher);
-      publisher = it->second;
-      first_arrival = inserted;
+      auto it = publishers_.find(item.topic);
+      if(it != publishers_.end())
+        publisher = it->second;
     }
+
+    // Phase 2: if missing, do the slow rmw call without holding the lock.
+    if(!publisher)
+    {
+      // Resolve per-topic QoS from MessageInternal (sender-advertised),
+      // falling back to package defaults when fields are empty/zero —
+      // see udp_bridge/doc/qos_design.md for the contract.
+      auto qos = resolveDestinationPublisherQos(
+        item.reliability,
+        item.durability,
+        item.history_depth);
+      auto new_publisher = create_generic_publisher(item.topic, item.datatype, qos);
+
+      // Phase 3: re-acquire and try-emplace. If a future multi-worker setup
+      // raced and inserted first, we use theirs and discard ours.
+      {
+        std::lock_guard<std::mutex> lock(publishers_mutex_);
+        auto [it, inserted] = publishers_.try_emplace(item.topic, new_publisher);
+        publisher = it->second;
+        first_arrival = inserted;
+      }
+    }
+
+    // sendBridgeInfo and publish run without publishers_mutex_ held — both
+    // are slow operations that should not block the publishers_ map.
+    if(first_arrival)
+      sendBridgeInfo();
+
+    publisher->publish(item.message);
   }
-
-  // sendBridgeInfo and publish run without publishers_mutex_ held — both
-  // are slow operations that should not block the publishers_ map.
-  if(first_arrival)
-    sendBridgeInfo();
-
-  publisher->publish(item.message);
+  catch(const std::exception& e)
+  {
+    RCLCPP_ERROR_STREAM(get_logger(),
+      "publish worker: dropping message for '" << item.topic
+      << "' (type '" << item.datatype << "'): " << e.what());
+  }
 }
 
 void UDPBridge::decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info)

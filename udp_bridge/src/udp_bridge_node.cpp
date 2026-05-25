@@ -54,6 +54,25 @@
 //     work that must not race the hot path but can be safely serialized
 //     against itself.
 //
+//   publish worker (UDPBridge::publish_queue_'s std::thread — issue #10)
+//     NOT an executor callback group: a single std::thread owned by
+//     PublishQueue, running only while the node is ACTIVE (started in
+//     on_activate, stopped+joined in on_deactivate). Runs UDPBridge::
+//     publishItem — find-or-create the destination publisher, first-arrival
+//     sendBridgeInfo, and publish — work that decodeData used to do inline on
+//     socket_drain_group_. Moving it here is what stops a stalled destination
+//     publisher from wedging the drain (the #10 fix). Being outside the
+//     callback-group model, it is a new concurrent caller of the publishers_
+//     map and the outbound-send path, so it was checked against the PR #12 /
+//     #16 audit: it takes publishers_mutex_ for the three-phase lookup like
+//     decodeData did; sendBridgeInfo takes its own deadlock-avoiding
+//     scoped_lock(subscribers_mutex_, remote_nodes_mutex_), so two concurrent
+//     senders (worker + a periodic-group sendBridgeInfo) can't deadlock; and
+//     concurrent recvfrom (drain) / sendto (worker) on the one UDP fd is safe.
+//     publishItem catches + logs its own exceptions (mirroring decode's
+//     catch-all) and PublishQueue::run has a last-resort barrier, so a bad
+//     packet can't terminate the process.
+//
 // Shared state crossing groups is guarded by mutexes (publishers_,
 // subscribers_, remote_nodes_, pending_connections_, Connection::sent_packets_,
 // statistics). See PR #12 / issue #11 for the full audit.

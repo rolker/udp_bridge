@@ -259,6 +259,49 @@ TEST(PublishQueue, StopWhileSinkBlockedJoinsAfterSinkReturns)
   EXPECT_TRUE(stop_done.load());
 }
 
+// A throwing sink must not terminate the worker: PublishQueue::run wraps the
+// sink call in a last-resort barrier (issue #10 — the sink, UDPBridge::
+// publishItem, can throw from create_generic_publisher / publish /
+// sendBridgeInfo, and a plain std::thread would otherwise std::terminate).
+// The worker must keep draining subsequent items.
+TEST(PublishQueue, ThrowingSinkDoesNotKillWorker)
+{
+  std::mutex m;
+  std::vector<std::string> processed;
+
+  PublishQueue q;
+  q.configure(
+    [&](PublishItem&& item)
+    {
+      if(item.topic == "boom")
+        throw std::runtime_error("sink failure");
+      std::lock_guard<std::mutex> lock(m);
+      processed.push_back(item.topic);
+    },
+    /*max_bytes=*/ 1024u * 1024u);
+  q.start();
+
+  q.push(makeItem("boom", 16));   // sink throws — must be swallowed
+  q.push(makeItem("after", 16));  // worker must survive and process this
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  for(;;)
+  {
+    {
+      std::lock_guard<std::mutex> lock(m);
+      if(!processed.empty())
+        break;
+    }
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline)
+      << "worker did not survive the throwing sink";
+    std::this_thread::sleep_for(1ms);
+  }
+
+  std::lock_guard<std::mutex> lock(m);
+  ASSERT_EQ(processed.size(), 1u);
+  EXPECT_EQ(processed.front(), "after");
+}
+
 int main(int argc, char **argv)
 {
   testing::InitGoogleTest(&argc, argv);

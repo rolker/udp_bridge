@@ -165,8 +165,30 @@ private:
       }
       // The sink runs WITHOUT the lock held: a blocking publish here stalls
       // only this worker thread, never push() or the socket-drain thread.
+      //
+      // The try/catch is a last-resort barrier so a throwing sink can never
+      // std::terminate the process. The sink (UDPBridge::publishItem) is
+      // expected to catch and log its own exceptions — it has the node
+      // logger; this layer does not — but create_generic_publisher (unknown /
+      // cross-version datatype), publish(), and sendBridgeInfo()
+      // (ConnectionException on socket errors) can all throw, and before
+      // issue #10 this work ran inside the socket-drain executor thread whose
+      // catch-all logged + dropped bad packets instead of tearing the node
+      // down. A plain std::thread has no such backstop, so we add one here.
       if(sink_)
-        sink_(std::move(item));
+      {
+        try
+        {
+          sink_(std::move(item));
+        }
+        catch(...)
+        {
+          // Swallow and continue: the worker must never terminate the
+          // process over one bad item. Informative logging belongs to the
+          // sink (which has the logger); reaching here means the sink let an
+          // exception escape, which it shouldn't.
+        }
+      }
     }
   }
 

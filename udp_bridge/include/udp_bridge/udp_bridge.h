@@ -392,10 +392,13 @@ private:
   uint64_t last_reported_publish_drops_ {0};
 
   // Decouples the rmw-touching tail of decodeData from the socket-drain
-  // thread (issue #10). Declared LAST so its destructor (stop() + join())
-  // runs before publishers_ / subscribers_ / remote_nodes_ are destroyed —
-  // the worker's sink (publishItem / sendBridgeInfo) touches all three.
-  // on_cleanup also stops it explicitly for the lifecycle path.
+  // thread (issue #10). configure()'d in on_configure, start()'ed in
+  // on_activate, stop()+join()'ed in on_deactivate (so it runs only while
+  // ACTIVE) — with a backstop stop() in on_cleanup. Declared LAST so that on
+  // the non-lifecycle teardown path (node destroyed without on_cleanup) its
+  // destructor (stop() + join()) runs before publishers_ / subscribers_ /
+  // remote_nodes_ are destroyed — the worker's sink (publishItem /
+  // sendBridgeInfo) touches all three.
   PublishQueue publish_queue_;
 };
 
