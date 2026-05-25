@@ -14,5 +14,5 @@ issue: 10
 **Phases**: single
 
 ### Open questions
-- [ ] Cross-topic isolation scope: single publish-worker (fixes the reported reader-thread wedge) now, per-publisher isolation deferred — or build per-publisher isolation in this PR?
+- [x] Cross-topic isolation scope — **decided: single publish-worker this PR; per-publisher isolation deferred to a follow-up issue** (user, 2026-05-25).
 - [ ] Confirm the kill-subscriber end-to-end reproduction (acceptance #1) lands in the issue #18 bench harness (PR #27), not a standalone launch_test here.

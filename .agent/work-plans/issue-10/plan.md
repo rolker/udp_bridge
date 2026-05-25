@@ -101,17 +101,21 @@ wire reader.
 | add `publish_queue_max` param | parameter docs / README if it lists params | Yes (verify during impl) |
 | reader-thread non-stall property | issue #18 bench harness adds the e2e wedge repro | No — cross-linked follow-up in #18 |
 
+## Decisions (resolved)
+
+- **Cross-topic isolation scope → single worker** (user, 2026-05-25). One worker
+  thread + bounded queue this PR; it fixes the reported reader-thread wedge (all
+  four field occurrences). Per-publisher isolation (so a stalled subscriber on
+  one topic can't head-of-line-block others) is deferred to a follow-up issue,
+  to be filed when this PR lands. The bounded-queue drop counter + diagnostic
+  make the head-of-line residual observable in the meantime.
+
 ## Open Questions
 
-- **Cross-topic isolation scope.** A single worker thread fixes the *reported*
-  reader-thread wedge, but a stalled publish on topic A still head-of-line-blocks
-  topics B/C behind it on the worker. Per-publisher queues/threads give full
-  isolation (a dead costmap subscriber wouldn't freeze video) at higher
-  complexity. Do this PR's single-worker scope first (matches all 4 field
-  occurrences = reader-thread wedge) and defer per-publisher isolation to a
-  follow-up, or build per-publisher isolation now?
-- **E2E repro home.** Confirm the kill-subscriber integration repro lands in
-  the #18 harness (PR #27) rather than a standalone launch_test here.
+- **E2E repro home.** Default: the kill-subscriber integration repro lands in
+  the #18 bench harness (PR #27), which already targets the "wedge" failure
+  mode — not a standalone launch_test here. Flag if you'd rather it live in
+  this repo's tests.
 
 ## Estimated Scope
 
