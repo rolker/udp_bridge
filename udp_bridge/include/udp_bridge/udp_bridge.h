@@ -26,6 +26,7 @@
 #include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
+#include "udp_bridge/publish_queue.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
 //#include "std_msgs/msg/int32.hpp"
@@ -107,7 +108,21 @@ private:
   /// Decodes data from a remote subscription received over the UDP link.
   /// @param message bytes representing a serialized MessageInternal message
   /// @param source_info info about the packet sender
+  ///
+  /// Runs on the socket-drain thread. It only deserializes the outer
+  /// MessageInternal and enqueues a PublishItem on publish_queue_; all
+  /// rmw-touching work (find-or-create the destination publisher,
+  /// first-arrival sendBridgeInfo, publish) happens on the publish worker
+  /// via publishItem(). See issue #10 — the drain thread must not make a
+  /// call that can block on a single subscriber.
   void decodeData(std::vector<uint8_t> const &message, const SourceInfo& source_info);
+
+  /// publish_queue_ sink: runs on the publish worker thread. Finds or
+  /// creates the destination GenericPublisher (first-arrival also triggers
+  /// sendBridgeInfo) and publishes. Any blocking here (RELIABLE publish to a
+  /// dead-but-matched subscriber; first-arrival rmw discovery) stalls only
+  /// the worker, never the socket-drain thread.
+  void publishItem(PublishItem&& item);
     
   /// Decodes topic info from remote.
   void decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info);
@@ -187,6 +202,14 @@ private:
   /// UDPBridge instance.
   void diagnoseRemoteGiveups(const std::string& remote_name,
                              diagnostic_updater::DiagnosticStatusWrapper& stat);
+
+  /// Populate the publish-queue DiagnosticStatus: queued depth + total
+  /// drops. WARNs when drops increased since the previous tick — drops mean
+  /// a local destination subscriber stalled the publish path long enough to
+  /// overflow the byte budget, so republished data was lost (unrecoverable;
+  /// distinct from wire loss — see doc/qos_design.md). Registered once in
+  /// on_configure (a single global task, not per-remote).
+  void diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper& stat);
 
   /// Lifecycle-safe wrapper around `declare_parameter`. Parameters
   /// declared during `on_configure` persist across a
@@ -354,6 +377,26 @@ private:
   // re-configure cycles don't accumulate stale handles.
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
     on_set_parameters_handle_;
+
+  // Byte budget for publish_queue_ (issue #10). Declared as a ROS
+  // parameter in on_configure (declareIfMissing) so deployments can size
+  // it without rebuild; set once per configure and read by configure().
+  size_t publish_queue_max_bytes_ {kDefaultPublishQueueMaxBytes};
+  static constexpr size_t kDefaultPublishQueueMaxBytes = 64u * 1024u * 1024u;
+  static constexpr size_t kMinPublishQueueMaxBytes = 1u * 1024u * 1024u;
+
+  // Last publish-queue drop total observed by diagnosePublishQueue, so the
+  // diagnostic can WARN on *recent* drops (increase since last tick) rather
+  // than latching WARN forever after a single historical drop. Touched only
+  // from the diagnostic callback (periodic_group_, mutually exclusive).
+  uint64_t last_reported_publish_drops_ {0};
+
+  // Decouples the rmw-touching tail of decodeData from the socket-drain
+  // thread (issue #10). Declared LAST so its destructor (stop() + join())
+  // runs before publishers_ / subscribers_ / remote_nodes_ are destroyed —
+  // the worker's sink (publishItem / sendBridgeInfo) touches all three.
+  // on_cleanup also stops it explicitly for the lifecycle path.
+  PublishQueue publish_queue_;
 };
 
 } // namespace udp_bridge
