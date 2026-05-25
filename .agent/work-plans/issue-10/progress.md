@@ -31,3 +31,28 @@ Findings, all incorporated into the revised plan:
 - [x] **S2**: bound the queue by **bytes**, not message count (reassembled images are large).
 - [x] **N1/N2**: injected `std::function` sink seam → unit-test non-stall with a blocking fake sink (the proxy for a dying DDS subscriber).
 - [x] **S1/S3/S4/N3**: doc unrecoverable drop; diagnostic via `syncDiagnosticTasks`; `declareIfMissing`; update `udp_bridge_node.cpp` invariant comment.
+
+## Implementation
+**Status**: complete
+**When**: 2026-05-25 19:48 -0400
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**Branch**: feature/issue-10 at `558bebf`
+Implemented per plan: `PublishQueue` component + `decodeData`/`publishItem` rewiring + lifecycle wiring + diagnostic + `qos_design.md` + `udp_bridge_node.cpp` comment. Build clean; full suite **94 tests, 0 failures** (8 new `PublishQueue` tests).
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-05-25 19:48 -0400
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: changes-requested (all resolved)
+
+**Branch**: feature/issue-10 at `558bebf`
+**Mode**: pre-push
+**Depth**: Deep (reason: concurrency + lifecycle in a core comms package)
+**Must-fix**: 1 | **Suggestions**: 2
+
+### Findings
+- [x] (must-fix) Worker `run()` had no exception barrier — a throwing sink (`create_generic_publisher`/`publish`/`sendBridgeInfo`) → `std::terminate`, a regression vs `decode()`'s old catch-all. Fixed: `publishItem` try/catch+log + `run()` `catch(...)` backstop + `ThrowingSinkDoesNotKillWorker` test — `publish_queue.h`, `udp_bridge.cpp` `publishItem`
+- [x] (suggestion) Worker published while INACTIVE — moved `start`→`on_activate`, `stop`→`on_deactivate` — `udp_bridge.cpp` `on_activate`/`on_deactivate`
+- [x] (suggestion) New concurrent outbound-send caller + shutdown-join bound documented — `udp_bridge_node.cpp` callback-group comment
+- [x] (static) cppcheck: all findings on pre-existing/context lines (not changed lines) — dropped per silence filter
