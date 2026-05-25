@@ -1,0 +1,187 @@
+#ifndef UDP_BRIDGE_PUBLISH_QUEUE_H
+#define UDP_BRIDGE_PUBLISH_QUEUE_H
+
+#include <atomic>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
+
+#include "rclcpp/serialized_message.hpp"
+
+namespace udp_bridge
+{
+
+/// One republish job handed from the socket-drain thread to the publish
+/// worker. It carries everything the worker needs to find-or-create the
+/// destination publisher and publish, so that NO rmw work (publisher
+/// creation, graph queries, publish) happens on the socket-drain thread.
+/// See issue #10: a RELIABLE publish() stalling on an uncleanly-dead
+/// subscriber — or a first-arrival create_generic_publisher() blocking on
+/// rmw discovery — must never stall recvfrom.
+struct PublishItem
+{
+  std::string topic;
+  std::string datatype;
+  std::string reliability;
+  std::string durability;
+  uint32_t history_depth = 0;
+  rclcpp::SerializedMessage message;
+
+  /// Approximate footprint for the queue's byte budget. The serialized
+  /// payload dominates; the small string fields are included so an
+  /// empty-payload message still counts a nonzero amount.
+  size_t byte_size() const
+  {
+    return message.size()
+      + topic.size() + datatype.size()
+      + reliability.size() + durability.size();
+  }
+};
+
+/// Bounded, drop-oldest publish queue served by a single worker thread.
+///
+/// Decouples the rmw-touching republish tail of UDPBridge::decodeData from
+/// the socket-drain thread (issue #10). push() never blocks; the bound is in
+/// bytes (a reassembled image is large), and when a new item would exceed the
+/// budget the oldest queued item(s) are dropped (KEEP_LAST semantics — newest
+/// wins, matching the bridge's documented best-effort-with-loss-reduction
+/// model; see doc/qos_design.md) and counted. The actual publish work is an
+/// injected sink, so the component carries no dependency on UDPBridge / rclcpp
+/// publishers and is unit-testable with a fake sink: a blocking sink proves
+/// the non-stall property, a recording sink proves FIFO order.
+class PublishQueue
+{
+public:
+  using Sink = std::function<void(PublishItem&&)>;
+
+  PublishQueue() = default;
+  ~PublishQueue() { stop(); }
+
+  PublishQueue(const PublishQueue&) = delete;
+  PublishQueue& operator=(const PublishQueue&) = delete;
+
+  /// Set the worker's sink and byte budget. Call once before start() (e.g.
+  /// in on_configure); changing these while running is not supported.
+  void configure(Sink sink, size_t max_bytes)
+  {
+    sink_ = std::move(sink);
+    max_bytes_ = max_bytes;
+  }
+
+  /// Launch the worker thread. A no-op if already running.
+  void start()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(running_)
+      return;
+    stop_requested_ = false;
+    running_ = true;
+    worker_ = std::thread(&PublishQueue::run, this);
+  }
+
+  /// Signal the worker to finish and join it. Any items still queued are
+  /// discarded (best-effort: prompt, bounded shutdown — the join waits at
+  /// most for one in-flight sink call to return, not for the whole backlog
+  /// to drain through a possibly-stalled sink). After stop(), push() is a
+  /// no-op until the next start(). Safe to call repeatedly and from the
+  /// destructor.
+  void stop()
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if(!running_)
+        return;
+      stop_requested_ = true;
+    }
+    cv_.notify_all();
+    if(worker_.joinable())
+      worker_.join();
+    std::lock_guard<std::mutex> lock(mutex_);
+    running_ = false;
+    queue_.clear();
+    queued_bytes_ = 0;
+  }
+
+  /// Enqueue a job. Never blocks. Drops the oldest queued item(s) if adding
+  /// this one would exceed the byte budget (a single item larger than the
+  /// whole budget is still enqueued so it is not silently lost). A no-op
+  /// (counted as a drop) if the worker is not running, so push() is safe to
+  /// call from any thread at any lifecycle phase.
+  void push(PublishItem&& item)
+  {
+    const size_t item_bytes = item.byte_size();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if(stop_requested_ || !running_)
+      {
+        dropped_count_.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      while(!queue_.empty() && queued_bytes_ + item_bytes > max_bytes_)
+      {
+        queued_bytes_ -= queue_.front().byte_size();
+        queue_.pop_front();
+        dropped_count_.fetch_add(1, std::memory_order_relaxed);
+      }
+      queued_bytes_ += item_bytes;
+      queue_.push_back(std::move(item));
+    }
+    cv_.notify_one();
+  }
+
+  /// Total items dropped due to overflow or push-after-stop.
+  uint64_t dropped_count() const
+  {
+    return dropped_count_.load(std::memory_order_relaxed);
+  }
+
+  /// Current queued depth (items). For diagnostics / tests.
+  size_t size() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.size();
+  }
+
+private:
+  void run()
+  {
+    for(;;)
+    {
+      PublishItem item;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this]{ return stop_requested_ || !queue_.empty(); });
+        if(stop_requested_)
+          return;  // prompt shutdown; remaining items are discarded in stop()
+        item = std::move(queue_.front());
+        queue_.pop_front();
+        queued_bytes_ -= item.byte_size();
+      }
+      // The sink runs WITHOUT the lock held: a blocking publish here stalls
+      // only this worker thread, never push() or the socket-drain thread.
+      if(sink_)
+        sink_(std::move(item));
+    }
+  }
+
+  mutable std::mutex mutex_;
+  std::condition_variable cv_;
+  std::deque<PublishItem> queue_;
+  size_t queued_bytes_ = 0;
+  size_t max_bytes_ = 0;
+  Sink sink_;
+  std::thread worker_;
+  bool running_ = false;
+  bool stop_requested_ = false;
+  std::atomic<uint64_t> dropped_count_ {0};
+};
+
+} // namespace udp_bridge
+
+#endif
