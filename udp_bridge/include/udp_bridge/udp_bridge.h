@@ -384,6 +384,10 @@ private:
   size_t publish_queue_max_bytes_ {kDefaultPublishQueueMaxBytes};
   static constexpr size_t kDefaultPublishQueueMaxBytes = 64u * 1024u * 1024u;
   static constexpr size_t kMinPublishQueueMaxBytes = 1u * 1024u * 1024u;
+  // Sanity ceiling (2 GiB). Both-bounds clamping matches the port /
+  // maximum_packet_size / history_depth pattern and keeps the int64 → size_t
+  // cast in on_configure well within range on 32-bit size_t platforms.
+  static constexpr size_t kMaxPublishQueueMaxBytes = 2ull * 1024u * 1024u * 1024u;
 
   // Last publish-queue drop total observed by diagnosePublishQueue, so the
   // diagnostic can WARN on *recent* drops (increase since last tick) rather

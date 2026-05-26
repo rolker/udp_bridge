@@ -175,8 +175,11 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // worker may hold when a local destination subscriber stalls; once the
   // queued bytes would exceed this, the oldest republished messages are
   // dropped (see PublishQueue / doc/qos_design.md). ROS 2 parameters are
-  // int64; clamp to a sane floor before the size_t cast so a tiny or
-  // negative value can't make the queue drop everything.
+  // int64; clamp to both a sane floor and ceiling before the size_t cast (the
+  // same both-bounds discipline used for port / maximum_packet_size /
+  // history_depth above) so a tiny/negative value can't make the queue drop
+  // everything, and a huge value can't invite unbounded memory growth or wrap
+  // the int64 → size_t cast on 32-bit size_t platforms.
   declareIfMissing("publish_queue_max_bytes",
     static_cast<int64_t>(kDefaultPublishQueueMaxBytes));
   {
@@ -188,6 +191,14 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         << kMinPublishQueueMaxBytes << "; clamping to "
         << kMinPublishQueueMaxBytes);
       configured = static_cast<int64_t>(kMinPublishQueueMaxBytes);
+    }
+    else if(configured > static_cast<int64_t>(kMaxPublishQueueMaxBytes))
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "publish_queue_max_bytes " << configured << " is above "
+        << kMaxPublishQueueMaxBytes << "; clamping to "
+        << kMaxPublishQueueMaxBytes);
+      configured = static_cast<int64_t>(kMaxPublishQueueMaxBytes);
     }
     publish_queue_max_bytes_ = static_cast<size_t>(configured);
   }

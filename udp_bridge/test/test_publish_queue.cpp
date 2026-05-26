@@ -67,11 +67,20 @@ struct BlockingSink
     cv.notify_all();
   }
 
-  // Spin until the worker is parked inside the sink (has popped an item).
+  // Wait (bounded) until the worker is parked inside the sink (has popped an
+  // item). Fails fast with a clear message instead of spinning forever if the
+  // worker never runs (a regression, start() failure, or scheduling stall) —
+  // an unbounded spin would otherwise surface only as an opaque colcon test
+  // timeout.
   void wait_until_blocked()
   {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
     while(calls.load() == 0)
-      std::this_thread::yield();
+    {
+      ASSERT_LT(std::chrono::steady_clock::now(), deadline)
+        << "publish worker never entered the sink";
+      std::this_thread::sleep_for(1ms);
+    }
   }
 };
 
