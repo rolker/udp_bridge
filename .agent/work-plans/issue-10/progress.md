@@ -56,3 +56,16 @@ Implemented per plan: `PublishQueue` component + `decodeData`/`publishItem` rewi
 - [x] (suggestion) Worker published while INACTIVE — moved `start`→`on_activate`, `stop`→`on_deactivate` — `udp_bridge.cpp` `on_activate`/`on_deactivate`
 - [x] (suggestion) New concurrent outbound-send caller + shutdown-join bound documented — `udp_bridge_node.cpp` callback-group comment
 - [x] (static) cppcheck: all findings on pre-existing/context lines (not changed lines) — dropped per silence filter
+
+## External Review
+**Status**: complete
+**When**: 2026-05-25 20:14 -0400
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #28 at `e37e733`
+**Reviews**: 1 review (Copilot bot), 2 valid, 0 false positives
+**CI**: copilot-pull-request-reviewer success (repo has no build/test CI; local build + 94-test suite is the gate)
+
+### Actions
+- [ ] Fix: `test_publish_queue.cpp` `wait_until_blocked()` — replace unbounded spin-wait with a bounded deadline + `FAIL()` so a non-starting worker fails fast instead of relying on the colcon test timeout.
+- [ ] Fix: `udp_bridge.cpp` on_configure — add an upper-bound clamp + warning for `publish_queue_max_bytes` (match the existing port / maximum_packet_size / history_depth both-bounds pattern; closes the int64→size_t 32-bit truncation edge).
