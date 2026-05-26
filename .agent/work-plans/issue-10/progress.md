@@ -94,6 +94,6 @@ Implemented per plan: `PublishQueue` component + `decodeData`/`publishItem` rewi
 **CI**: copilot-pull-request-reviewer success
 
 ### Actions
-- [ ] Fix: `publish_queue.h` `start()` — set `running_ = true` only after the `std::thread` is constructed, so a thread-ctor throw (`std::system_error`) leaves the queue cleanly not-running instead of `running_` stuck true with no worker.
+- [x] Fix: `publish_queue.h` `start()` — `running_ = true` now set after the `std::thread` is constructed (commit `329d308`; re-reviewed clean — cppcheck + Copilot "No issues"). Build clean, 94 tests pass.
 - [x] (addressed `241f2e5`) `wait_until_blocked()` bounded wait — confirmed in re-review as stale.
 - [x] (addressed `241f2e5`) `publish_queue_max_bytes` upper clamp — confirmed in re-review as stale.
