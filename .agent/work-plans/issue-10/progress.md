@@ -83,3 +83,17 @@ Implemented per plan: `PublishQueue` component + `decodeData`/`publishItem` rewi
 
 ### Findings
 - [ ] No issues found. LGTM. (cppcheck: only a cross-TU `unusedStructMember` false positive on `publish_queue_max_bytes_`; Copilot: "No issues." Build clean, 94 tests pass.)
+
+## External Review
+**Status**: complete
+**When**: 2026-05-25 21:31 -0400
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #28 at `c655350`
+**Reviews**: 2 reviews (Copilot bot) — fresh re-review at HEAD; 1 valid, 0 false positives; 2 prior comments now addressed/stale
+**CI**: copilot-pull-request-reviewer success
+
+### Actions
+- [ ] Fix: `publish_queue.h` `start()` — set `running_ = true` only after the `std::thread` is constructed, so a thread-ctor throw (`std::system_error`) leaves the queue cleanly not-running instead of `running_` stuck true with no worker.
+- [x] (addressed `241f2e5`) `wait_until_blocked()` bounded wait — confirmed in re-review as stale.
+- [x] (addressed `241f2e5`) `publish_queue_max_bytes` upper clamp — confirmed in re-review as stale.
