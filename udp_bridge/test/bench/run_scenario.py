@@ -101,6 +101,10 @@ BAG_TOPICS = [
     '/operator_bridge/topic_statistics',
     '/operator_bridge/remotes/boat/bridge_info',
     '/operator_bridge/remotes/boat/topic_statistics',
+    # The republished Critical heartbeat — its arrival stamps let the
+    # multi-link "critical gap during over-horizon" invariant verify the
+    # always-on (cell/starlink) paths keep it flowing when WiFi is dark.
+    '/operator/boat/critical/heartbeat',
 ]
 
 

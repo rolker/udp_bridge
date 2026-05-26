@@ -136,17 +136,40 @@ def messages_in_window(messages: list[Tuple[int, object]],
     return [(t, m) for t, m in messages if t_start_ns <= t < t_end_ns]
 
 
-def get_wifi_connection(bridge_info, remote_name: str = 'boat'):
-    """Pick the WiFi connection out of a BridgeInfo's remote-list.
+def get_connection(bridge_info, connection_id: str, remote_name: str = 'boat'):
+    """Pick a named connection out of a BridgeInfo's remote-list.
 
-    Returns the `RemoteConnection` whose `connection_id` is 'wifi' on
-    the named remote, or None if not found. Lets the test reach the
-    DataRates fields without hardcoding indices.
+    Returns the `RemoteConnection` with `connection_id` on the named
+    remote, or None if not found. Lets multi-link tests reach the
+    DataRates of cell / starlink / wifi without hardcoding indices.
     """
     for remote in bridge_info.remotes:
         if remote.name != remote_name:
             continue
         for conn in remote.connections:
-            if conn.connection_id == 'wifi':
+            if conn.connection_id == connection_id:
                 return conn
     return None
+
+
+def get_wifi_connection(bridge_info, remote_name: str = 'boat'):
+    """Back-compat shim for the Phase 3 invariants: the WiFi connection."""
+    return get_connection(bridge_info, 'wifi', remote_name)
+
+
+def topic_connection_ids(bridge_info, topic: str, remote_name: str = 'boat'
+                         ) -> set:
+    """Return the set of connection_ids carrying `topic` to `remote_name`,
+    as advertised in the BridgeInfo `topics` section. Empty set if the
+    topic isn't advertised. Used by the topic-list confinement invariant.
+    """
+    out = set()
+    for ti in bridge_info.topics:
+        if ti.topic != topic:
+            continue
+        for trd in ti.remotes:
+            if trd.remote != remote_name:
+                continue
+            for trc in trd.connections:
+                out.add(trc.connection_id)
+    return out

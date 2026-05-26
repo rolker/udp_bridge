@@ -53,6 +53,18 @@ THRESHOLDS = {
     'T_recovery_s': 30.0,        # ...within T seconds of leaving over-horizon
     'F_resend_multiplier': 2.0,  # resend/tx_ok ratio ceiling = F * loss_rate
     'R_stats_pct': 0.50,         # bridge_info+topic_statistics rate floor
+    'Y_cross_path_pct': 0.10,    # always-on path received-rate drop tolerance
+    'G_critical_gap_s': 6.0,     # max Critical inter-arrival gap over-horizon
+}
+
+# Topic-list confinement: which connections each forwarded topic is allowed
+# on, mirroring configs/three_path.yaml topics_list. The multi-link
+# confinement invariant asserts the live bridge never advertises a topic on
+# a connection outside its allowed set.
+ALLOWED_TOPIC_CONNECTIONS = {
+    '/boat/critical/heartbeat': {'wifi', 'cell', 'starlink'},
+    '/boat/telemetry/odom': {'wifi', 'starlink'},
+    '/boat/bulk/image': {'wifi'},
 }
 
 # Phase-hold seconds for the scenario. Long enough to exercise resend
@@ -506,3 +518,158 @@ def test_invariant_stats_publish_rates(artifacts):
     if evaluated == 0:
         pytest.skip('No baseline pub rate established for any stats topic.')
     assert not violators, '\n'.join(violators)
+
+
+# =======================================================================
+# Phase 4: multi-link invariants (reuse the same range_degradation run).
+# =======================================================================
+
+def _conn_received_per_phase(artifacts, conn_id: str) -> dict[str, float]:
+    """Average `received_bytes_per_second` of the boat→<conn_id> connection
+    as seen in the operator's OWN bridge_info (what the operator received
+    from the boat per path), aggregated by phase across repeats.
+    """
+    bag_reader = _import_bag_reader()
+    infos = bag_reader.read_bridge_infos(
+        artifacts.bag_dir, '/operator_bridge/bridge_info')
+    phase_log = _load_phase_log(artifacts.phase_log)
+    windows = _phase_windows(phase_log)
+    walk_start_ns = int(phase_log['walk_start_unix'] * 1e9)
+    acc: dict[str, list[float]] = {}
+    for phase_name, t_start, t_end in windows:
+        t_start_ns = walk_start_ns + int(t_start * 1e9)
+        t_end_ns = walk_start_ns + int(t_end * 1e9)
+        for t, msg in infos:
+            if not (t_start_ns <= t < t_end_ns):
+                continue
+            conn = bag_reader.get_connection(msg, conn_id, remote_name='boat')
+            if conn is not None:
+                acc.setdefault(phase_name, []).append(
+                    conn.received_bytes_per_second)
+    return {p: sum(v) / len(v) for p, v in acc.items() if v}
+
+
+def test_multilink_topic_list_confinement(artifacts):
+    """Each forwarded topic is advertised only on its configured connections
+    (Bulk → WiFi only, Telemetry → WiFi+Starlink, Critical → all three). A
+    topic appearing on a connection outside its topics_list would be a
+    forwarding/config regression — checked against every captured
+    bridge_info, so a transient leak is caught too."""
+    bag_reader = _import_bag_reader()
+    infos = bag_reader.read_bridge_infos(
+        artifacts.bag_dir, '/operator_bridge/remotes/boat/bridge_info')
+    if not infos:
+        pytest.skip('No boat bridge_info mirror captured.')
+    seen: dict[str, set] = {t: set() for t in ALLOWED_TOPIC_CONNECTIONS}
+    leaks = set()
+    for _, msg in infos:
+        for topic, allowed in ALLOWED_TOPIC_CONNECTIONS.items():
+            conns = bag_reader.topic_connection_ids(
+                msg, topic, remote_name='operator')
+            seen[topic] |= conns
+            for extra in conns - allowed:
+                leaks.add(f'{topic} advertised on disallowed connection '
+                          f'{extra!r} (allowed: {sorted(allowed)})')
+    assert not leaks, '\n'.join(sorted(leaks))
+    never = [t for t, s in seen.items() if not s]
+    assert not never, (
+        f'Topics never advertised in any bridge_info (expected forwarding '
+        f'not observed): {never}')
+
+
+def test_multilink_cross_path_non_poisoning(artifacts):
+    """When WiFi goes over-horizon, the always-on paths (cell, starlink) must
+    keep delivering — their received rate must stay >= (1-Y) of their
+    in_range baseline. Catches a WiFi failure 'poisoning' (starving) the
+    other paths."""
+    y = THRESHOLDS['Y_cross_path_pct']
+    evaluated = 0
+    violators = []
+    for conn_id in ('cell', 'starlink'):
+        rates = _conn_received_per_phase(artifacts, conn_id)
+        baseline = rates.get('in_range_clean')
+        over_horizon = rates.get('over_horizon')
+        if not baseline or baseline <= 0 or over_horizon is None:
+            continue
+        evaluated += 1
+        if over_horizon < (1.0 - y) * baseline:
+            violators.append(
+                f'{conn_id}: over_horizon received {over_horizon:.0f} B/s < '
+                f'{1.0 - y:.0%} of in_range baseline {baseline:.0f} B/s — '
+                f'WiFi failure poisoned this path')
+    if evaluated == 0:
+        pytest.skip('No cell/starlink baseline + over_horizon rates to eval.')
+    assert not violators, '\n'.join(violators)
+
+
+def test_multilink_critical_gap_over_horizon(artifacts):
+    """Critical is forwarded on all three paths incl. always-on cell+starlink,
+    so the operator must keep receiving it even while WiFi is over-horizon:
+    no Critical inter-arrival gap overlapping an over-horizon window may
+    exceed G. A stall (or boundary-spanning silence) trips this."""
+    bag_reader = _import_bag_reader()
+    stamps = sorted(t for _, t, _ in bag_reader.iter_messages(
+        artifacts.bag_dir,
+        topic_filter=['/operator/boat/critical/heartbeat']))
+    if len(stamps) < 2:
+        pytest.skip('Fewer than 2 Critical messages captured.')
+    phase_log = _load_phase_log(artifacts.phase_log)
+    windows = _phase_windows(phase_log)
+    walk_start_ns = int(phase_log['walk_start_unix'] * 1e9)
+    oh = [(walk_start_ns + int(s * 1e9), walk_start_ns + int(e * 1e9))
+          for n, s, e in windows if n == 'over_horizon']
+    if not oh:
+        pytest.skip('No over_horizon phase found.')
+    g_ns = THRESHOLDS['G_critical_gap_s'] * 1e9
+    violators = []
+    for a, b in zip(stamps, stamps[1:]):
+        if (b - a) <= g_ns:
+            continue
+        # A too-large gap is a violation only if it overlaps an over-horizon
+        # window (a, b interval intersects [ts, te]).
+        if any(a < te and b > ts for ts, te in oh):
+            violators.append(
+                f'Critical inter-arrival gap {(b - a) / 1e9:.1f}s overlapping '
+                f'over_horizon exceeds G={THRESHOLDS["G_critical_gap_s"]:.1f}s '
+                f'— cell/starlink did not keep Critical flowing')
+    assert not violators, '\n'.join(violators)
+
+
+def test_multilink_drop_by_tier_report(artifacts):
+    """MEASURE-AND-REPORT (does not fail): per-tier send success vs dropped
+    bytes during the most-degraded (`critical`) phase. Preferential dropping
+    of low-priority tiers depends on per-topic scheduling (issue #19, not yet
+    implemented), so this records current behavior rather than asserting an
+    ordering."""
+    bag_reader = _import_bag_reader()
+    arrays = bag_reader.read_topic_statistics_arrays(
+        artifacts.bag_dir, '/operator_bridge/remotes/boat/topic_statistics')
+    if not arrays:
+        pytest.skip('No boat topic_statistics mirror captured.')
+    phase_log = _load_phase_log(artifacts.phase_log)
+    windows = _phase_windows(phase_log)
+    walk_start_ns = int(phase_log['walk_start_unix'] * 1e9)
+    crit = [(walk_start_ns + int(s * 1e9), walk_start_ns + int(e * 1e9))
+            for n, s, e in windows if n == 'critical']
+
+    agg: dict[str, dict[str, list]] = {}
+    for t, msg in arrays:
+        if not any(ts <= t < te for ts, te in crit):
+            continue
+        for ts_stat in msg.topics:
+            d = agg.setdefault(ts_stat.source_topic, {'succ': [], 'drop': []})
+            d['succ'].append(ts_stat.send.success_bytes_per_second)
+            d['drop'].append(ts_stat.send.dropped_bytes_per_second)
+
+    if not agg:
+        print('Drop-by-tier (issue #19): no per-tier stats in the critical '
+              'phase to report.')
+        return
+    parts = []
+    for topic in sorted(agg):
+        d = agg[topic]
+        succ = sum(d['succ']) / len(d['succ']) if d['succ'] else 0.0
+        drop = sum(d['drop']) / len(d['drop']) if d['drop'] else 0.0
+        parts.append(f'{topic}: succ={succ:.0f} B/s drop={drop:.0f} B/s')
+    print('Drop-by-tier (critical phase; issue #19 measure-only): '
+          + '; '.join(parts))
