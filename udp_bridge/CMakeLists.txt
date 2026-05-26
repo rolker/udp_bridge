@@ -189,6 +189,18 @@ if(BUILD_TESTING)
     TIMEOUT 240
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   )
+
+  # Bench-harness stalled-subscriber (wedge) regression guard (issue #10
+  # / #18). Opt-in via UDP_BRIDGE_BENCH_SCENARIOS=1; also skips without
+  # `unshare -Urn` or rmw_zenoh_cpp (the scenario forces Zenoh). Asserts
+  # the operator drain stays healthy under a frozen consumer — see the
+  # test's module docstring for why this is a no-wedge guard rather than
+  # a red→green reproduction.
+  ament_add_pytest_test(test_bench_subscriber_death
+    test/bench/test_subscriber_death.py
+    TIMEOUT 180
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
 
 ament_package()

@@ -264,12 +264,16 @@ def launch_pub(domain: int, tier: str, duration_s: float) -> _Child:
     )
 
 
-def launch_sub(domain: int, topic: str, msg_type: str, duration_s: float) -> _Child:
+def launch_sub(domain: int, topic: str, msg_type: str, duration_s: float,
+               count_trace: Path | None = None) -> _Child:
     env = _env_for(domain)
     script = Path(__file__).parent / 'sub.py'
+    cmd = [sys.executable, str(script), '--topic', topic, '--msg-type', msg_type,
+           '--duration-s', str(duration_s)]
+    if count_trace is not None:
+        cmd.extend(['--count-trace', str(count_trace)])
     return _spawn(
-        [sys.executable, str(script), '--topic', topic, '--msg-type', msg_type,
-         '--duration-s', str(duration_s)],
+        cmd,
         env=env,
         name=f'sub-{topic}',
         stderr=subprocess.PIPE,
@@ -335,6 +339,38 @@ def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
             stdout=subprocess.DEVNULL,
         )
     return child
+
+
+# The #10 wedge is rmw_zenoh_cpp-specific: Zenoh's reliability handshake
+# blocks the republish to a dead-but-still-matched reader far longer than
+# DDS's bounded max_blocking_time, so the operator drain backs up. FastDDS
+# and CycloneDDS do not reproduce it (verified — Recv-Q stays flat). The
+# subscriber_death scenario therefore forces Zenoh + its router daemon.
+ZENOH_RMW = 'rmw_zenoh_cpp'
+
+
+def zenoh_available() -> bool:
+    """True if rmw_zenoh_cpp and its router daemon are installed."""
+    try:
+        out = subprocess.run(
+            ['ros2', 'pkg', 'executables', 'rmw_zenoh_cpp'],
+            capture_output=True, text=True, check=False,
+        )
+        return 'rmw_zenohd' in out.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def launch_zenoh_router() -> _Child:
+    """Start the Zenoh router daemon. rmw_zenoh_cpp sessions need it for
+    discovery; all sessions in the namespace reach it on localhost:7447.
+    """
+    return _spawn(
+        ['ros2', 'run', 'rmw_zenoh_cpp', 'rmw_zenohd'],
+        env=os.environ.copy(),
+        name='zenohd',
+        stderr=subprocess.DEVNULL if not _debug() else None,
+    )
 
 
 def walk_wifi(hold_s: float, phase_log: list) -> None:
@@ -512,6 +548,126 @@ def run_full_mix(duration_s: float) -> dict:
     }
 
 
+def run_subscriber_death(hold_s: float, outdir: Path) -> dict:
+    """Reproduce the issue #10 wedge: STALL the Bulk operator-side subscriber
+    mid-run (SIGSTOP — a frozen-but-matched reader that stops draining is the
+    back-pressure trigger; a cleanly-killed one just unmatches) while the boat
+    keeps forwarding Bulk at the saturating rate. Trace the operator bridge's
+    UDP Recv-Q (port 4200) throughout; count-trace the surviving Critical /
+    Telemetry subscribers so the test can compare delivery rate before vs.
+    after the stall (the head-of-line question, issue #29).
+
+    Clean link on all paths — this isolates the stalled-subscriber failure
+    mode from link degradation. Timeline (hold_s each window):
+      [0, hold_s)          baseline: all three tiers flowing
+      stall at t≈hold_s    SIGSTOP the Bulk operator subscriber
+      [hold_s, 2*hold_s)   observe: boat keeps publishing; watch Recv-Q
+
+    Pre-#10-fix the operator drain thread blocks in the stalled republish and
+    Recv-Q on 4200 climbs; with the fix the publish moves to the worker, the
+    drain keeps reading, and Recv-Q stays bounded.
+    """
+    # Force Zenoh — the wedge does not reproduce under DDS (see ZENOH_RMW).
+    os.environ['RMW_IMPLEMENTATION'] = ZENOH_RMW
+    os.environ.setdefault('ZENOH_ROUTER_CHECK_ATTEMPTS', '10')
+
+    config = Path(__file__).parent / 'configs' / 'three_path.yaml'
+    setup_topology()
+
+    # Router first, before any session, so the bridges + pub/sub discover.
+    launch_zenoh_router()
+    time.sleep(3)  # let the router bind localhost:7447
+
+    operator_stderr = outdir / 'bridge_stderr_operator.log'
+    boat_stderr = outdir / 'bridge_stderr_boat.log'
+    launch_bridge_logged('boat_bridge', config, BOAT_DOMAIN, boat_stderr)
+    launch_bridge_logged('operator_bridge', config, OPERATOR_DOMAIN, operator_stderr)
+    time.sleep(2)  # let the bridges handshake
+
+    recvq_csv = outdir / 'recv_q_operator.csv'
+    recvq_start_unix = time.time()
+    recvq = launch_recv_q_trace(4200, recvq_csv, interval_s=0.5)
+    time.sleep(1)  # let the tracer find the socket
+
+    # Run long enough for baseline + observe + a drain margin. Subscribers
+    # outlive the publishers by 2s so their final counts/traces are complete.
+    run_s = 2 * hold_s + 4
+    count_traces = {
+        'critical': outdir / 'count_critical.csv',
+        'telemetry': outdir / 'count_telemetry.csv',
+        # Trace the victim too: its count climbs in baseline then flatlines at
+        # the stall — confirms Bulk was actually flowing into the republish
+        # path before we froze its consumer.
+        'bulk': outdir / 'count_bulk.csv',
+    }
+    subs = {
+        tier: launch_sub(OPERATOR_DOMAIN, topic, msg_type, run_s + 2,
+                         count_trace=count_traces.get(tier))
+        for tier, (msg_type, topic) in TIER_DESTINATIONS.items()
+    }
+    time.sleep(0.5)  # let subscriber discovery catch up
+    pubs = {
+        tier: launch_pub(BOAT_DOMAIN, tier, run_s)
+        for tier in TIER_DESTINATIONS
+    }
+
+    # Baseline window, then STALL the Bulk operator subscriber with SIGSTOP.
+    # A frozen-but-alive reader is the back-pressure trigger that actually
+    # wedges the bridge: the RMW session stays matched, the reader stops
+    # draining, its buffers fill, it stops ACKing, and a RELIABLE destination
+    # publisher blocks. A cleanly-killed (SIGKILL) reader instead closes its
+    # session → the publisher unmatches → no block → no wedge (verified).
+    time.sleep(hold_s)
+    victim = subs['bulk']
+    stall_unix = time.time()
+    try:
+        os.killpg(victim.pgid, signal.SIGSTOP)
+    except ProcessLookupError:
+        pass
+
+    # Observe window: boat keeps forwarding Bulk to the frozen subscriber.
+    time.sleep(hold_s)
+
+    # Teardown the frozen victim: SIGTERM is queued (undeliverable) until a
+    # process is continued, so SIGCONT then SIGKILL to reap it cleanly.
+    try:
+        os.killpg(victim.pgid, signal.SIGCONT)
+        os.killpg(victim.pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+    # Let survivors + publishers finish and flush their counts/traces.
+    for tier in ('critical', 'telemetry'):
+        try:
+            subs[tier].proc.wait(timeout=run_s + 10)
+        except subprocess.TimeoutExpired:
+            pass
+    for tier in TIER_DESTINATIONS:
+        try:
+            pubs[tier].proc.wait(timeout=run_s + 10)
+        except subprocess.TimeoutExpired:
+            pass
+    recvq.stop(timeout=3.0)
+
+    meta_path = outdir / 'death_meta.json'
+    meta_path.write_text(json.dumps({
+        'recvq_start_unix': recvq_start_unix,
+        'stall_unix': stall_unix,
+        'hold_s': hold_s,
+        'victim_tier': 'bulk',
+    }, indent=2))
+
+    return {
+        'recvq_operator': recvq_csv,
+        'death_meta': meta_path,
+        'count_trace_critical': count_traces['critical'],
+        'count_trace_telemetry': count_traces['telemetry'],
+        'bridge_stderr_operator': operator_stderr,
+        'bridge_stderr_boat': boat_stderr,
+        'sub_counts': {t: _parse_count(subs[t]) for t in ('critical', 'telemetry')},
+    }
+
+
 def _reexec_under_unshare(argv: list[str]) -> None:
     os.environ[_INSIDE_ENV] = '1'
     os.execvp('unshare', ['unshare', '-Urn', sys.executable, sys.argv[0]] + argv)
@@ -521,7 +677,8 @@ def main(argv: list[str] | None = None) -> None:
     argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description='udp_bridge bench orchestrator')
     parser.add_argument('--scenario',
-                        choices=['smoke', 'full-mix', 'range_degradation'],
+                        choices=['smoke', 'full-mix', 'range_degradation',
+                                 'subscriber_death'],
                         required=True)
     parser.add_argument('--duration-s', type=float, default=10.0,
                         help='Run duration for smoke and full-mix scenarios.')
@@ -580,6 +737,25 @@ def main(argv: list[str] | None = None) -> None:
             )
             # Preserve artifacts regardless of pass/fail — the
             # downstream test needs them.
+            sys.exit(0 if ok else 1)
+        elif args.scenario == 'subscriber_death':
+            result = run_subscriber_death(args.hold_s, outdir)
+            print(f'BENCH_RECVQ_OPERATOR={result["recvq_operator"]}')
+            print(f'BENCH_DEATH_META={result["death_meta"]}')
+            print(f'BENCH_COUNT_TRACE_CRITICAL={result["count_trace_critical"]}')
+            print(f'BENCH_COUNT_TRACE_TELEMETRY={result["count_trace_telemetry"]}')
+            print(f'BENCH_BRIDGE_STDERR_OPERATOR={result["bridge_stderr_operator"]}')
+            print(f'BENCH_BRIDGE_STDERR_BOAT={result["bridge_stderr_boat"]}')
+            for tier, count in result['sub_counts'].items():
+                print(f'BENCH_RESULT_{tier.upper()}_SUB_COUNT={count}')
+            # Orchestrator success = "the run produced the artifacts the test
+            # needs". The wedge/head-of-line invariants are evaluated by
+            # test_subscriber_death.py. Preserve artifacts regardless.
+            ok = (
+                result['recvq_operator'].exists()
+                and result['death_meta'].exists()
+                and result['count_trace_critical'].exists()
+            )
             sys.exit(0 if ok else 1)
         else:
             print(f'Scenario {args.scenario} not recognized',
