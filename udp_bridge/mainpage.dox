@@ -28,20 +28,11 @@ In multiple terminals:
 
 \subsection mininet Simulating network issues
 
-Following labs demonstrate using mininet to simulate a network and netem to add delays and packet loss.
-
-http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%201.pdf
-http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%202.pdf
-http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%203.pdf
-http://ce.sc.edu/cyberinfra/workshops/Material/NTP/Lab%204.pdf
-
-http://mininet.org/
-
-\subsubsection installing_mininet Installing latest mininet
-
-    cd ~/src/
-    git clone https://github.com/mininet/mininet
-    PYTHON=python3 ./mininet/util/install.sh -nvf
+Network-impairment testing now uses an unprivileged Linux user+network
+namespace with `tc netem` — no root, no mininet install. See the bench
+harness under `test/bench/` (`test/bench/README.md`) for the orchestrator,
+scenarios, and run instructions. The previous mininet-based scripts are
+retired under `test/mininet/.archived/`.
 
 
 
