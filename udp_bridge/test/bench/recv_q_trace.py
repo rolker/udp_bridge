@@ -13,8 +13,9 @@ Usage::
 
     ./recv_q_trace.py --port 4200 --interval 0.5 --output /tmp/recv_q.csv
 
-CSV columns: ``t_seconds_since_start``, ``recv_q_bytes``,
-``send_q_bytes``, ``local_addr``. One line per poll interval.
+CSV columns: ``t_seconds_since_start`` (monotonic), ``unix_time`` (wall
+clock, for cross-process correlation), ``recv_q_bytes``, ``send_q_bytes``,
+``local_addr``. One line per poll interval.
 
 Press ``Ctrl-C`` to finish writing the trace.
 """
@@ -111,9 +112,14 @@ def main() -> int:
     samples_written = 0
     not_found_warned = False
     with args.output.open("w", newline="") as csvfile:
+        # `unix_time` (wall clock) is emitted alongside the monotonic
+        # `t_seconds_since_start` so consumers can correlate against
+        # wall-clock events recorded in another process (e.g. the
+        # subscriber_death stall instant) without subtracting a
+        # cross-process monotonic axis.
         writer = csv.DictWriter(
             csvfile,
-            fieldnames=["t_seconds_since_start", "recv_q_bytes",
+            fieldnames=["t_seconds_since_start", "unix_time", "recv_q_bytes",
                         "send_q_bytes", "local_addr"])
         writer.writeheader()
         while not stop["flag"]:
@@ -128,6 +134,7 @@ def main() -> int:
                     not_found_warned = True
                 writer.writerow({
                     "t_seconds_since_start": f"{now:.3f}",
+                    "unix_time": f"{time.time():.3f}",
                     "recv_q_bytes": "",
                     "send_q_bytes": "",
                     "local_addr": "",
@@ -139,6 +146,7 @@ def main() -> int:
                     not_found_warned = False
                 writer.writerow({
                     "t_seconds_since_start": f"{now:.3f}",
+                    "unix_time": f"{time.time():.3f}",
                     "recv_q_bytes": stats["recv_q_bytes"],
                     "send_q_bytes": stats["send_q_bytes"],
                     "local_addr": stats["local_addr"],

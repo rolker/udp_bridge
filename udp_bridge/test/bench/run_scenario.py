@@ -633,11 +633,16 @@ def run_subscriber_death(hold_s: float, outdir: Path) -> dict:
     time.sleep(hold_s)
 
     # Teardown the frozen victim: SIGTERM is queued (undeliverable) until a
-    # process is continued, so SIGCONT then SIGKILL to reap it cleanly.
+    # process is continued, so SIGCONT then SIGKILL, then reap it so it doesn't
+    # linger as a zombie until the atexit cleanup.
     try:
         os.killpg(victim.pgid, signal.SIGCONT)
         os.killpg(victim.pgid, signal.SIGKILL)
     except ProcessLookupError:
+        pass
+    try:
+        victim.proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
         pass
 
     # Let survivors + publishers finish and flush their counts/traces.

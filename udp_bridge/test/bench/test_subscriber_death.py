@@ -160,17 +160,30 @@ def _load_meta(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def _recvq_post_stall(recvq_csv: Path, meta: dict) -> list[int]:
-    """Operator Recv-Q samples (bytes) at/after the stall instant."""
-    stall_offset = meta['stall_unix'] - meta['recvq_start_unix']
-    out = []
+def _recvq_post_stall(recvq_csv: Path, meta: dict) -> tuple[list[int], int, int]:
+    """Operator Recv-Q samples (bytes) at/after the stall instant.
+
+    Returns (post_stall_values, total_rows, usable_rows). `usable_rows` counts
+    samples where the tracer actually found the socket — distinguishing a
+    healthy quiet queue from a tracer that never bound to the port (a harness
+    failure the caller should fail on, not skip). Correlates on the tracer's
+    wall-clock `unix_time` column against the stall instant — no cross-process
+    monotonic subtraction.
+    """
+    stall_unix = meta['stall_unix']
+    post: list[int] = []
+    total = usable = 0
     with recvq_csv.open() as f:
         for r in csv.DictReader(f):
-            t = r['t_seconds_since_start']
-            q = r['recv_q_bytes']
-            if t and q and float(t) >= stall_offset:
-                out.append(int(q))
-    return out
+            total += 1
+            ut = r.get('unix_time')
+            q = r.get('recv_q_bytes')
+            if not q:
+                continue
+            usable += 1
+            if ut and float(ut) >= stall_unix:
+                post.append(int(q))
+    return post, total, usable
 
 
 def _rate_around(count_csv: Path, split_unix: float) -> tuple[float, float]:
@@ -198,7 +211,13 @@ def test_no_wedge_recvq_bounded(artifacts):
     if a change reintroduced a blocking publish on the drain thread under a
     blocking RMW, Recv-Q would climb toward SO_RCVBUF here."""
     meta = _load_meta(artifacts.death_meta)
-    post = _recvq_post_stall(artifacts.recvq_csv, meta)
+    post, total, usable = _recvq_post_stall(artifacts.recvq_csv, meta)
+    # A trace with rows but zero usable samples means the tracer never bound
+    # to the operator UDP socket — a harness failure, not a quiet queue. Fail
+    # rather than skip so it can't pass vacuously.
+    assert not (total > 0 and usable == 0), (
+        f'Recv-Q trace has {total} rows but found the operator socket in none '
+        f'of them — the tracer never bound to port 4200 (harness failure).')
     if not post:
         pytest.skip('No post-stall Recv-Q samples recorded.')
     ceiling = THRESHOLDS['recvq_wedge_ceiling_bytes']
