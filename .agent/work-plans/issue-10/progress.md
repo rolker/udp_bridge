@@ -97,3 +97,15 @@ Implemented per plan: `PublishQueue` component + `decodeData`/`publishItem` rewi
 - [x] Fix: `publish_queue.h` `start()` — `running_ = true` now set after the `std::thread` is constructed (commit `329d308`; re-reviewed clean — cppcheck + Copilot "No issues"). Build clean, 94 tests pass.
 - [x] (addressed `241f2e5`) `wait_until_blocked()` bounded wait — confirmed in re-review as stale.
 - [x] (addressed `241f2e5`) `publish_queue_max_bytes` upper clamp — confirmed in re-review as stale.
+
+## External Review
+**Status**: complete
+**When**: 2026-05-26 00:20 -0400
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+
+**PR**: #28 at `ce13281`
+**Reviews**: 3 (Copilot bot) — fresh re-review at current HEAD found 0 comments; all prior findings stale/resolved
+**CI**: copilot-pull-request-reviewer success
+
+### Actions
+- [x] No outstanding review comments. All three rounds resolved (`241f2e5`, `329d308`); current-HEAD re-review clean. PR ready to merge.
