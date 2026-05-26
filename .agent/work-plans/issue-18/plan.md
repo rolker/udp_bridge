@@ -170,3 +170,32 @@ Single PR, ~6 commits (one per phase). Phase 0 (threshold extraction) is the
 gating one — the rest depends on landed numbers. Phase 0 lands as its own
 reviewable commit so the chosen values for N/X/T/F/G/R/Y are visible and
 discussable before any harness code is written against them.
+
+## Implementation Notes (2026-05-25)
+
+Phases 0–3 landed earlier (HEAD `191e5e1`). This session completed Phases 4–6
+plus an added scenario:
+
+- **Phase 4 — multi-link invariants** (in `test_range_degradation.py`, same
+  run): topic-list confinement, cross-path non-poisoning (Y), critical gap
+  over-horizon (G), drop-by-tier (measure-and-report, #19). Added the
+  republished Critical heartbeat to the recorded bag and a generalized
+  `bag_reader.get_connection` / `topic_connection_ids`. All 9 range_degradation
+  invariants pass (~112 s run under FastDDS).
+- **Phase 5 — retire mininet**: dead ROS-1 scripts + the two
+  `test_mininet_*.launch` files moved under `test/mininet/.archived/`; pointer
+  README added; `mainpage.dox` repointed to `test/bench/`.
+- **Phase 6 — CI/docs**: this repo has no CI workflow; documented that the
+  skip-guards + opt-in gating are the protection (smoke skips cleanly without
+  unprivileged userns). README updated for the new scenario + invariants.
+
+- **Added scenario — `subscriber_death` (issue #10 wedge), not in the original
+  Phase 0–6 plan.** Freezes (SIGSTOP) the Bulk operator subscriber mid-stream
+  and traces the operator Recv-Q + survivor delivery; forces `rmw_zenoh_cpp` +
+  a Zenoh router. **Finding:** the wedge did NOT reproduce at bench scale under
+  FastDDS, CycloneDDS, or Zenoh — even at ~58 MB/s into a frozen consumer,
+  Recv-Q/Send-Q stayed flat at 0. `publish()` doesn't block the drain at bench
+  scale (Zenoh async hand-off). So `test_subscriber_death` is a **no-wedge
+  regression guard**, not a red→green reproduction; the component-level proof
+  of #28's fix remains the `PublishQueue` unit tests. Full rationale in the
+  test's module docstring and `test/bench/README.md`.
