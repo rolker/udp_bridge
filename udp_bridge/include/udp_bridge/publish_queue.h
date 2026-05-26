@@ -81,8 +81,14 @@ public:
     if(running_)
       return;
     stop_requested_ = false;
-    running_ = true;
+    // Construct the worker BEFORE marking running_: if std::thread throws
+    // (std::system_error on resource exhaustion), running_ stays false, so the
+    // queue is cleanly not-running — push() drops, start() is retryable —
+    // rather than stuck running_=true with no worker to drain. run() never
+    // reads running_ (only stop_requested_ / the queue), so this ordering is
+    // behaviour-neutral on the success path.
     worker_ = std::thread(&PublishQueue::run, this);
+    running_ = true;
   }
 
   /// Signal the worker to finish and join it. Any items still queued are
