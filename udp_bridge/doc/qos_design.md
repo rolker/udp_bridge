@@ -43,6 +43,51 @@ endpoints decide what contract they want with each other. It is not the
 bridge's job to assert a contract about the wire that the wire cannot
 honor.
 
+## Receive-path publish decoupling (issue #10)
+
+The wedge described above is **not** fixed by any QoS choice, and the fix is
+deliberately independent of the reliability policy:
+
+- `BEST_EFFORT` on the destination publisher would refuse `RELIABLE`
+  subscribers (CAMP goes dark — see the worked example below), so it is not
+  an option.
+- `BEST_AVAILABLE` is the design intent but (a) is currently blocked by the
+  `rmw_zenoh_cpp` 0.2.9 graph-visibility bug, and (b) still behaves
+  `RELIABLE` *for the local hop* whenever a `RELIABLE` subscriber matches —
+  so it can still block on a dead-but-still-matched subscriber.
+
+So the wedge is fixed at the **transport layer instead**: the rmw-touching
+tail of `decodeData` — find-or-create the destination publisher, the
+first-arrival `sendBridgeInfo`, and `publish()` — no longer runs on the
+socket-drain thread. `decodeData` deserializes the `MessageInternal` and
+enqueues a `PublishItem` on a bounded, single-worker `PublishQueue`
+(`include/udp_bridge/publish_queue.h`); the worker does the create/publish.
+A `RELIABLE` publish stalling on an uncleanly-dead subscriber — or a
+first-arrival `create_generic_publisher()` blocking on rmw discovery — now
+blocks only the worker. `recvfrom` keeps draining; the kernel `Recv-Q` does
+not back up. This holds regardless of whether the destination publisher is
+`RELIABLE` (current operational default) or `BEST_AVAILABLE` (design intent).
+
+**Queue drops are unrecoverable, and distinct from wire loss.** When a local
+subscriber stalls the publish path long enough to exceed the queue's byte
+budget (`publish_queue_max_bytes`), the queue drops the **oldest** items
+(KEEP_LAST(1)-consistent: newest wins) and counts them in a diagnostic. This
+is loss that happens *after* successful wire delivery and reassembly, so the
+resend layer — which operates on packet numbers *upstream* of `decodeData` —
+cannot recover it. It is the local-hop expression of the same
+"best-effort with loss reduction" model: the bridge would rather drop a
+republished message than let one stalled subscriber wedge the reader for
+every topic. The drop count surfaces as a `publish queue` diagnostic
+(WARN on recent drops) so a stalled subscriber is visible to operators
+rather than silent.
+
+A single worker means a stalled publish can still delay *other* republished
+topics queued behind it (head-of-line) until they age out of the byte
+budget — bounded and observable, but not isolated. Per-publisher isolation
+(a worker per topic, so a dead costmap subscriber can't delay video) is a
+deferred follow-up; the reported field wedges were all the reader-thread
+wedge this decoupling removes.
+
 ## How `BEST_AVAILABLE` matching works
 
 `BEST_AVAILABLE` is a special QoS value (see
@@ -305,8 +350,9 @@ runtime.
 - Issue [#11](https://github.com/rolker/udp_bridge/issues/11) — robustness
   changes that introduced this design.
 - Issue [#10](https://github.com/rolker/udp_bridge/issues/10) — bridge
-  wedge whose hypothesized mechanism (RELIABLE publisher stalling on a
-  dead subscriber) motivated the reliability policy.
+  wedge (RELIABLE publisher stalling on a dead subscriber) that motivated
+  the reliability policy and is fixed by the receive-path publish
+  decoupling described above.
 - Issue [#9](https://github.com/rolker/udp_bridge/issues/9) — resend
   amplification, the package's actual loss-reduction layer.
 - Plan: `.agent/work-plans/PLAN_ISSUE-11.md`.

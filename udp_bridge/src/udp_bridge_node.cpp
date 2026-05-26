@@ -4,19 +4,21 @@
 //
 //   socket_drain_group_ (MutuallyExclusive)
 //     Owns: spin_timer_ and all work executed inline from spin_once()
-//     (recvfrom, decode, decodeData, the per-topic generic-publisher
-//     publish, and the resend / cleanup tail loops). Decoded
-//     destination-side publishes currently happen on this hot path — if
-//     a destination publisher stalls under back-pressure, the socket
-//     drain stalls with it. A future change can move the publish work
-//     to a separate group via an internal queue; see qos_design.md
-//     for the destination-publisher reliability policy that bounds
-//     this exposure under the BEST_AVAILABLE design intent. The
-//     current operational default is RELIABLE (rmw_zenoh_cpp 0.2.9
-//     graph-visibility workaround) which does NOT bound this exposure
-//     — a RELIABLE destination publisher stalled on a dead subscriber
-//     buffers and can wedge the drain path. The risk is accepted
-//     until BEST_AVAILABLE returns.
+//     (recvfrom, decode, decodeData, and the resend / cleanup tail loops).
+//     As of issue #10, decodeData does NOT publish on this thread: it only
+//     deserializes the outer MessageInternal and enqueues a PublishItem on
+//     UDPBridge::publish_queue_. The rmw-touching republish work
+//     (find-or-create the destination publisher, first-arrival
+//     sendBridgeInfo, publish) runs on the publish worker thread
+//     (UDPBridge::publishItem). This is what keeps a stalled destination
+//     publisher — e.g. a RELIABLE publisher buffering for a dead-but-
+//     still-matched subscriber, the wedge mechanism in #10 — from stalling
+//     the socket drain: the worker absorbs the block, recvfrom keeps
+//     draining, and the bounded queue drops oldest under back-pressure.
+//     See qos_design.md for the destination-publisher reliability policy
+//     (RELIABLE operational default under rmw_zenoh_cpp 0.2.9; BEST_AVAILABLE
+//     design intent) — the publish decoupling fixes the wedge independently
+//     of which reliability is in effect.
 //     Invariant: this group must never be starved. Anything that runs
 //     here is hot-path; if it blocks, the kernel SO_RCVBUF (500 KB) fills
 //     and packets are silently dropped — the wedge symptom in #10.
@@ -51,6 +53,25 @@
 //     (subscribe / advertise / add_remote / list_remotes). Admin-style
 //     work that must not race the hot path but can be safely serialized
 //     against itself.
+//
+//   publish worker (UDPBridge::publish_queue_'s std::thread — issue #10)
+//     NOT an executor callback group: a single std::thread owned by
+//     PublishQueue, running only while the node is ACTIVE (started in
+//     on_activate, stopped+joined in on_deactivate). Runs UDPBridge::
+//     publishItem — find-or-create the destination publisher, first-arrival
+//     sendBridgeInfo, and publish — work that decodeData used to do inline on
+//     socket_drain_group_. Moving it here is what stops a stalled destination
+//     publisher from wedging the drain (the #10 fix). Being outside the
+//     callback-group model, it is a new concurrent caller of the publishers_
+//     map and the outbound-send path, so it was checked against the PR #12 /
+//     #16 audit: it takes publishers_mutex_ for the three-phase lookup like
+//     decodeData did; sendBridgeInfo takes its own deadlock-avoiding
+//     scoped_lock(subscribers_mutex_, remote_nodes_mutex_), so two concurrent
+//     senders (worker + a periodic-group sendBridgeInfo) can't deadlock; and
+//     concurrent recvfrom (drain) / sendto (worker) on the one UDP fd is safe.
+//     publishItem catches + logs its own exceptions (mirroring decode's
+//     catch-all) and PublishQueue::run has a last-resort barrier, so a bad
+//     packet can't terminate the process.
 //
 // Shared state crossing groups is guarded by mutexes (publishers_,
 // subscribers_, remote_nodes_, pending_connections_, Connection::sent_packets_,
