@@ -24,13 +24,14 @@ machine does not false-fail. The full scenario (opt-in via
 
 ## Scenarios
 
-`run_scenario.py` supports three scenarios:
+`run_scenario.py` supports four scenarios:
 
 | Scenario | Tiers active | How it runs |
 |---|---|---|
 | `smoke`              | Critical only                  | pytest under `colcon test`; asserts sub_count > 0 |
 | `full-mix`           | Critical + Telemetry + Bulk    | manual `run_scenario.py` invocation; exits 0 iff every tier sub_count > 0 |
-| `range_degradation`  | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; 5 single-path invariants |
+| `range_degradation`  | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; 5 single-path + 4 multi-link invariants |
+| `subscriber_death`   | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; **forces Zenoh**; no-wedge regression guard (see below) |
 
 `full-mix` actively generates the pinned three-tier mix
 (Critical 1 Hz × 64 B, Telemetry 10 Hz × ~720 B, Bulk 10 Hz × 480 KB)
@@ -88,7 +89,44 @@ The five single-path invariants checked are:
 4. **Resend amplification** — `resend.success_bytes_per_second / message.success_bytes_per_second` ≤ F × applied netem loss rate in each lossy phase.
 5. **Stats publication rate floor** — `bridge_info` and `topic_statistics` publication rate stays ≥ R% of the in-range baseline in every phase. Catches #20-class stalls in the stats path while the data plane keeps working.
 
-Threshold values N/X/T/F/R live in the "Values" table below.
+The four multi-link invariants (same run) are:
+
+6. **Topic-list confinement** — each forwarded topic is advertised only on its configured connections (Bulk→WiFi, Telemetry→WiFi+Starlink, Critical→all three); a leak onto a disallowed connection fails.
+7. **Cross-path non-poisoning** — when WiFi is over-horizon, the always-on paths (cell, starlink) keep delivering: their received rate stays ≥ (1−Y) of baseline.
+8. **Critical gap over-horizon** — no Critical inter-arrival gap overlapping an over-horizon window exceeds G (the always-on paths keep Critical flowing while WiFi is dark).
+9. **Drop-by-tier (measure-and-report)** — records per-tier send success/dropped in the most-degraded phase. Does **not** fail: preferential tier dropping needs per-topic scheduling ([#19](https://github.com/rolker/udp_bridge/issues/19), not yet implemented).
+
+Threshold values N/X/T/F/R/Y/G live in the "Values" table below.
+
+### `subscriber_death` — stalled-subscriber (wedge) regression guard
+
+Reproduces the issue [#10](https://github.com/rolker/udp_bridge/issues/10)
+trigger: a Bulk operator-side subscriber is frozen (`SIGSTOP` — a
+matched-but-not-draining reader, the back-pressure case; a cleanly-killed one
+just unmatches) mid-stream while the boat keeps forwarding Bulk. The operator
+bridge's UDP Recv-Q (port 4200) is traced, and the surviving Critical /
+Telemetry subscribers are count-traced across the stall (the head-of-line
+question, [#29](https://github.com/rolker/udp_bridge/issues/29)). **Forces
+`rmw_zenoh_cpp` + a Zenoh router**, since the back-pressure publish path does
+not exist under DDS.
+
+**Finding (2026-05-25):** the wedge could **not** be reproduced at bench scale
+— across FastDDS, CycloneDDS, and Zenoh, with clean-kill and freeze triggers,
+even at ~58 MB/s Bulk into a frozen consumer, the operator Recv-Q and Send-Q
+stayed flat at 0 and the surviving tiers were unaffected. At bench scale
+`publish()` does not block the drain thread (under Zenoh it's an async
+hand-off). The field wedge (4× on 2026-04-27, `rmw_zenoh_cpp`) evidently needs
+conditions this harness can't hit at bench scale, or a root cause other than
+the back-pressure hypothesis the issue records. So `test_subscriber_death`
+is a **no-wedge regression guard** — it asserts the healthy behavior (Recv-Q
+bounded, survivors keep delivering) and would fail if a future change
+reintroduced drain-blocking under a blocking RMW. The component-level proof of
+the #10 fix is the `PublishQueue` unit tests in `test_publish_queue.cpp`.
+
+```bash
+UDP_BRIDGE_BENCH_SCENARIOS=1 python3 udp_bridge/test/bench/run_scenario.py \
+    --scenario subscriber_death --hold-s 10
+```
 
 ## Threshold values
 
@@ -134,10 +172,29 @@ refinement plan below.
 
 ## Refinement plan
 
-1. **N**: after several clean harness recoveries, set to 2× 95th-percentile recovery-edge Recv-Q drain time.
+1. **N**: after several clean harness recoveries, set to 2× 95th-percentile recovery-edge Recv-Q drain time. *Observation (2026-05-25): across range_degradation and subscriber_death runs the operator Recv-Q stayed at 0 throughout — the drain always kept up — so N=10s is currently very conservative. Keep as-is until a run produces a non-trivial drain edge to measure.*
 2. **X**, **T**: import 2026-04-21 bags to SQLite (or query via `rosbag2_py`); extract pre-event vs. post-recovery DataRates.
 3. **Y**: after first harness run, set to observed variance of cell-path rate with WiFi idle.
 4. **G**: tighten if subsequent deployments show consistently sub-2s worst case.
 5. **R**: loosen if false-trips occur on legitimate brief stalls.
 
 Each refinement lands as its own commit alongside the assertion change that consumes it.
+
+## Continuous integration
+
+There is no CI workflow in this repo that runs these tests. The protection is
+structural, so they're safe to run (or skip) anywhere:
+
+- The **smoke** test runs under `colcon test` and `@pytest.mark.skipif`-skips
+  when `unshare -Urn` is unavailable (e.g. a hardened host or a CI runner
+  without unprivileged user namespaces) — it never false-fails.
+- **range_degradation** and **subscriber_death** are additionally gated behind
+  `UDP_BRIDGE_BENCH_SCENARIOS=1` (they take tens of seconds to minutes), and
+  `subscriber_death` also skips without `rmw_zenoh_cpp`.
+
+So a future `ubuntu-latest` job that ran `colcon test` here would execute the
+smoke test where namespaces are permitted and skip it cleanly where they
+aren't; the opt-in scenarios stay off unless explicitly enabled. If unprivileged
+userns is disabled on the runner, set
+`kernel.apparmor_restrict_unprivileged_userns=0` (see Prerequisites) to enable
+the smoke path.
