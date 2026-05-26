@@ -67,5 +67,19 @@ Implemented per plan: `PublishQueue` component + `decodeData`/`publishItem` rewi
 **CI**: copilot-pull-request-reviewer success (repo has no build/test CI; local build + 94-test suite is the gate)
 
 ### Actions
-- [ ] Fix: `test_publish_queue.cpp` `wait_until_blocked()` — replace unbounded spin-wait with a bounded deadline + `FAIL()` so a non-starting worker fails fast instead of relying on the colcon test timeout.
-- [ ] Fix: `udp_bridge.cpp` on_configure — add an upper-bound clamp + warning for `publish_queue_max_bytes` (match the existing port / maximum_packet_size / history_depth both-bounds pattern; closes the int64→size_t 32-bit truncation edge).
+- [x] Fix: `test_publish_queue.cpp` `wait_until_blocked()` — bounded 2s deadline + `ASSERT_LT` (commit `241f2e5`).
+- [x] Fix: `udp_bridge.cpp` on_configure — upper-bound clamp (2 GiB) + warning for `publish_queue_max_bytes` (commit `241f2e5`).
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-05-25 20:14 -0400
+**By**: Claude Code Agent (Claude Opus 4.7 (1M context))
+**Verdict**: approved
+
+**Branch**: feature/issue-10 at `241f2e5`
+**Mode**: pre-push
+**Depth**: Light (reason: two small low-risk follow-up fixes; bulk already Deep-reviewed)
+**Must-fix**: 0 | **Suggestions**: 0
+
+### Findings
+- [ ] No issues found. LGTM. (cppcheck: only a cross-TU `unusedStructMember` false positive on `publish_queue_max_bytes_`; Copilot: "No issues." Build clean, 94 tests pass.)
