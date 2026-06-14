@@ -36,3 +36,13 @@ Phases 0–3 landed earlier (`191e5e1`). This session added:
 
 ### Finding — wedge not reproducible at bench scale
 The `subscriber_death` scenario could NOT reproduce the #10 wedge under FastDDS, CycloneDDS, or Zenoh, even at ~58 MB/s Bulk into a frozen consumer — operator Recv-Q/Send-Q stayed flat at 0. `publish()` doesn't block the drain at bench scale (Zenoh async hand-off). So it is a **no-wedge regression guard**, not a red→green reproduction; #28's fix remains component-proven by the `PublishQueue` unit tests. Captured in the test docstring, `test/bench/README.md`, and the plan's Implementation Notes. Per user decision (2026-05-25), not posted to GitHub issues.
+
+## Post-PR Review — PR #27 @ 1e3278432 — 2026-06-14 (coordinator-dispatched reviewer; Copilot quota out)
+
+**Verdict: CHANGES NEEDED (close to APPROVE).** Architecture is correct and well-reasoned: namespace/qdisc leak-safety is excellent (orchestrator re-execs under `unshare -Urn` so all veths/qdiscs live in an ephemeral userns the kernel tears down — no host state to leak); privilege handling is CI-safe (no root, CAP_NET_ADMIN inside the userns, tests skip-not-fail without userns, scenarios double-gated on `UDP_BRIDGE_BENCH_SCENARIOS=1`); child cleanup solid (killpg TERM→KILL, atexit/signal handlers). Issue coverage honest (#20 asserted; #10 framed as a no-wedge regression guard with candid docstring; #23 tested elsewhere via gtest). Governance clean.
+
+Two unaddressed prior-round (Copilot) findings block:
+- **#1 (must-fix): vacuous-pass guard missing in `test_range_degradation.py`** (`test_range.py:199,203`). If `recv_q_trace.py` never binds the operator socket, all rows have empty `recv_q_bytes` → every sample q=0 → `test_invariant_recv_q_no_sustained_climb` passes vacuously (harness failure masquerading as healthy queue). `test_subscriber_death.py:163-186,218` already does this right (tracks total vs usable rows, fails when `total>0 and usable==0`). Port that guard. For a harness whose job is catching silent failures, this is the exact failure mode the Quality Standard forbids.
+- **#2 (must-fix): missing rosbag2 `<test_depend>`s in package.xml** — the range scenario shells `ros2 bag record` and `bag_reader.py` imports `rosbag2_py`/`rclpy.serialization`/`rosidl_runtime_py`; none declared. Opt-in path fails on a clean install. Add `rosbag2_py`, `rosbag2_transport`, `rosidl_runtime_py` test_depends.
+
+Nice-to-have (round-2 one-liners, unaddressed): tee docstring lie (run_scenario.py:322), leaked log_fp handle (:326), per-tick 480KB alloc in Bulk pub (pub.py:66 — determinism), dead SQLite shims in bag_reader.py, run_scenario docstring omits subscriber_death scenario. Fix #1+#2 and optionally sweep these → APPROVE.
