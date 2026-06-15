@@ -60,6 +60,7 @@
 #include "udp_bridge/remote_node.h"
 #include "udp_bridge/resend_constants.h"
 #include "udp_bridge/giveup_diagnostic.h"
+#include "udp_bridge/subscriber_registry.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/utilities.h"
 #include "lifecycle_msgs/msg/state.hpp"
@@ -325,6 +326,14 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   advertise_service_ = create_service<Subscribe>(
     node_name+"/remote_advertise",
     std::bind(&UDPBridge::remoteAdvertise, this, _1, _2),
+    service_qos, periodic_group_);
+  remove_subscribe_service_ = create_service<Subscribe>(
+    node_name+"/remove_subscribe",
+    std::bind(&UDPBridge::removeSubscribe, this, _1, _2),
+    service_qos, periodic_group_);
+  remove_advertise_service_ = create_service<Subscribe>(
+    node_name+"/remove_advertise",
+    std::bind(&UDPBridge::removeAdvertise, this, _1, _2),
     service_qos, periodic_group_);
 
   add_remote_service_ = create_service<AddRemote>(
@@ -635,7 +644,14 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
   std::map<std::string, DestinationConfig> destination_config_by_remote;
   {
     std::lock_guard<std::mutex> lock(subscribers_mutex_);
-    auto& sub = subscribers_[topic_name];
+    // Use find(), not operator[]: a message can still arrive on a subscription
+    // that removeSubscriberConnection is tearing down. operator[] would
+    // re-insert an empty entry, which updateLocalSubscriptions would then
+    // resurrect as a zombie subscription forwarding to nobody.
+    auto sub_it = subscribers_.find(topic_name);
+    if(sub_it == subscribers_.end())
+      return;
+    auto& sub = sub_it->second;
     for(auto& remote_details: sub.remote_details)
     {
       std::unordered_set<float> periods; // group the sending to connections with same period
@@ -706,7 +722,9 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     size_data.message_size = message->size();
     {
       std::lock_guard<std::mutex> lock(subscribers_mutex_);
-      subscribers_[topic_name].statistics.add(size_data);
+      auto sub_it = subscribers_.find(topic_name);
+      if(sub_it != subscribers_.end())
+        sub_it->second.statistics.add(size_data);
     }
   }
 }
@@ -1032,6 +1050,27 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
   }
 }
 
+void UDPBridge::removeSubscriberConnection(std::string const &source_topic,
+                                           std::string const &remote_node,
+                                           std::string const &connection_id)
+{
+  // The map manipulation (extracted to removeSubscriberConnectionFrom so it can
+  // be unit-tested) runs under subscribers_mutex_. The local generic
+  // subscription it hands back is reset OFF the lock as hygiene — destroying a
+  // subscription does rmw teardown we don't want to run under the hot
+  // subscribers_mutex_. It is safe either way: an in-flight forwarding callback
+  // holds its own strong ref to the subscription via the executor, so reset()
+  // never frees one mid-callback and never blocks on it.
+  SubscriberRemoval removal;
+  {
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    removal = removeSubscriberConnectionFrom(subscribers_, source_topic, remote_node, connection_id);
+  }
+  removal.expired_subscription.reset();  // destroys the generic subscription, off-lock
+  if(removal.changed)
+    sendBridgeInfo();
+}
+
 void UDPBridge::updateLocalSubscriptions()
 {
   // Three-phase lookup so get_publishers_info_by_topic() and
@@ -1099,6 +1138,11 @@ void UDPBridge::decodeSubscribeRequest(std::vector<uint8_t> const &message, cons
 {
   auto remote_request = deserialize<RemoteSubscribeInternal>(message);
 
+  if(remote_request.operation == RemoteSubscribeInternal::OPERATION_UNSUBSCRIBE)
+  {
+    removeSubscriberConnection(remote_request.source_topic, source_info.node_name, remote_request.connection_id);
+    return;
+  }
   addSubscriberConnection(remote_request.source_topic, remote_request.destination_topic, remote_request.queue_size, remote_request.period, source_info.node_name, remote_request.connection_id);
 }
 
@@ -1450,6 +1494,36 @@ void UDPBridge::remoteAdvertise(
   // addSubscriberConnection acquires its own locks (and calls sendBridgeInfo
   // internally); calling sendBridgeInfo a second time here is redundant.
   addSubscriberConnection(request->source_topic, request->destination_topic, request->queue_size, request->period, request->remote, request->connection_id);
+}
+
+void UDPBridge::removeSubscribe(
+  const std::shared_ptr<udp_bridge::Subscribe::Request> request,
+  std::shared_ptr<udp_bridge::Subscribe::Response> response)
+{
+  (void)response;
+  RCLCPP_INFO_STREAM(get_logger(), "remove subscribe: remote: " << request->remote << " connection: " << request->connection_id << " source topic: " << request->source_topic);
+
+  // Mirror of remoteSubscribe: tell the remote to stop pushing source_topic to
+  // us. The remote's decodeSubscribeRequest sees OPERATION_UNSUBSCRIBE and calls
+  // removeSubscriberConnection on its side.
+  udp_bridge::RemoteSubscribeInternal remote_request;
+  remote_request.source_topic = request->source_topic;
+  remote_request.connection_id = request->connection_id;
+  remote_request.operation = udp_bridge::RemoteSubscribeInternal::OPERATION_UNSUBSCRIBE;
+
+  send(remote_request, request->remote, true);
+}
+
+void UDPBridge::removeAdvertise(
+  const std::shared_ptr<udp_bridge::Subscribe::Request> request,
+  std::shared_ptr<udp_bridge::Subscribe::Response> response)
+{
+  (void)response;
+  RCLCPP_INFO_STREAM(get_logger(), "remove advertise: remote: " << request->remote << " connection: " << request->connection_id << " source topic: " << request->source_topic);
+
+  // Mirror of remoteAdvertise: stop forwarding our local source_topic to the
+  // remote. Purely local; idempotent if the forwarding is already gone.
+  removeSubscriberConnection(request->source_topic, request->remote, request->connection_id);
 }
 
 void UDPBridge::statsReportCallback()
