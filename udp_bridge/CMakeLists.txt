@@ -146,6 +146,9 @@ if(BUILD_TESTING)
   # test_publish_queue (issue #10) exercises the bounded publish-worker
   # queue in isolation via an injected sink — no UDPBridge / node needed.
   add_udp_bridge_gtest(test_publish_queue test/test_publish_queue.cpp)
+  # test_subscriber_registry (issue #30) exercises the remove-forwarding map
+  # logic (remove_subscribe / remove_advertise) on a plain map — no node needed.
+  add_udp_bridge_gtest(test_subscriber_registry test/test_subscriber_registry.cpp)
 endif()
 
 ament_package()

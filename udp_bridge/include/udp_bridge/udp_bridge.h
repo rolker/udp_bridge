@@ -152,6 +152,18 @@ private:
     const std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Request> request,
     std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Response> response);
 
+  /// Service handler for local request to cancel a remote subscription: tells
+  /// the remote to stop pushing source_topic to us (mirror of remoteSubscribe).
+  void removeSubscribe(
+    const std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Request> request,
+    std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Response> response);
+
+  /// Service handler to stop advertising a local topic to a remote: removes the
+  /// local source->remote forwarding (mirror of remoteAdvertise).
+  void removeAdvertise(
+    const std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Request> request,
+    std::shared_ptr<udp_bridge_interfaces::srv::Subscribe::Response> response);
+
   /// Service handler to add a named remote
   void addRemote(
     const std::shared_ptr<udp_bridge_interfaces::srv::AddRemote::Request> request,
@@ -268,8 +280,20 @@ private:
                                std::string durability = "",
                                uint32_t history_depth = 0);
 
+  /// @brief Remove a source->remote forwarding added by addSubscriberConnection.
+  ///
+  /// Drops the (connection_id) rate entry for (source_topic, remote_node); when
+  /// that leaves the remote with no connections it is removed, and when the
+  /// source topic has no remaining remotes its local generic subscription is
+  /// torn down. Removing a non-existent forwarding is a no-op (idempotent). The
+  /// subscription is destroyed off the subscribers_ lock so it cannot race the
+  /// forwarding callback.
+  void removeSubscriberConnection(std::string const &source_topic,
+                                  std::string const &remote_node,
+                                  std::string const &connection_id);
+
   /// @brief Checks configured local topics and attempts to subscribe
-  void updateLocalSubscriptions();  
+  void updateLocalSubscriptions();
 
 
 
@@ -291,6 +315,8 @@ private:
 
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr subscribe_service_;
   rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr advertise_service_;
+  rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr remove_subscribe_service_;
+  rclcpp::Service<udp_bridge_interfaces::srv::Subscribe>::SharedPtr remove_advertise_service_;
   rclcpp::Service<udp_bridge_interfaces::srv::AddRemote>::SharedPtr add_remote_service_;
   rclcpp::Service<udp_bridge_interfaces::srv::ListRemotes>::SharedPtr list_remotes_service_;
 
