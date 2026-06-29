@@ -166,6 +166,21 @@ class RemoteNode
   // re-acquire remote_nodes_mutex_.
   uint32_t resendGiveupCount() const;
 
+  // Stale-packet gate (drop_stale_packets). Returns true if a message
+  // for `topic` carrying wrapped sequence number `packet_number` should
+  // be published, false if it is stale — i.e. a strictly-newer message
+  // for the same destination topic has already been admitted. The first
+  // message seen for a topic is always admitted. On admit, the per-topic
+  // high-water mark is advanced to `packet_number`.
+  //
+  // packet_number is the sender's per-remote-node monotonic sequence, so
+  // the high-water marks share this RemoteNode's number space and are
+  // cleared together with received_packet_times_ on remote-restart
+  // detection in update(BridgeInfo) — otherwise every post-restart packet
+  // (numbers reset to 0) would be wrongly dropped as stale. Takes
+  // state_mutex_.
+  bool admitForPublish(const std::string& topic, uint64_t packet_number);
+
 private:
   // Single on-arrival point: record the receive time AND clear any
   // pending resend tracking for that packet. Both `unwrap()` (the
@@ -252,6 +267,17 @@ private:
   Defragmenter defragmenter_;
 
   std::map<uint64_t, rclcpp::Time> received_packet_times_;
+
+  // Per-destination-topic high-water mark of the wrapped packet_number
+  // last admitted for publication (the stale-packet gate; see
+  // admitForPublish). Keyed on destination topic. A decoded message
+  // whose packet_number is strictly below its topic's mark is a
+  // late-arriving resend that a newer message superseded, so it is
+  // dropped instead of republished out of order. Guarded by state_mutex_.
+  // Cleared on remote-restart detection in update(BridgeInfo) alongside
+  // received_packet_times_ — the sender's number space resets to 0 on
+  // restart, so a stale mark would otherwise reject every fresh packet.
+  std::map<std::string, uint64_t> highest_published_packet_number_;
 
   // Per-missing-packet state used by getMissingPackets to apply
   // exponential backoff and the TTL-bounded give-up condition (issue

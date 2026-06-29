@@ -141,6 +141,16 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   }
   RCLCPP_INFO_STREAM(get_logger(), "maximum_packet_size: " << max_packet_size_);
 
+  // Stale-packet gate (drop late-arriving resends the resend protocol
+  // delivered out of order — see decodeData / RemoteNode::admitForPublish).
+  // Default true: a superseded old packet republished after a newer one
+  // makes a consumer see the topic's stamp jump backward. Disable per
+  // deployment (`-p drop_stale_packets:=false`) for topics that need every
+  // message regardless of order.
+  declareIfMissing("drop_stale_packets", drop_stale_packets_);
+  drop_stale_packets_ = get_parameter("drop_stale_packets").as_bool();
+  RCLCPP_INFO_STREAM(get_logger(), "drop_stale_packets: " << std::boolalpha << drop_stale_packets_);
+
   // Resend give-up rate thresholds (issue #22). Defaults calibrated
   // against the 2026-05-19 BizzyBoat storm (~3.9/s steady, ~700/s
   // burst): steady fires WARN, burst fires ERROR. Live-tunable: the
@@ -802,8 +812,42 @@ void UDPBridge::decode(std::vector<uint8_t> const &message, const SourceInfo& so
 
 void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo& source_info)
 {
-  (void)source_info;
   auto outer_message = deserialize<MessageInternal>(message);
+
+  // destination_topic falls back to source_topic when unset.
+  std::string topic = outer_message.destination_topic;
+  if(topic.empty())
+    topic = outer_message.source_topic;
+
+  // Stale-packet gate: drop a decoded message whose wrapped packet_number
+  // is older than the newest already published for this destination topic
+  // — a late resend the resend protocol delivered out of order, which a
+  // newer message has already superseded (republishing it makes the
+  // consumer see the topic's stamp jump backward). Runs before the payload
+  // copy below so a dropped packet costs nothing. Un-sequenced packets
+  // (never wrapped) and the disabled case fall straight through. See
+  // RemoteNode::admitForPublish; the high-water marks live in the RemoteNode
+  // so they reset together with its sequence state on remote restart.
+  if(drop_stale_packets_ && source_info.sequenced)
+  {
+    std::shared_ptr<RemoteNode> remote_node;
+    {
+      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+      auto it = remote_nodes_.find(source_info.node_name);
+      if(it != remote_nodes_.end())
+        remote_node = it->second;
+    }
+    if(remote_node && !remote_node->admitForPublish(topic, source_info.packet_number))
+    {
+      ++stale_dropped_count_;
+      RCLCPP_INFO_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
+        "drop_stale_packets: dropped stale message for topic '" << topic
+        << "' (packet_number " << source_info.packet_number
+        << " older than newest published); cumulative dropped: "
+        << stale_dropped_count_);
+      return;
+    }
+  }
 
   // Socket-drain thread does only the CPU-bound deserialize + payload copy,
   // then hands everything rmw-touching to the publish worker. No publisher
@@ -816,10 +860,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
          outer_message.data.data(), outer_message.data.size());
   item.message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
 
-  // destination_topic falls back to source_topic when unset.
-  item.topic = outer_message.destination_topic;
-  if(item.topic.empty())
-    item.topic = outer_message.source_topic;
+  item.topic = topic;
   item.datatype = outer_message.datatype;
   item.reliability = outer_message.reliability;
   item.durability = outer_message.durability;
@@ -1154,6 +1195,13 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
 
     auto updated_source_info = source_info;
     updated_source_info.node_name = wrapped_packet->source_node;
+    // Carry the wrapped sequence number into the recursive decode so the
+    // stale-packet gate in decodeData can compare it against the per-topic
+    // high-water mark. Propagates through the Compressed and Fragment
+    // re-decode paths; for a reassembled message it is the completing
+    // fragment's number, which is sufficient to order whole messages.
+    updated_source_info.packet_number = wrapped_packet->packet_number;
+    updated_source_info.sequenced = true;
 
     std::shared_ptr<RemoteNode> remote;
     {
