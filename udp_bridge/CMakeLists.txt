@@ -149,6 +149,11 @@ if(BUILD_TESTING)
   # test_subscriber_registry (issue #30) exercises the remove-forwarding map
   # logic (remove_subscribe / remove_advertise) on a plain map — no node needed.
   add_udp_bridge_gtest(test_subscriber_registry test/test_subscriber_registry.cpp)
+  # test_stale_packet_gate exercises RemoteNode::admitForPublish — the
+  # per-destination-topic high-water gate added on the 2026-06-29 deployment,
+  # including the remote-restart reset that keeps post-restart packet #0 from
+  # being dropped as stale.
+  add_udp_bridge_gtest(test_stale_packet_gate test/test_stale_packet_gate.cpp)
 endif()
 
 ament_package()
