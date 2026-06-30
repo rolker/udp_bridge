@@ -415,6 +415,20 @@ private:
   // cast in on_configure well within range on 32-bit size_t platforms.
   static constexpr size_t kMaxPublishQueueMaxBytes = 2ull * 1024u * 1024u * 1024u;
 
+  // Stale-packet gate (drop_stale_packets parameter, default true).
+  // When set, decodeData drops a decoded message whose wrapped
+  // packet_number is older than the newest already published for its
+  // destination topic — a late-arriving resend the resend protocol
+  // delivered out of order. Declared in on_configure (declareIfMissing)
+  // so a deployment can disable it without a rebuild for topics that
+  // need every message regardless of order.
+  bool drop_stale_packets_ {true};
+
+  // Cumulative count of messages dropped by the stale-packet gate.
+  // Touched only on the socket-drain thread (decodeData); used for the
+  // throttled visibility log so the operator can see the gate working.
+  uint64_t stale_dropped_count_ {0};
+
   // Last publish-queue drop total observed by diagnosePublishQueue, so the
   // diagnostic can WARN on *recent* drops (increase since last tick) rather
   // than latching WARN forever after a single historical drop. Touched only

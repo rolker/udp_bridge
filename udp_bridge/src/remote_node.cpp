@@ -92,6 +92,11 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           received_packet_times_.clear();
           resend_state_.clear();
           given_up_packet_numbers_.clear();
+          // The sender's packet_number space resets to 0 on restart, so
+          // the stale-packet high-water marks must reset too — otherwise
+          // every post-restart packet would be rejected as stale by
+          // admitForPublish.
+          highest_published_packet_number_.clear();
         }
       } 
       next_packet_number_ = bridge_info.next_packet_number;
@@ -343,6 +348,27 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
     }
   }
   return {};
+}
+
+bool RemoteNode::admitForPublish(const std::string& topic, uint64_t packet_number)
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  auto it = highest_published_packet_number_.find(topic);
+  if(it != highest_published_packet_number_.end())
+  {
+    // Strict: an equal-or-newer message for this topic was already
+    // admitted, so this is a superseded late resend. (Exact
+    // packet_number duplicates never reach here — RemoteNode::unwrap
+    // filters them via received_packet_times_ before decode.)
+    if(packet_number < it->second)
+      return false;
+    it->second = packet_number;
+  }
+  else
+  {
+    highest_published_packet_number_[topic] = packet_number;
+  }
+  return true;
 }
 
 Defragmenter& RemoteNode::defragmenter()

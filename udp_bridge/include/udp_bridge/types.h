@@ -53,6 +53,17 @@ struct SourceInfo
   std::string node_name;
   std::string host;
   uint16_t port = 0;
+
+  // Sequencing metadata, populated by UDPBridge::unwrap from the
+  // SequencedPacketHeader before the inner packet is recursively
+  // decoded. `sequenced` is false for any packet that did not pass
+  // through the wrapped-packet layer (so the stale-packet gate in
+  // decodeData leaves un-sequenced packets untouched). `packet_number`
+  // is the sender's per-remote-node monotonic sequence number, used to
+  // drop late-arriving resends that a newer message has already
+  // superseded on the same destination topic.
+  bool sequenced = false;
+  uint64_t packet_number = 0;
 };
 
 } // namespace udp_bridge
