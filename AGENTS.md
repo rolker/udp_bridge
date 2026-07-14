@@ -2,7 +2,9 @@
 
 Instructions for AI agents working in this repository — including **GitHub
 Copilot code review**, which reads this file when reviewing PRs. There is no
-`.agents/README.md` deep guide yet; start from the top-level `README.md`.
+`.agents/README.md` deep guide yet (the workspace convention for project
+agent guides — distinct from the `.agent/work-plans/` directory); start from
+the top-level `README.md`.
 
 ## Workspace Rules
 
