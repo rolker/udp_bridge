@@ -49,8 +49,9 @@
 //
 //   periodic_group_ (MutuallyExclusive)
 //     Owns: stats_report_timer_, bridge_info_timer_, diagnostic_timer_,
-//     subscription_update_timer_, and the four service handlers
-//     (subscribe / advertise / add_remote / list_remotes). Admin-style
+//     subscription_update_timer_, and the six service handlers
+//     (subscribe / advertise / remove_subscribe / remove_advertise /
+//     add_remote / list_remotes). Admin-style
 //     work that must not race the hot path but can be safely serialized
 //     against itself.
 //
