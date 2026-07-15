@@ -1,10 +1,9 @@
 # AGENTS.md — udp_bridge
 
 Instructions for AI agents working in this repository — including **GitHub
-Copilot code review**, which reads this file when reviewing PRs. There is no
-`.agents/README.md` deep guide yet (the workspace convention for project
-agent guides — distinct from the `.agent/work-plans/` directory); start from
-the top-level `README.md`.
+Copilot code review**, which reads this file when reviewing PRs. Coding
+agents: the deep guide (packages, layout, pitfalls) is
+[`.agents/README.md`](.agents/README.md); read it before making changes.
 
 ## Workspace Rules
 
