@@ -77,10 +77,14 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
   bounded at 300 kB/s (0.25 × 1.2 MB/s), and under ack starvation decayed
   to ~19 kB/s within 4 s.
 
-- **Attempted bytes count against the budget.** The enforcement loop
-  accumulates the size of every packet it hands to `send()`, whether or
-  not the inner rate limiter then drops it — conservative, O(packets),
-  and immune to double-querying races.
+- **Two-part accounting.** The window seed counts only resend bytes
+  actually *sent* in the last second (success or socket-failed —
+  `bytes_in_window` excludes budget-dropped entries, which consumed no
+  link capacity; counting them would let one shed batch block the budget
+  for the rest of the window). Within a single `resend_packets` call,
+  every packet handed to `send()` is then charged locally regardless of
+  its outcome — conservative, O(packets), and immune to double-querying
+  races.
 
 - **Scope honesty.** This bounds the *resend category only*. The shared
   `can_send` cap still meters all categories together, so the budget

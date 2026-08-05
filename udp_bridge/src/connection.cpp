@@ -512,13 +512,16 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
   const double budget_bytes =
     (static_cast<double>(fraction) * rate_limit) / static_cast<double>(1u << backoff_shift);
 
-  // Seed the accumulator with resend bytes already recorded in the same
-  // strict 1-second window can_send uses (NOT the 0-10 s smoothed rate,
-  // which lags a sustained burst and would under-shed in exactly the
-  // sustained-storm mode this budget exists to stop). Attempted bytes
-  // are then accumulated locally — counting attempts (rather than
-  // re-querying, which would miss failed sends' budget cost) keeps the
-  // bound conservative and the loop O(packets).
+  // Seed the accumulator with the resend bytes already SENT (success
+  // or failed at the socket — not budget-dropped) in the same strict
+  // 1-second window can_send uses (NOT the 0-10 s smoothed rate, which
+  // lags a sustained burst and would under-shed in exactly the
+  // sustained-storm mode this budget exists to stop). Budget-dropped
+  // entries are deliberately excluded from the seed: they consumed no
+  // link capacity, and counting them would let one shed batch block the
+  // budget for the rest of the window. Within THIS call, each packet
+  // handed to send() is then charged locally regardless of its outcome
+  // — conservative, immune to re-query races, and O(packets).
   uint64_t attempted_bytes;
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
