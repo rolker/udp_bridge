@@ -131,3 +131,28 @@ approve-with-suggestions: no must-fix blockers. Implementer should fold findings
 1-3 into `doc/admission_control_design.md` (step 7), pick up finding 4's
 `.agents/README.md` edit, and honor finding 5's lock-ordering note. Plan does not
 need re-approval before implementation.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-05 19:34 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-43 at `73f6e70`
+**Mode**: pre-push
+**Depth**: Deep (reason: RemoteConnection.msg interface change + Connection concurrency/lock-ordering + cross-layer telemetry)
+**Must-fix**: 0 | **Suggestions**: 3
+**Round**: 1 | **Ship**: recommended — no must-fix; both high-severity adversarial claims were verified false positives
+
+### Findings
+- [ ] (suggestion) Idle-link/stale-feedback nuance: `congested = feedback_stale || ...` can throttle a previously-active, now-idle link (sent_bps==0), contradicting design-doc "idle links cannot be congested" — guard feedback_stale with sent_bps>0 OR fix the doc — `src/connection.cpp:159` / `doc/admission_control_design.md:50`
+- [ ] (suggestion) Field is inserted mid-message, not "appended" — fix wording — `udp_bridge_interfaces/msg/RemoteConnection.msg:34`
+- [ ] (suggestion) Plan Consequences table stale vs shipped follow/clamp + resend-on-effective — `.agent/work-plans/issue-43/plan.md:164`
+
+### Notes (verified false positives, not counted above)
+- Lock-ordering "deadlock" (Lens B): config_mutex_ and sent_packet_statistics_mutex_ are acquired sequentially in separate `{}` scopes, never held nested — no cycle. Lens A concurred.
+- NeverReceivedSentinel test does exercise the 0.0 guard (feedback_stale is the independent first || operand).
+- resend_budget_design.md already updated to "admission cap".
+- effective→0 truncation only at sub-10-B/s limits (below single-packet size) — below threshold.
+- Static analysis (ament_cpplint + cppcheck): no PR-introduced findings; repo has no cpplint CI gate and pre-existing style nits on context lines only.
+- Local Adversarial skipped: no Ollama server at localhost:11434.
