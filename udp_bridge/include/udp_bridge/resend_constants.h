@@ -112,6 +112,34 @@ inline constexpr std::chrono::duration<double> kAckStarvationThreshold{1.0};
 // the inbound path returns.
 inline constexpr uint32_t kMaxAckStarvationBackoffShift = 4;
 
+// Adaptive admission control (issue #43). AIMD on a per-connection
+// effective rate cap, driven by the delivered-vs-sent ratio computed
+// from the remote's echoed BridgeInfo received_bytes_per_second (see
+// doc/admission_control_design.md). Complements the resend budget
+// above: that bounds the resend category; this scales what fresh data
+// is offered onto a connection whose delivered capacity has dropped.
+
+// Multiplicative decrease applied to the effective rate cap on a
+// congestion signal (delivery below threshold, or stale feedback).
+inline constexpr float kAdmissionDecreaseFactor = 0.5f;
+
+// Additive recovery per clean feedback interval, as a fraction of the
+// configured maximum_bytes_per_second. 0.1 recovers from the floor to
+// the full cap in ~9 clean BridgeInfo intervals (~9 s at 1 Hz).
+inline constexpr float kAdmissionAdditiveStepFraction = 0.1f;
+
+// Congestion trigger: decrease when the remote reports receiving less
+// than (1 - threshold) of what we sent. 0.1 tolerates the signal's
+// known inflation sources (duplicates, resend traffic, differing
+// smoothing windows) without triggering on noise.
+inline constexpr float kAdmissionLossThreshold = 0.1f;
+
+// Default minimum effective cap as a fraction of the configured
+// maximum_bytes_per_second. Keeps enough flow for the control/telemetry
+// topics plus the feedback loop itself. Overridable per connection via
+// the `admission_floor_fraction` parameter.
+inline constexpr float kDefaultAdmissionFloorFraction = 0.1f;
+
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant
 // directly to rclcpp::Duration's chrono::duration constructor:

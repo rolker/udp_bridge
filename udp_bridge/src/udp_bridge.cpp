@@ -407,6 +407,10 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       declareIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
       double resend_budget_fraction = get_parameter(resend_budget_fraction_param).as_double();
 
+      std::string admission_floor_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_floor_fraction";
+      declareIfMissing(admission_floor_fraction_param, static_cast<double>(kDefaultAdmissionFloorFraction));
+      double admission_floor_fraction = get_parameter(admission_floor_fraction_param).as_double();
+
       remote_info.connections.push_back(connection);
       remote_nodes_[remote_info.name]->update(remote_info);
 
@@ -419,7 +423,10 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // here is the only non-default source (see
       // doc/resend_budget_design.md).
       if(auto live_connection = remote_nodes_[remote_info.name]->connection(connection_name))
+      {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
+        live_connection->setAdmissionFloorFraction(static_cast<float>(admission_floor_fraction));
+      }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
       declareIfMissing(topics_list_param, std::vector<std::string>());
@@ -1729,6 +1736,7 @@ void UDPBridge::sendBridgeInfo()
             rc.source_ip_address = connection->sourceIPAddress();
             rc.source_port = connection->sourcePort();
             rc.maximum_bytes_per_second = connection->rateLimit();
+            rc.effective_rate_limit = connection->effectiveRateLimit();
             auto receive_rates = connection->data_receive_rate(rclcpp::Time(bi.stamp).seconds());
             rc.received_bytes_per_second = receive_rates.first + receive_rates.second;
             rc.duplicate_bytes_per_second = receive_rates.second;
@@ -1881,6 +1889,7 @@ void UDPBridge::listRemotes(
           rc.source_ip_address = connection->sourceIPAddress();
           rc.source_port = connection->sourcePort();
           rc.maximum_bytes_per_second = connection->rateLimit();
+          rc.effective_rate_limit = connection->effectiveRateLimit();
           auto receive_rates = connection->data_receive_rate(now.seconds());
           rc.received_bytes_per_second = receive_rates.first + receive_rates.second;
           rc.duplicate_bytes_per_second = receive_rates.second;
