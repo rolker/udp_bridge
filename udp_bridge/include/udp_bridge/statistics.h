@@ -87,6 +87,16 @@ public:
   ///        for callers that don't use the reservation pattern.
   bool can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const;
 
+  /// Sum of non-dropped bytes recorded for `category` in the strict
+  /// 1-second window ending at `time` — the same window/scan semantics
+  /// as can_send (full-deque scan; dropped entries excluded). Used by
+  /// the resend budget (issue #44), which must react within the same
+  /// window the rate limiter uses: the 0-10 s smoothed get() rate lags
+  /// a sustained burst as the deque's time span grows, which would
+  /// under-shed in exactly the sustained-storm mode the budget exists
+  /// to stop.
+  uint64_t bytes_in_window(PacketSendCategory category, rclcpp::Time time) const;
+
 private:
   udp_bridge_interfaces::msg::DataRates get(PacketSendCategory *category) const;
 
