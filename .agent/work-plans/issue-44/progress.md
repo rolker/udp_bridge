@@ -109,3 +109,21 @@ From the consequences map — changes to this issue will require:
 - [ ] (suggestion) Wiring mis-targeted: `udp_bridge.cpp:400` is a parameter *read* into a config struct (`connection.maximum_bytes_per_second`, `udp_bridge.cpp:404`), not a live `Connection` — there is no `connection->` there. `setRateLimit` is actually applied at `udp_bridge.cpp:1277` (CONNECT/adopt path), `:1805` and `:1830` (addRemote). To mirror `maximum_bytes_per_second`, thread the fraction through the same config-struct/`ConnectionInternal` path and apply it at all setter sites; the Consequences row `plan.md:118` ("no change needed") understates this — `plan.md:51-57`
 - [ ] (suggestion) Test case 2 off-by-one: "2 × kAckStarvationThreshold ago" gives `floor(2/1)=2` steps → 4× reduction, not the "(one backoff step)" / 0.5× the note claims. The `≤ 0.5×` assert still passes but is loose; use ~1.x× threshold for exactly one step and pin the floor boundary to avoid FP flakiness — `plan.md:76-79`
 - [ ] (suggestion) "Fresh data is never affected — only resend packets" overstates: the shared `can_send`/`reserved_bytes_in_flight_` still meters all categories together; the new budget leaves *headroom* for fresh data rather than strictly prioritizing it. Reword in the design note. Clock domain is fine — both `update_last_receive_time` (`remote_node.cpp:337`) and the `now` passed to `resend_packets` (`remote_node.cpp:263`) use `clock_`, so the subtraction is valid; note that dependency in the design note — `plan.md:46`
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-05 17:01 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-44 at `83b89da`
+**Mode**: pre-push
+**Depth**: Deep (reason: concurrency + lifecycle + network resend path)
+**Must-fix**: 0 | **Suggestions**: 2
+**Round**: 1 | **Ship**: recommended — no must-fix; both suggestions are safe-direction refinements
+
+### Findings
+- [ ] (suggestion) Probe-trickle floor not honored on low-rate links: when floored budget < one packet size, the resend loop drops everything (zero probe) — affects the ~25 kB/s / default-50000 links the design targets; force >=1 packet at the floor or correct the design-note claim — `udp_bridge/src/connection.cpp` (resend budget loop)
+- [ ] (suggestion) NaN `resend_budget_fraction` clamps to 1.0 (most-permissive) instead of the default, contradicting the setter's "nearest sane bound" intent; add an isnan guard mapping to kDefaultResendBudgetFraction — `udp_bridge/src/connection.cpp:76`
+
+Static analysis: cppcheck clean; cpplint findings are pervasive house-style (package has no ament_lint), dropped. Governance: all principles Pass; ADR-0001/0008 compliant (design note serves as the decision record). Plan adherence: close; both plan-review must-fixes (1s-window accounting, 0.0 sentinel) resolved in code. Concurrency/lifecycle verified safe by Lens B (MutuallyExclusive callback group, no lock nesting, caller releases state_mutex_ before dispatch). Local Adversarial skipped (Ollama unavailable); Copilot off (default).
