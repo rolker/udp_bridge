@@ -161,6 +161,12 @@ if(BUILD_TESTING)
   # including the remote-restart reset that keeps post-restart packet #0 from
   # being dropped as stale.
   add_udp_bridge_gtest(test_stale_packet_gate test/test_stale_packet_gate.cpp)
+  # test_reorder_buffer exercises RemoteNode::admitOrBuffer /
+  # flushExpiredBuffer — the reorder/jitter buffer (issue #35) that holds a
+  # gap-opening packet briefly (reorder_hold_window_ms) so an out-of-order
+  # gap-filler can be published first, instead of hard-dropping the late
+  # arrival. Uses injected fake time (no real-time sleeps).
+  add_udp_bridge_gtest(test_reorder_buffer test/test_reorder_buffer.cpp)
 endif()
 
 ament_package()
