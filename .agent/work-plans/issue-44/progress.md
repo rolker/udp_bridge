@@ -127,3 +127,19 @@ From the consequences map — changes to this issue will require:
 - [ ] (suggestion) NaN `resend_budget_fraction` clamps to 1.0 (most-permissive) instead of the default, contradicting the setter's "nearest sane bound" intent; add an isnan guard mapping to kDefaultResendBudgetFraction — `udp_bridge/src/connection.cpp:76`
 
 Static analysis: cppcheck clean; cpplint findings are pervasive house-style (package has no ament_lint), dropped. Governance: all principles Pass; ADR-0001/0008 compliant (design note serves as the decision record). Plan adherence: close; both plan-review must-fixes (1s-window accounting, 0.0 sentinel) resolved in code. Concurrency/lifecycle verified safe by Lens B (MutuallyExclusive callback group, no lock nesting, caller releases state_mutex_ before dispatch). Local Adversarial skipped (Ollama unavailable); Copilot off (default).
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-05 13:45 -04:00
+**By**: Claude Code Agent (Claude Fable 5)
+
+**PR**: #46 at `77bb743` (wording fix pushed as `6d8ad1f`)
+**Sources**: 3 (Copilot review @ `77bb743`, Local Review (Pre-Push) @ round 1, CI rollup)
+**Cross-source confirmations**: 0
+**CI**: all-pass (build-and-test ✅, copilot-pull-request-reviewer ✅)
+
+### Findings
+- [x] (minor, Copilot ×2 — same point at `doc/resend_budget_design.md:83` and `src/connection.cpp:521`) Design note + loop comment claimed attempted bytes count against the budget even when dropped, but the window seed (`bytes_in_window`) excludes budget-dropped entries. Valid docs-accuracy finding; behavior itself is correct (counting shed batches in the seed would block the budget for the rest of the window). Fixed in `6d8ad1f` — wording now states the two-part accounting (seed = sent bytes only; within-call = every attempt charged). No behavior change; 117/117 tests still green.
+
+### False positives
+- (none)
