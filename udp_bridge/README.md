@@ -89,7 +89,7 @@ For each connection in `connections_list`:
 -   `remotes.<remote_label>.connections.<connection_id>.port`: (integer) Target port.
 -   `remotes.<remote_label>.connections.<connection_id>.maximum_bytes_per_second`: (int) Rate limit.
 -   `remotes.<remote_label>.connections.<connection_id>.resend_budget_fraction`: (double, 0.0–1.0, default 0.25) Maximum fraction of the rate limit that resend traffic may consume. Halves per second of ack starvation, floored at 1/16 of the fraction. See `doc/resend_budget_design.md`.
--   `remotes.<remote_label>.connections.<connection_id>.admission_floor_fraction`: (double, 0.0–1.0, default 0.1) Minimum AIMD-adjusted admission cap as a fraction of the rate limit. The effective cap halves when the remote reports receiving <90% of what was sent, and recovers additively when clean. See `doc/admission_control_design.md`.
+-   `remotes.<remote_label>.connections.<connection_id>.admission_floor_fraction`: (double, 0.0–1.0, default 0.1) Minimum AIMD-adjusted admission cap as a fraction of the rate limit. The effective cap halves when the remote reports receiving <90% of what was sent — or when nothing has been received on the connection for ~1 s while actively sending (stale feedback) — and recovers additively when clean. See `doc/admission_control_design.md`.
 -   `remotes.<remote_label>.connections.<connection_id>.topics_list`: (string array) List of topics to sync.
 
 For each topic in `topics_list`:

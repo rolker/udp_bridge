@@ -414,14 +414,16 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       remote_info.connections.push_back(connection);
       remote_nodes_[remote_info.name]->update(remote_info);
 
-      // The fraction is applied to the live Connection after update()
-      // creates/refreshes it — `connection` above is a RemoteConnection
-      // msg (config data), not the live object. The message/service
-      // paths that also call setRateLimit (CONNECT/adopt, addRemote)
-      // carry no fraction, so connections created there keep the
-      // kDefaultResendBudgetFraction field initializer; the parameter
-      // here is the only non-default source (see
-      // doc/resend_budget_design.md).
+      // Both fractions are applied to the live Connection after
+      // update() creates/refreshes it — `connection` above is a
+      // RemoteConnection msg (config data), not the live object. The
+      // message/service paths that also call setRateLimit
+      // (CONNECT/adopt, addRemote) carry neither fraction, so
+      // connections created there keep the field-initializer defaults
+      // (kDefaultResendBudgetFraction, kDefaultAdmissionFloorFraction);
+      // the parameters here are the only non-default source (see
+      // doc/resend_budget_design.md and
+      // doc/admission_control_design.md).
       if(auto live_connection = remote_nodes_[remote_info.name]->connection(connection_name))
       {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));

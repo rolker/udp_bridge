@@ -90,9 +90,11 @@ static cap:
   different smoothing windows; BridgeInfo adds up to ~1 s of propagation
   delay. The 10% loss threshold absorbs this inflation — do not treat
   the ratio as a precise loss percentage.
-- **Lock ordering**: `updateAdmissionControl` reads the sent-stats and
-  receive-history mutexes *before* acquiring `config_mutex_`, matching
-  `send()`'s sequential (never nested) acquisition order.
+- **Locking**: `updateAdmissionControl` reads the sent-stats and
+  receive-history values under their own mutexes, then takes
+  `config_mutex_` for the AIMD update — the mutexes are never held
+  simultaneously (as everywhere else in `Connection`), so no
+  lock-ordering constraint exists or is created.
 
 ## Telemetry
 

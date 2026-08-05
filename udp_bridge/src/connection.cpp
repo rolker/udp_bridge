@@ -130,9 +130,12 @@ uint32_t Connection::effectiveRateLimit() const
 
 void Connection::updateAdmissionControl(float remote_received_bps, rclcpp::Time now)
 {
-  // Lock-ordering discipline: read the stats and receive-history
-  // mutexes BEFORE taking config_mutex_ — send() acquires them
-  // sequentially, never nested, and this must match.
+  // Locking: read the stats and receive-history values under their own
+  // mutexes first, then take config_mutex_ for the AIMD update — the
+  // mutexes are never held simultaneously, so no lock-ordering
+  // constraint is created (send() likewise acquires them one at a
+  // time). Keep it that way: nesting any of them would introduce an
+  // ordering requirement that nothing else in Connection has.
   udp_bridge_interfaces::msg::DataRates sent;
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
