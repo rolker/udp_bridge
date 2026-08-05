@@ -45,7 +45,13 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
    halvings — a floor of 1/16 of the fraction (~1.6% of the rate limit at
    the default). The floor deliberately keeps a **probe trickle** flowing
    so recovery begins the moment the inbound path returns, without waiting
-   for a timer.
+   for a timer. On links whose floored budget is smaller than a single
+   packet (the default 50 kB/s class floors at 781 bytes), a byte
+   comparison alone would shed everything, so when nothing has been resent
+   in the current window the first packet is admitted regardless of size —
+   the trickle is bounded at roughly one packet per window, never zero.
+   Exception: a fraction of 0.0 is the operator's "no resends on this
+   connection" switch and never probes.
 
    `last_receive_time() == 0.0` is the "no packet received yet" sentinel:
    a brand-new connection has no starvation history and gets the full

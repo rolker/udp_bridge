@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cmath>
 #include <cstring>
 #include <numeric>
 #include <vector>
@@ -265,6 +266,59 @@ TEST_F(ResendBudget, MaxBackoffClamp)
     << "Max backoff shut resends off entirely — the floor is supposed "
        "to keep a probe trickle so recovery is possible the moment the "
        "inbound path returns.";
+}
+
+TEST_F(ResendBudget, ProbeFloorLowRateLink)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+
+  std::vector<uint64_t> missing;
+  auto conn = make_seeded_connection(t0, &missing);
+  // Default-class link: 50 kB/s. At max backoff the floored budget is
+  // 50000 * 0.25 / 16 = 781 bytes — smaller than one 1000-byte packet.
+  // The probe guarantee must still admit exactly one packet per window
+  // rather than shedding everything (pre-push review suggestion 1).
+  conn->setRateLimit(50000);
+  conn->update_last_receive_time(
+    t0.seconds() - 100.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
+
+  conn->resend_packets(missing, send_sock_.get(), t0);
+
+  auto rates = conn->data_sent_rate(t0, udp_bridge::PacketSendCategory::resend);
+  EXPECT_EQ(rates.success_bytes_per_second, static_cast<float>(kPacketSize))
+    << "Sub-packet floored budget must admit exactly one probe packet "
+       "per window — zero means the probe trickle silently vanished on "
+       "low-rate links; more means the budget bound broke.";
+}
+
+TEST_F(ResendBudget, ZeroFractionDisablesResends)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+
+  std::vector<uint64_t> missing;
+  auto conn = make_seeded_connection(t0, &missing);
+  conn->setResendBudgetFraction(0.0f);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  conn->resend_packets(missing, send_sock_.get(), t0);
+
+  auto rates = conn->data_sent_rate(t0, udp_bridge::PacketSendCategory::resend);
+  // fraction 0.0 is the operator's "no resends on this connection"
+  // switch — the probe guarantee must not override it.
+  EXPECT_EQ(rates.success_bytes_per_second, 0.0f)
+    << "fraction 0.0 must disable resends entirely (probe guarantee "
+       "leaked past a zero budget).";
+}
+
+TEST_F(ResendBudget, NanFractionFallsBackToDefault)
+{
+  udp_bridge::Connection conn("nan-test", "127.0.0.1", 1, "", 0);
+  conn.setResendBudgetFraction(std::nanf(""));
+  // NaN must map to the default, not slip through std::min/max to the
+  // most-permissive 1.0 (pre-push review suggestion 2).
+  EXPECT_EQ(conn.resendBudgetFraction(), udp_bridge::kDefaultResendBudgetFraction);
 }
 
 int main(int argc, char** argv)

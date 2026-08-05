@@ -4,6 +4,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <sstream>
 #include <iostream>
@@ -73,6 +74,10 @@ void Connection::setResendBudgetFraction(float fraction)
 {
   // Clamp rather than reject: a mis-typed config value should degrade
   // to the nearest sane bound, not silently keep the previous value.
+  // NaN has no nearest bound — std::min/max would pass it through to
+  // the most-permissive 1.0 — so it falls back to the default instead.
+  if(std::isnan(fraction))
+    fraction = kDefaultResendBudgetFraction;
   fraction = std::max(0.0f, std::min(1.0f, fraction));
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   resend_budget_fraction_ = fraction;
@@ -520,10 +525,19 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
     attempted_bytes = sent_packet_statistics_.bytes_in_window(PacketSendCategory::resend, now);
   }
 
+  // Probe guarantee: on links whose floored budget is smaller than one
+  // packet (e.g. the default 50 kB/s limit at max backoff: 781 bytes),
+  // a pure byte comparison would shed every resend and the "probe
+  // trickle keeps recovery possible" property would silently vanish.
+  // When nothing has been resent in the current window, the first
+  // packet is admitted regardless of its size — bounding the trickle
+  // at roughly one packet per window rather than zero. A zero budget
+  // (fraction 0.0 = operator disabled resends) never probes.
+  const bool admit_probe = (attempted_bytes == 0 && budget_bytes > 0.0);
   for(std::size_t i = 0; i < packets_to_resend.size(); ++i)
   {
     const auto& packet = packets_to_resend[i];
-    if(attempted_bytes + packet.size() > budget_bytes)
+    if(attempted_bytes + packet.size() > budget_bytes && !(admit_probe && i == 0))
     {
       // Budget exhausted: record the remainder as dropped so the
       // shedding is visible in the existing per-connection resend
