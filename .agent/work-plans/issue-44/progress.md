@@ -81,3 +81,15 @@ From the consequences map — changes to this issue will require:
 - [ ] Clarify ordering/compatibility with #19 (priority scheduling) — the issues intersect where a binding budget determines what gets shed.
 - [ ] Update README/API docs for all new configurable parameters in the same PR.
 - [ ] Confirm #18 bench harness status; if not available, add the regression test ("resend rate stays bounded under ack starvation") inline.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-05 00:00 +00:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-44/plan.md` at `13f5680`
+**Branch**: feature/issue-44 at `13f5680`
+**Phases**: single
+
+### Open questions
+- [ ] No open questions — all operator checkpoint decisions resolved; plan is review-plan-ready.
