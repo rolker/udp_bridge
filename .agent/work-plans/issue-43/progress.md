@@ -84,3 +84,15 @@ signal; that choice and the AIMD parameters need to be captured in a design doc
 - [ ] Verify new config parameter wiring follows the `resend_budget_fraction_` / `on_configure`
   pattern (per-connection file config only; no `AddRemote.srv` extension unless a caller
   needs it).
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-05 18:43 +00:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-43/plan.md` at `48b422d`
+**Branch**: feature/issue-43 at `48b422d`
+**Phases**: single
+
+### Open questions
+- [ ] No open questions — plan is review-plan-ready. Operator checkpoint (2026-08-05) resolved all five open actions from the issue review.
