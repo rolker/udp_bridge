@@ -32,12 +32,18 @@ delivered-vs-sent, no wire-protocol change needed (the field already exists in
 
 2. **Extend `Connection`** (`connection.h` + `connection.cpp`):
    - Add `float effective_rate_limit_` (init to `default_rate_limit`, guarded by
-     `config_mutex_`). Updated by AIMD; `setRateLimit()` **clamps it to
-     `min(effective, new_limit)`** rather than resetting (review-plan S2: a
-     CONNECT/adopt or addRemote re-applying an unchanged limit must not wipe
-     accumulated backoff and burst a congested link at full rate — the clamp
-     preserves backoff while still honoring a genuinely lowered cap; a raised
-     cap is reached via normal additive recovery).
+     `config_mutex_`). Updated by AIMD; `setRateLimit()` **follows the new
+     limit when no backoff has accumulated** (effective at the old limit,
+     incl. fresh construction — so configuring a larger cap binds
+     immediately) **and otherwise clamps to `min(effective, new_limit)`**
+     rather than resetting (review-plan S2: a CONNECT/adopt or addRemote
+     re-applying an unchanged limit must not wipe accumulated backoff and
+     burst a congested link at full rate; a backed-off connection reaches a
+     raised cap via additive recovery). Implementation note: the resend
+     budget (#44) now bases on `effective_rate_limit_` instead of
+     `data_rate_limit_` so resends shrink proportionally with admission —
+     documented in both design notes; #44 tests unchanged (caps equal
+     without AIMD activity).
    - Add `float admission_floor_fraction_` (default `kDefaultAdmissionFloorFraction`,
      guarded by `config_mutex_`).
    - New methods: `setAdmissionFloorFraction(float)` / `admissionFloorFraction()` /
