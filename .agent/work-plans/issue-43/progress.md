@@ -156,3 +156,24 @@ need re-approval before implementation.
 - effective→0 truncation only at sub-10-B/s limits (below single-packet size) — below threshold.
 - Static analysis (ament_cpplint + cppcheck): no PR-introduced findings; repo has no cpplint CI gate and pre-existing style nits on context lines only.
 - Local Adversarial skipped: no Ollama server at localhost:11434.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-05 16:05 -04:00
+**By**: Claude Code Agent (Claude Fable 5)
+
+**PR**: #47 at `0896bca` (wording fixes pushed as `5be82f2`)
+**Sources**: 3 (Copilot review @ `0896bca`, Local Review (Pre-Push) @ round 1, CI rollup)
+**Cross-source confirmations**: 0
+**CI**: all-pass (build-and-test ✅)
+
+### Findings
+- [x] (minor, Copilot) README `admission_floor_fraction` entry omitted the stale-feedback backoff trigger — `udp_bridge/README.md:92`. Fixed in `5be82f2`.
+- [x] (minor, Copilot) `updateAdmissionControl` locking comment (and the design-note echo) implied a lock-ordering constraint that doesn't exist — mutexes are never held simultaneously — `src/connection.cpp:135`. Reworded in `5be82f2`.
+- [x] (minor, Copilot) Stale plan Consequences row said resend budget still uses `data_rate_limit_`, contradicting the shipped effective-cap base — `.agent/work-plans/issue-43/plan.md:166`. Row removed in `5be82f2`.
+- [x] (minor, Copilot) on_configure wiring comment described only `resend_budget_fraction` though the block now applies both fractions — `src/udp_bridge.cpp:424`. Updated in `5be82f2`.
+
+All four valid, all wording-only; no behavior change. 127/127 tests green after fixes.
+
+### False positives
+- (none)
