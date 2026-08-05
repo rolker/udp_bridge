@@ -34,3 +34,20 @@ issue: 35
 ### Open questions
 - [ ] Clamp `reorder_hold_window_ms` to 0–500 ms in `on_configure` to prevent large accidental values causing latency regressions?
 - [ ] At-most-one buffer slot per topic covers the primary use case; multi-packet reorder depth is a follow-up if field observations warrant it.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-05 21:56 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Plan**: `.agent/work-plans/issue-35/plan.md` at `5f23dc5`
+**PR**: PR-less (--issue mode; independent fresh-context dispatch — not author self-review despite shared `Claude Code Agent` name, since the plan was authored by a different model/dispatch)
+**Verdict**: approve-with-suggestions
+
+### Findings
+- [ ] (must-fix) Steps 3 and 6 disagree on where `flushExpiredBuffer` is hooked: step 3 says `UDPBridge::decodeData` "on every socket-drain tick", but `decodeData` is per-decoded-packet and does not run when the link is idle. Only `spin_once` (`udp_bridge.cpp:595`) runs every 10 ms. Commit to `spin_once` so a buffered packet on a briefly-idle topic ages out on schedule instead of stalling until the next arriving packet — `plan.md:42-46`
+- [ ] (suggestion) Flush must iterate all remotes: the buffer is per-`RemoteNode`, and `spin_once` already snapshots `remote_nodes_` and loops them for defragmenter cleanup (`udp_bridge.cpp:638-652`). Extend that existing per-remote loop to call `flushExpiredBuffer(now)` and push returned items to `PublishQueue`, rather than "a call at the top of the drain callback" — `plan.md:66,89`
+- [ ] (suggestion) PublishItem construction ordering: the stale gate runs at `udp_bridge.cpp:855` *before* the payload copy / `PublishItem` build (`udp_bridge.cpp:881+`). A `Buffer` decision must store a `PublishItem`, forcing the payload copy before the admit call on the enabled path — the "gate before payload copy costs nothing" optimization (comment at L850) no longer holds there. State where the item is built on the buffer path and update that comment — `plan.md:36-40,59-66`
+- [ ] (suggestion) Injected clock / method signatures: `RemoteNode::clock_` is the real node clock (`remote_node.cpp:15`), not injectable. The existing test pattern uses explicit `rclcpp::Time now` params (`getMissingPacketsAt(rclcpp::Time)` + `t_at()`/`kClock`). `admitOrBuffer`/`flushExpiredBuffer` should take an injected `now` (prod passes `clock_->now()`, tests pass fake time) and each buffer entry must store an arrival timestamp — steps 2-3 omit the time parameter — `plan.md:36-46`
+- [ ] (suggestion) gtest count baseline is stale: `.agents/README.md` says "13 gtest targets" but lists 12 names, while `CMakeLists.txt` registers 14 (`test_resend_budget`, `test_admission_control` from #43/#44 were never added to the README). The plan's "12 → 13" propagates the wrong baseline; set the count/list to the true value (14 → 15, adding the two missing names) — `plan.md:124,128`
+- [ ] (suggestion) Parameter nesting deviates from review-issue action #5 (which asked for `remotes.<r>.topics.<t>...` nesting). Making `reorder_hold_window_ms` global is defensible (matches `drop_stale_packets`/`maximum_packet_size` precedent; per-topic deferred to #34), but note the deviation explicitly so it reads as a recorded decision, not an omission — `plan.md:50-53`
