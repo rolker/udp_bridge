@@ -31,39 +31,70 @@ time) be admitted by the existing `admitForPublish` logic unchanged.
    tests, and the disabled path still use it directly).
 
 2. **Add `admitOrBuffer`** — a new `RemoteNode` method that replaces
-   `admitForPublish` on the hot path when the reorder window is enabled. Returns
-   a 3-way `AdmitDecision` (`Admit` / `Drop` / `Buffer`). When a gap is detected
-   (packet_number > high_water + 1) it stores the `PublishItem` in the
-   per-topic buffer and returns `Buffer` **without advancing the high-water
-   mark**. At-most-one buffered packet per topic: if a new packet arrives while
-   one is already buffered for that topic, flush the buffered entry immediately
-   (admit it as-is) before buffering the new one.
+   `admitForPublish` on the hot path when the reorder window is enabled. It
+   takes the already-built `PublishItem` by value (payload copy happens
+   BEFORE the call — see step 6) and an injected `rclcpp::Time now`, and
+   returns an `AdmitResult` = a 3-way `AdmitDecision` (`Admit` / `Drop` /
+   `Buffer`) plus a `to_publish` vector of `PublishItem`s in wire order.
+   When a gap is detected (packet_number >= high_water + 2) it stores the
+   `PublishItem` (and `now` as its arrival time) in the per-topic buffer and
+   returns `Buffer` **without advancing the high-water mark** (`to_publish`
+   empty). At-most-one buffered packet per topic: if a new packet newer than
+   the buffered one arrives, the buffered entry is flushed into `to_publish`
+   (and the mark advanced to it) before the new packet is resolved. A
+   gap-filler (packet below the buffered one) is admitted first, then the
+   held packet is released right behind it if that closed the gap.
+   `admitForPublish` is reused internally as the "admit + advance mark"
+   primitive so the two paths share one high-water rule.
+   **Deviation from Issue Review #4**: `now` is an explicit injected
+   parameter (prod passes `clock_->now()`, tests pass fake time), matching
+   the `getMissingPacketsAt(rclcpp::Time)` pattern — `RemoteNode::clock_` is
+   not itself injectable.
 
-3. **Add `flushExpiredBuffer`** — called from `UDPBridge::decodeData` on every
-   socket-drain tick. Returns any `PublishItem`s whose hold time has exceeded
-   `hold_window_ms_`; the caller pushes them to `PublishQueue` in order.
-   Also called internally by `admitOrBuffer` on a per-topic basis when a new
-   packet fills the gap (publishes the filled-in packet first, then the held one)
-   or overflows the at-most-one slot.
+3. **Add `flushExpiredBuffer(now, hold_window)`** — called from
+   `UDPBridge::spin_once` on every 10 ms drain tick (NOT `decodeData`, which
+   is per-decoded-packet and never fires on an idle link — see the Plan
+   Review must-fix). Both `now` and `hold_window` are injected. Returns any
+   held `PublishItem`s whose age (`now - arrival_time`) has reached
+   `hold_window`, advancing the per-topic mark to each as it goes; the caller
+   pushes them to `PublishQueue`. The gap-fill and at-most-one-overflow
+   releases are handled inline by `admitOrBuffer` (step 2), not here.
 
 4. **Add `reorder_hold_window_ms` parameter** — global node parameter
    (like `drop_stale_packets`; per-topic tuning deferred to the #34 opt-in
    infrastructure). Type `double`, default `0.0` (disabled — reorder buffer off,
    behaviour identical to today). Declared in `on_configure` via `declareIfMissing`.
    When 0 the hot path stays on `admitForPublish` with no overhead.
+   **Recorded decision (deviation from Issue Review #5)**: this parameter is
+   GLOBAL, not nested under `remotes.<r>.topics.<t>...`. This matches the
+   `drop_stale_packets` / `maximum_packet_size` precedent; per-topic tuning is
+   deferred to #34's opt-in infrastructure. Recorded here (and in the PR
+   description / `.agents/README.md`) so the flat naming reads as a decision,
+   not an omission. Clamped 0–500 ms with a WARN on out-of-range values
+   (resolving the plan's Open Question), matching the both-bounds discipline
+   used for `maximum_packet_size` / `publish_queue_max_bytes`.
 
 5. **Flush buffer on remote restart** — `update(BridgeInfo)` already clears
    `highest_published_packet_number_` on restart detection; extend it to also
    clear the reorder buffer, consistent with the existing restart-handling contract.
 
-6. **Integrate in `UDPBridge::decodeData`** — three-way branch:
-   - `reorder_hold_window_ms_ == 0` (or gate disabled): existing path unchanged.
-   - `AdmitDecision::Admit`: proceed to PublishQueue as today.
-   - `AdmitDecision::Drop`: existing drop path (log + counter).
-   - `AdmitDecision::Buffer`: packet is held in RemoteNode; return from
-     `decodeData` without pushing to PublishQueue.
-   Add a `flushExpiredBuffer` call at the top of the drain callback (before or
-   after the `recvfrom` loop) to age out held packets on each 10 ms tick.
+6. **Integrate in `UDPBridge::decodeData`** — the `PublishItem` build is
+   factored into a lambda because the reorder path needs the item built
+   BEFORE the admit call (a `Buffer` decision stores it), so the "gate before
+   payload copy costs nothing" property (comment near `udp_bridge.cpp:850`)
+   no longer holds on that path — that comment is updated to say so. Branch:
+   - gate disabled OR `reorder_hold_window_ms_ == 0`: existing fast path —
+     `admitForPublish` before the payload copy, byte-for-byte as today.
+   - reorder enabled: build the item, call `admitOrBuffer`, push every item
+     in the returned `to_publish` to `PublishQueue`, increment the drop
+     counter + throttled log on `Drop`, then return.
+   **Flush hook (Plan Review must-fix + suggestion)**: the
+   `flushExpiredBuffer` call lives in `UDPBridge::spin_once`, NOT here. It
+   extends the existing per-remote loop (the one doing defragmenter cleanup,
+   `udp_bridge.cpp:638-652`): for each remote, when the buffer is enabled,
+   call `flushExpiredBuffer(now, hold_window)` and push the returned items to
+   `PublishQueue`. `spin_once` runs every 10 ms regardless of traffic, so a
+   held packet on an idle topic ages out on schedule.
 
 7. **Write tests** — new `test_reorder_buffer.cpp` gtest suite:
    - Gap detected → packet buffered, high-water not advanced.
@@ -125,7 +156,7 @@ time) be admitted by the existing `admitForPublish` logic unchanged.
 
 ## Documentation & Instruction Impact
 
-- **Stale docs** (must land in this PR): `.agents/README.md` Key Parameters table (add `reorder_hold_window_ms`); Package Inventory gtest count (12 → 13); `config/example_params.yaml` (add parameter with comment).
+- **Stale docs** (must land in this PR): `.agents/README.md` Key Parameters table (add `reorder_hold_window_ms`); Package Inventory gtest count — the README baseline was stale (said "13", listed 12, while CMakeLists registered 14: `test_resend_budget` / `test_admission_control` were never added), so this change corrects it to **14 → 15** and adds all three missing names (the two stale ones plus `test_reorder_buffer`) per the Plan Review; `config/example_params.yaml` (add parameter with comment).
 - **Agent-instruction candidates** (proposals only — operator decides): The "freeze high-water on buffer, only advance on actual publish" invariant is a non-obvious contract worth noting in `.agent/knowledge/` or the udp_bridge `.agents/README.md` pitfalls section. Propose after implementation confirms the pattern holds.
 
 ## Open Questions
