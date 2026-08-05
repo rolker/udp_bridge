@@ -102,6 +102,12 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           // every post-restart packet would be rejected as stale by
           // admitForPublish.
           highest_published_packet_number_.clear();
+          // The reorder/jitter buffer (issue #35) holds packets keyed on
+          // the same pre-restart number space, so drop any held packets
+          // too — releasing them post-restart would publish stale data
+          // and, worse, advance the freshly-cleared high-water mark to a
+          // pre-restart number, re-rejecting every post-restart packet.
+          reorder_buffer_.clear();
         }
       } 
       next_packet_number_ = bridge_info.next_packet_number;
@@ -376,6 +382,127 @@ bool RemoteNode::admitForPublish(const std::string& topic, uint64_t packet_numbe
   return true;
 }
 
+RemoteNode::AdmitResult RemoteNode::admitOrBuffer(const std::string& topic,
+                                                  uint64_t packet_number,
+                                                  PublishItem&& item,
+                                                  rclcpp::Time now)
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  AdmitResult result;
+
+  auto buf_it = reorder_buffer_.find(topic);
+  if(buf_it != reorder_buffer_.end())
+  {
+    const uint64_t buffered_number = buf_it->second.packet_number;
+    if(packet_number == buffered_number)
+    {
+      // Same number as the held packet. Exact-number duplicates are
+      // filtered upstream by received_packet_times_ in unwrap(), so this
+      // is defensive — keep the held copy, drop the arrival.
+      result.decision = AdmitDecision::Drop;
+      return result;
+    }
+    if(packet_number < buffered_number)
+    {
+      // The arrival belongs *before* the held packet — a candidate
+      // gap-filler. Admit it against the high-water mark: if it's still
+      // stale (below the mark) admitForPublish drops it and the held
+      // packet is untouched.
+      if(admitForPublish(topic, packet_number))
+      {
+        result.decision = AdmitDecision::Admit;
+        result.to_publish.push_back(std::move(item));
+        // Did admitting this packet make the held one contiguous? The
+        // mark now equals packet_number, so B==packet_number+1 means the
+        // gap is closed — release the held packet right behind it, in
+        // order.
+        if(buffered_number == packet_number + 1)
+        {
+          result.to_publish.push_back(std::move(buf_it->second.item));
+          reorder_buffer_.erase(buf_it);
+          admitForPublish(topic, buffered_number);  // advance mark to B
+        }
+      }
+      else
+      {
+        result.decision = AdmitDecision::Drop;
+      }
+      return result;
+    }
+    // packet_number > buffered_number: the arrival is newer than the held
+    // packet. At-most-one slot overflow — flush the held packet now (in
+    // order, ahead of anything the arrival triggers) and advance the mark
+    // to it, then resolve the arrival against the advanced mark below.
+    result.to_publish.push_back(std::move(buf_it->second.item));
+    admitForPublish(topic, buffered_number);
+    reorder_buffer_.erase(buf_it);
+  }
+
+  // No packet buffered for this topic (either never was, or the overflow
+  // branch above just flushed it). Resolve the arrival against the
+  // high-water mark, mirroring admitForPublish's admit rule but splitting
+  // the gap case out to a Buffer decision.
+  auto hw_it = highest_published_packet_number_.find(topic);
+  if(hw_it == highest_published_packet_number_.end())
+  {
+    // First packet seen for this topic — always admitted (matches
+    // admitForPublish). No prior number, so no gap can be inferred.
+    admitForPublish(topic, packet_number);
+    result.decision = AdmitDecision::Admit;
+    result.to_publish.push_back(std::move(item));
+  }
+  else if(packet_number < hw_it->second)
+  {
+    // Stale: superseded by a newer already-published packet.
+    result.decision = AdmitDecision::Drop;
+  }
+  else if(packet_number <= hw_it->second + 1)
+  {
+    // Contiguous (== high-water+1) or equal to the mark: admit and
+    // advance. (An exact-mark == is not a duplicate here — duplicates are
+    // filtered upstream; see admitForPublish.)
+    admitForPublish(topic, packet_number);
+    result.decision = AdmitDecision::Admit;
+    result.to_publish.push_back(std::move(item));
+  }
+  else
+  {
+    // Gap (>= high-water+2): hold the packet without advancing the mark,
+    // recording its arrival time for the window-expiry check.
+    ReorderBufferEntry entry;
+    entry.packet_number = packet_number;
+    entry.arrival_time = now;
+    entry.item = std::move(item);
+    reorder_buffer_[topic] = std::move(entry);
+    result.decision = AdmitDecision::Buffer;
+  }
+  return result;
+}
+
+std::vector<PublishItem> RemoteNode::flushExpiredBuffer(rclcpp::Time now,
+                                                        rclcpp::Duration hold_window)
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  std::vector<PublishItem> released;
+  for(auto it = reorder_buffer_.begin(); it != reorder_buffer_.end(); )
+  {
+    if((now - it->second.arrival_time) >= hold_window)
+    {
+      // Window expired before the gap was filled: release the held packet
+      // and advance the mark to it. A later-arriving lower (gap-filling)
+      // packet is then correctly dropped as stale by the gate.
+      admitForPublish(it->first, it->second.packet_number);
+      released.push_back(std::move(it->second.item));
+      it = reorder_buffer_.erase(it);
+    }
+    else
+    {
+      ++it;
+    }
+  }
+  return released;
+}
+
 Defragmenter& RemoteNode::defragmenter()
 {
   return defragmenter_;
@@ -469,6 +596,24 @@ bool RemoteNode::isDispatchMissWarnedForTest(const std::string& id) const
 {
   std::lock_guard<std::recursive_mutex> lock(state_mutex_);
   return dispatch_miss_warned_ids_.count(id) != 0;
+}
+
+int64_t RemoteNode::highestPublishedForTest(const std::string& topic) const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  auto it = highest_published_packet_number_.find(topic);
+  if(it == highest_published_packet_number_.end())
+    return -1;
+  return static_cast<int64_t>(it->second);
+}
+
+int64_t RemoteNode::bufferedPacketNumberForTest(const std::string& topic) const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  auto it = reorder_buffer_.find(topic);
+  if(it == reorder_buffer_.end())
+    return -1;
+  return static_cast<int64_t>(it->second.packet_number);
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

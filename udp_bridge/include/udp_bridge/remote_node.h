@@ -8,6 +8,7 @@
 #include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 #include "udp_bridge_interfaces/msg/bridge_info.hpp"
 #include "udp_bridge/types.h"
+#include "udp_bridge/publish_queue.h"
 
 #include <deque>
 #include <mutex>
@@ -155,6 +156,18 @@ class RemoteNode
   // UDP_BRIDGE_BUILD_TESTING-gated.
   static constexpr std::size_t dispatchMissWarnedCapForTest()
   { return kDispatchMissWarnedCap; }
+
+  // Test accessor: the per-topic stale-gate high-water mark, or -1 if the
+  // topic has no mark yet. Lets the reorder-buffer suite assert that a
+  // Buffer decision does NOT advance the mark. Takes state_mutex_.
+  // UDP_BRIDGE_BUILD_TESTING-gated.
+  int64_t highestPublishedForTest(const std::string& topic) const;
+
+  // Test accessor: the packet number currently buffered for `topic`, or
+  // -1 if nothing is buffered. Lets the reorder-buffer suite assert the
+  // at-most-one slot contents directly. Takes state_mutex_.
+  // UDP_BRIDGE_BUILD_TESTING-gated.
+  int64_t bufferedPacketNumberForTest(const std::string& topic) const;
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
   // Count of missing-packet resends this RemoteNode has given up on
@@ -180,6 +193,71 @@ class RemoteNode
   // (numbers reset to 0) would be wrongly dropped as stale. Takes
   // state_mutex_.
   bool admitForPublish(const std::string& topic, uint64_t packet_number);
+
+  // Reorder/jitter buffer (reorder_hold_window_ms, issue #35). A 3-way
+  // extension of admitForPublish for the case where two near-simultaneous
+  // packets arrive out of order a few ms apart: instead of hard-dropping
+  // the one that arrived marginally late, hold the newer one briefly so
+  // the gap-filler (if it arrives within the window) can be published
+  // first, in order.
+  enum class AdmitDecision
+  {
+    Admit,   // the incoming packet is admitted for immediate publish
+    Drop,    // the incoming packet is stale (superseded) — drop it
+    Buffer,  // the incoming packet opened a gap and is now held; nothing
+             // to publish for it yet (it will be released either by a
+             // later gap-filler or by flushExpiredBuffer on window expiry)
+  };
+
+  // Result of admitOrBuffer. `to_publish` carries the PublishItems the
+  // caller must push to PublishQueue, already in wire order (a gap-filler
+  // is ordered before the buffered packet it releases). It is non-empty
+  // on Admit (the incoming item, plus any buffered item its arrival
+  // released) and may be non-empty even when `decision` is Buffer — an
+  // at-most-one overflow flushes the previously-held item while buffering
+  // the new one. It is empty on Drop.
+  struct AdmitResult
+  {
+    AdmitDecision decision;
+    std::vector<PublishItem> to_publish;
+  };
+
+  // Reorder-buffer hot-path entry point, used by decodeData in place of
+  // admitForPublish when reorder_hold_window_ms > 0. `item` is the
+  // already-built PublishItem for the incoming packet (the payload copy
+  // must happen before this call on the enabled path, since a Buffer
+  // decision stores the item). `now` is injected (production passes
+  // clock_->now(); tests pass fake time) and, on a Buffer decision, is
+  // recorded as the entry's arrival time for the window-expiry check in
+  // flushExpiredBuffer.
+  //
+  // Decision rules against the per-topic high-water mark H (see
+  // admitForPublish) and the at-most-one buffered packet B for the topic:
+  //   - P < H            -> Drop (stale; superseded by a newer publish).
+  //   - first-seen / P==H+1 -> Admit (advances H; identical to
+  //                          admitForPublish's admit path).
+  //   - P >= H+2         -> Buffer (gap below P; H is NOT advanced).
+  // When a packet is already buffered for the topic:
+  //   - P fills toward B (H<=P<B): Admit P; if that makes B contiguous
+  //     (B==P+1) release B too, publishing P then B in order.
+  //   - P newer than B (P>B): flush B first (at-most-one overflow),
+  //     then resolve P against the advanced H.
+  // The high-water mark is advanced only on actual publish, never on a
+  // Buffer decision — so a gap-filler that arrives in time is still
+  // admitted by the rules above. Takes state_mutex_.
+  AdmitResult admitOrBuffer(const std::string& topic, uint64_t packet_number,
+                            PublishItem&& item, rclcpp::Time now);
+
+  // Release any buffered packets whose age (now - arrival) has reached
+  // hold_window, advancing the per-topic high-water mark to each released
+  // packet's number as it goes out. Returns the released PublishItems for
+  // the caller to push to PublishQueue. Called from UDPBridge::spin_once
+  // on every 10 ms drain tick (even when the link is idle) so a held
+  // packet on a briefly-idle topic ages out on schedule rather than
+  // stalling until the next arriving packet. `now` is injected (production
+  // passes clock_->now(); tests pass fake time). Takes state_mutex_.
+  std::vector<PublishItem> flushExpiredBuffer(rclcpp::Time now,
+                                              rclcpp::Duration hold_window);
 
 private:
   // Single on-arrival point: record the receive time AND clear any
@@ -278,6 +356,23 @@ private:
   // received_packet_times_ — the sender's number space resets to 0 on
   // restart, so a stale mark would otherwise reject every fresh packet.
   std::map<std::string, uint64_t> highest_published_packet_number_;
+
+  // Reorder/jitter buffer (reorder_hold_window_ms, issue #35). At most one
+  // held packet per destination topic — the one that opened a gap above
+  // the high-water mark and is waiting for the gap-filler to arrive within
+  // the hold window. Each entry stores its arrival timestamp so
+  // flushExpiredBuffer can age it out on an injected clock. Guarded by
+  // state_mutex_. Cleared on remote-restart detection in update(BridgeInfo)
+  // alongside highest_published_packet_number_ — the sender's number space
+  // resets to 0 on restart, so a held packet from the previous run must not
+  // linger. See admitOrBuffer / flushExpiredBuffer.
+  struct ReorderBufferEntry
+  {
+    uint64_t packet_number = 0;
+    rclcpp::Time arrival_time;
+    PublishItem item;
+  };
+  std::map<std::string, ReorderBufferEntry> reorder_buffer_;
 
   // Per-missing-packet state used by getMissingPackets to apply
   // exponential backoff and the TTL-bounded give-up condition (issue
