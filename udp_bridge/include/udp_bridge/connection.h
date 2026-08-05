@@ -11,6 +11,7 @@
 #include <mutex>
 #include <netinet/in.h>
 #include <udp_bridge/packet.h>
+#include "udp_bridge/resend_constants.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
 #include "udp_bridge_interfaces/msg/data_rates.hpp"
@@ -37,6 +38,13 @@ public:
   void setHostAndPort(const std::string& host, uint16_t port);
   void setRateLimit(uint32_t maximum_bytes_per_second);
   uint32_t rateLimit() const;
+
+  /// Set the maximum fraction [0, 1] of the rate limit that resend
+  /// traffic may consume (issue #44). Values outside [0, 1] are
+  /// clamped. See resend_constants.h for the default and the
+  /// ack-starvation backoff that scales this down further.
+  void setResendBudgetFraction(float fraction);
+  float resendBudgetFraction() const;
 
   std::string str() const;
 
@@ -102,12 +110,14 @@ public:
 #ifdef UDP_BRIDGE_BUILD_TESTING
   /// Test helper: inject a sent-packet entry at a caller-supplied
   /// timestamp without going through the send() path. Used by the
-  /// gtest suite to seed sent_packets_ for cleanup-boundary tests.
-  /// Not part of any production code path. Only `packet_number` and
-  /// `timestamp` are populated — the WrappedPacket's byte vector and
-  /// other fields are default-constructed. Not safe for tests that
-  /// exercise `resend_packets` on the seeded data (those would send
-  /// empty byte payloads).
+  /// gtest suite to seed sent_packets_ for cleanup-boundary tests and
+  /// (with a non-zero payload_size) for resend-budget tests.
+  /// Not part of any production code path. `packet_number` and
+  /// `timestamp` are populated; the WrappedPacket's byte vector is
+  /// filled with `payload_size` zero bytes (default 0 = empty, the
+  /// original cleanup-test behavior). Tests that exercise
+  /// `resend_packets` on the seeded data must pass a non-zero
+  /// payload_size so the resent packets have realistic sizes.
   ///
   /// Gated behind UDP_BRIDGE_BUILD_TESTING so it doesn't leak into
   /// the package's installed public ABI — CMakeLists installs
@@ -117,7 +127,8 @@ public:
   /// (rather than the generic `BUILD_TESTING`) to avoid an ODR hazard
   /// with downstream packages that define `BUILD_TESTING` for their
   /// own tests.
-  void record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp);
+  void record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp,
+                                   std::size_t payload_size = 0);
 
   /// Test accessor: returns sent_packets_.size() under the buffer's
   /// own mutex. Used by the gtest cleanup-boundary test to verify
@@ -176,6 +187,12 @@ private:
 
   /// Maximum bytes per second to send.
   uint32_t data_rate_limit_ = default_rate_limit;
+
+  /// Maximum fraction [0, 1] of data_rate_limit_ that resend traffic
+  /// may consume (issue #44); scaled down further under ack starvation
+  /// — see resend_packets(). Guarded by config_mutex_ like the other
+  /// setter-writable config fields above.
+  float resend_budget_fraction_ = kDefaultResendBudgetFraction;
 
   /// Info about a received packet useful for data rate statistics.
   struct ReceivedSize

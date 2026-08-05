@@ -80,6 +80,38 @@ inline constexpr std::chrono::duration<double> kResendBackoffCap{1.600};
 // the cooldown to kResendBackoffCap — observable behavior is unchanged.
 inline constexpr uint32_t kMaxBackoffShift = 7;
 
+// Sender-side resend budget (issue #44). Resend storms self-amplify:
+// under ack starvation the sender treats all in-flight packets as lost
+// and retries at multiples of link capacity (2026-05-01: 13 MB/s of
+// retries vs a 1.0 MB/s VPN link; 2026-08-04: ~1.5 MB/s dropped +
+// 220 kB/s sent resends vs a 1.2 MB/s cap, sustained until restart).
+// Connection::resend_packets bounds the resend category to a fraction
+// of the connection's rate limit, and shrinks that fraction
+// exponentially while nothing is being received (no packets from the
+// remote implies no acks — retrying harder cannot help).
+
+// Default maximum fraction of a connection's maximum_bytes_per_second
+// that resend traffic may consume, measured over the same strict
+// 1-second window can_send uses. Overridable per connection via the
+// `resend_budget_fraction` parameter. 0.25 keeps 75% of a saturated
+// link for fresh data while still allowing meaningful recovery on
+// lossy-but-alive links.
+inline constexpr float kDefaultResendBudgetFraction = 0.25f;
+
+// How long the connection must have received nothing before the
+// resend budget starts halving (one halving per elapsed multiple).
+// 1 s is several heartbeat/ack periods — long enough that ordinary
+// jitter never triggers it, short enough to bite within seconds of a
+// real inbound collapse.
+inline constexpr std::chrono::duration<double> kAckStarvationThreshold{1.0};
+
+// Clamp on the starvation halvings: budget floor is
+// fraction / 2^kMaxAckStarvationBackoffShift (4 -> 16x reduction,
+// ~1.6% of the rate limit at the default fraction). Keeps a trickle
+// of resends flowing as a probe so recovery is possible the moment
+// the inbound path returns.
+inline constexpr uint32_t kMaxAckStarvationBackoffShift = 4;
+
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant
 // directly to rclcpp::Duration's chrono::duration constructor:

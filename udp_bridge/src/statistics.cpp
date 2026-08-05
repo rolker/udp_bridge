@@ -154,6 +154,27 @@ udp_bridge_interfaces::msg::DataRates PacketSendStatistics::get(PacketSendCatego
   return ret;
 }
 
+uint64_t PacketSendStatistics::bytes_in_window(PacketSendCategory category, rclcpp::Time time) const
+{
+  // Same full-deque scan as can_send (see the ordering rationale there:
+  // the reserve-then-record pattern means the deque is not monotone in
+  // timestamps, so a skip-prefix scan would be incorrect; the deque is
+  // bounded to ~10 s of records, so the linear scan is cheap).
+  auto one_second_ago = time - rclcpp::Duration::from_seconds(1.0);
+  uint64_t total = 0;
+  for(const auto& entry : data_)
+  {
+    if(entry.timestamp < one_second_ago)
+      continue;
+    if(entry.send_result == SendResult::dropped)
+      continue;
+    if(entry.category != category)
+      continue;
+    total += entry.size;
+  }
+  return total;
+}
+
 bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const
 {
   // Scan the whole deque rather than skip-prefix-then-sum. The earlier

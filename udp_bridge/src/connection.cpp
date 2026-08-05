@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 #include <iostream>
@@ -66,6 +67,21 @@ uint32_t Connection::rateLimit() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return data_rate_limit_;
+}
+
+void Connection::setResendBudgetFraction(float fraction)
+{
+  // Clamp rather than reject: a mis-typed config value should degrade
+  // to the nearest sane bound, not silently keep the previous value.
+  fraction = std::max(0.0f, std::min(1.0f, fraction));
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  resend_budget_fraction_ = fraction;
+}
+
+float Connection::resendBudgetFraction() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return resend_budget_fraction_;
 }
 
 void Connection::resolveHost()
@@ -458,8 +474,76 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
         packets_to_resend.push_back(it->second.packet);
     }
   }
-  for(auto& packet: packets_to_resend)
+  if(packets_to_resend.empty())
+    return;
+
+  // Resend budget (issue #44). Resends may consume at most
+  // resend_budget_fraction_ of the rate limit per second; while the
+  // connection is receiving nothing (which starves acks — retrying
+  // harder cannot help), the budget halves per kAckStarvationThreshold
+  // elapsed, floored at 1/2^kMaxAckStarvationBackoffShift. Bounds the
+  // self-amplifying resend storms of 2026-05-01 / 2026-08-04 while the
+  // overall can_send cap in send() continues to meter the total.
+  uint32_t rate_limit;
+  float fraction;
+  {
+    std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+    rate_limit = data_rate_limit_;
+    fraction = resend_budget_fraction_;
+  }
+  uint32_t backoff_shift = 0;
+  const double receive_time = last_receive_time();
+  // 0.0 is the "no packet received yet" sentinel (see the getter's
+  // doc): a brand-new connection has no starvation history, so it gets
+  // the full budget rather than the max-backoff floor.
+  if(receive_time > 0.0)
+  {
+    const double starved_seconds = now.seconds() - receive_time;
+    if(starved_seconds >= kAckStarvationThreshold.count())
+      backoff_shift = std::min(
+        static_cast<uint32_t>(starved_seconds / kAckStarvationThreshold.count()),
+        kMaxAckStarvationBackoffShift);
+  }
+  const double budget_bytes =
+    (static_cast<double>(fraction) * rate_limit) / static_cast<double>(1u << backoff_shift);
+
+  // Seed the accumulator with resend bytes already recorded in the same
+  // strict 1-second window can_send uses (NOT the 0-10 s smoothed rate,
+  // which lags a sustained burst and would under-shed in exactly the
+  // sustained-storm mode this budget exists to stop). Attempted bytes
+  // are then accumulated locally — counting attempts (rather than
+  // re-querying, which would miss failed sends' budget cost) keeps the
+  // bound conservative and the loop O(packets).
+  uint64_t attempted_bytes;
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    attempted_bytes = sent_packet_statistics_.bytes_in_window(PacketSendCategory::resend, now);
+  }
+
+  for(std::size_t i = 0; i < packets_to_resend.size(); ++i)
+  {
+    const auto& packet = packets_to_resend[i];
+    if(attempted_bytes + packet.size() > budget_bytes)
+    {
+      // Budget exhausted: record the remainder as dropped so the
+      // shedding is visible in the existing per-connection resend
+      // DataRates (BridgeInfo), then stop. The receiver's re-request /
+      // give-up machinery (resend_constants.h) handles their fate.
+      std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+      for(std::size_t j = i; j < packets_to_resend.size(); ++j)
+      {
+        PacketSizeData dropped;
+        dropped.timestamp = now;
+        dropped.size = packets_to_resend[j].size();
+        dropped.category = PacketSendCategory::resend;
+        dropped.send_result = SendResult::dropped;
+        sent_packet_statistics_.add(dropped);
+      }
+      return;
+    }
     send(packet, socket, PacketSendCategory::resend, now);
+    attempted_bytes += packet.size();
+  }
 }
 
 void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
@@ -474,17 +558,20 @@ void Connection::cleanup_sent_packets(rclcpp::Time cutoff_time)
 }
 
 #ifdef UDP_BRIDGE_BUILD_TESTING
-void Connection::record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp)
+void Connection::record_sent_packet_for_test(uint64_t packet_number, rclcpp::Time timestamp,
+                                             std::size_t payload_size)
 {
   std::lock_guard<std::mutex> lock(sent_packets_mutex_);
-  // Only packet_number and timestamp are set; the WrappedPacket's
-  // byte vector and SequencedPacketHeader fields are
-  // default-constructed. Adequate for cleanup-boundary tests that
-  // only check sent_packets_.size(); not safe for tests that
-  // exercise resend_packets() on the seeded data.
+  // packet_number and timestamp are set; the byte vector is filled
+  // with payload_size zero bytes (default 0 = empty, adequate for
+  // cleanup-boundary tests that only check sent_packets_.size()).
+  // Resend-budget tests pass a non-zero payload_size so
+  // resend_packets() sends packets with realistic sizes. The
+  // SequencedPacketHeader fields remain default-constructed.
   WrappedPacket wp;
   wp.packet_number = packet_number;
   wp.timestamp = timestamp;
+  wp.packet.assign(payload_size, 0);
   sent_packets_[packet_number] = wp;
 }
 
