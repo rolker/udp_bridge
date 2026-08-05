@@ -251,29 +251,52 @@ TEST_F(AdmissionControl, EffectiveLimitAffectsCanSend)
   rclcpp::Clock clock(RCL_STEADY_TIME);
   const auto t0 = clock.now();
   auto conn = make_connection();
-  // Trigger the decrease via the stale-feedback path so the sent-stats
-  // deque holds ONLY the metered sends below — with every record at
-  // one timestamp the rate fields are raw byte sums and the assertions
-  // are exact, as in test_connection_rate_limit.cpp.
-  conn->update_last_receive_time(
-    t0.seconds() - 2.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
-  conn->updateAdmissionControl(0.0f, t0);        // stale => halve to 50000
+  // Real congestion path (the idle guard means stale feedback alone,
+  // with nothing sent, is deliberately NOT congestion): seed 10 kB of
+  // sent traffic, then a delivery report at 50%.
+  send_traffic(*conn, t0);                       // 10 kB @ t0
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+  conn->updateAdmissionControl(5000.0f, t0);     // halve to 50000
   ASSERT_EQ(conn->effectiveRateLimit(), kRateLimit / 2);
 
-  // Offer 2x the configured limit in one instant: shedding must occur
-  // at the REDUCED cap, not the configured one.
+  // Offer 2x the configured limit in a fresh 1-second window: can_send
+  // admits strictly under the REDUCED cap there (~49 kB), while the
+  // t0 seed sits outside that window.
+  const auto t1 = t0 + rclcpp::Duration::from_seconds(2.0);
   std::vector<uint8_t> data(kPacketSize, 0xEF);
   for(int i = 0; i < 200; ++i)                   // 200 kB offered
-    conn->send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, t0);
+    conn->send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, t1);
 
-  auto rates = conn->data_sent_rate(t0, udp_bridge::PacketSendCategory::message);
+  // data_sent_rate spans t0..t1 (2 s), so expected success is
+  // (10 kB seed + <50 kB admitted) / ~2 s ≈ 29.5 kB/s. If send() were
+  // still metering at the CONFIGURED cap, t1 would admit ~99 kB and
+  // the rate would be ~54.5 kB/s — the 50 kB/s bound discriminates.
+  auto rates = conn->data_sent_rate(t1, udp_bridge::PacketSendCategory::message);
   EXPECT_LT(rates.success_bytes_per_second, static_cast<float>(kRateLimit / 2))
     << "send() must meter against the AIMD-reduced effective cap "
-       "(strictly below it, per can_send's strict less-than).";
-  EXPECT_GE(rates.success_bytes_per_second, 0.5f * (kRateLimit / 2))
-    << "Far below the reduced cap — over-throttling regression.";
+       "(a full-cap limiter would show ~54.5 kB/s here).";
+  EXPECT_GE(rates.success_bytes_per_second, 20000.0f)
+    << "Far below the expected ~29.5 kB/s — over-throttling regression.";
   EXPECT_GT(rates.dropped_bytes_per_second, 0.0f)
     << "Offered load above the reduced cap must produce drops.";
+}
+
+TEST_F(AdmissionControl, IdleStaleLinkNotThrottled)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  // Dormant connection: nothing sent, and the last inbound packet is
+  // long past the starvation threshold. Stale feedback on an IDLE link
+  // must not read as congestion — no traffic was offered, so there is
+  // nothing the backoff could protect, and accumulated backoff would
+  // only penalize the link when traffic resumes.
+  conn->update_last_receive_time(
+    t0.seconds() - 10.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
+  conn->updateAdmissionControl(0.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
+    << "An idle link with stale feedback must not accumulate backoff.";
 }
 
 TEST_F(AdmissionControl, SetRateLimitClampPreservesBackoff)

@@ -34,9 +34,10 @@ uint32 maximum_bytes_per_second
 # current AIMD-adjusted admission cap (issue #43): what the sender is
 # actually metering against right now. Equals maximum_bytes_per_second
 # when the link is clean; drops toward the configured floor under
-# congestion. Schema-evolution note: appending this field changes the
-# ROS 2 type hash — coordinated redeploy of both bridge ends expected,
-# same contract as Remote.msg documents.
+# congestion. Schema-evolution note: adding this field (mid-message,
+# after maximum_bytes_per_second) changes the ROS 2 type hash —
+# coordinated redeploy of both bridge ends expected, same contract as
+# Remote.msg documents.
 uint32 effective_rate_limit
 
 # received data rate via this connection

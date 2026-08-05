@@ -161,7 +161,8 @@ delivered-vs-sent, no wire-protocol change needed (the field already exists in
 |---|---|---|
 | `RemoteConnection.msg` adds `effective_rate_limit` | `sendBridgeInfo()` must populate it | Yes — step 5 |
 | Both `Connection::send()` overloads use `effective_rate_limit_` | `test_connection_rate_limit.cpp` may need review if it tests at `data_rate_limit_` exactly | Yes — existing tests exercise the `can_send` path; verify they still pass |
-| `setRateLimit()` resets `effective_rate_limit_` | Any caller that updates rate limits dynamically (addRemote, CONNECT) gets the reset | Acceptable and documented in design doc |
+| `setRateLimit()` follows (no backoff) / clamps (backoff) `effective_rate_limit_` — never resets | addRemote / CONNECT flaps preserve accumulated backoff; larger configured caps bind immediately on un-backed-off connections | Yes — shipped + pinned by `SetRateLimitClampPreservesBackoff` |
+| Resend budget (#44) bases on `effective_rate_limit_` | `resend_packets()` + both design notes updated; #44 tests unchanged (caps equal without AIMD activity) | Yes — shipped + documented in both design notes |
 | Resend budget (`resend_packets`) still uses `data_rate_limit_` | Not `effective_rate_limit_` — resend budget stays relative to the static cap, so it stays meaningful even during AIMD reduction | Documented in design doc (scope honesty) |
 
 ## Documentation & Instruction Impact

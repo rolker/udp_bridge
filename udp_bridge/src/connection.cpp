@@ -152,12 +152,16 @@ void Connection::updateAdmissionControl(float remote_received_bps, rclcpp::Time 
     (now.seconds() - receive_time) >= kAckStarvationThreshold.count();
 
   // Congestion trigger: the remote reports receiving meaningfully less
-  // than we sent. sent_bps == 0 (idle link) can't be congested. The
-  // ratio is a trend signal, not an exact loss measure — see the
-  // design note's caveats (duplicate/resend inflation, differing
-  // smoothing windows, propagation delay).
-  const bool congested = feedback_stale ||
-    (sent_bps > 0.0f &&
+  // than we sent, or we sent and heard nothing back (stale feedback).
+  // An idle link (sent_bps == 0) can never be congested — including
+  // the stale-feedback case: a dormant connection we are not offering
+  // traffic to must not accumulate backoff it would then have to
+  // recover from when traffic resumes. The ratio is a trend signal,
+  // not an exact loss measure — see the design note's caveats
+  // (duplicate/resend inflation, differing smoothing windows,
+  // propagation delay).
+  const bool congested = sent_bps > 0.0f &&
+    (feedback_stale ||
      remote_received_bps < (1.0f - kAdmissionLossThreshold) * sent_bps);
 
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
