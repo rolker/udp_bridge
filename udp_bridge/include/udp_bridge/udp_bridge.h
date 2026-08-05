@@ -424,6 +424,21 @@ private:
   // need every message regardless of order.
   bool drop_stale_packets_ {true};
 
+  // Reorder/jitter hold window in milliseconds (reorder_hold_window_ms,
+  // issue #35). Global parameter (a recorded deviation from the
+  // remotes.<r>.topics.<t>... nesting suggested in the issue review;
+  // per-topic tuning is deferred to #34's opt-in infrastructure — matches
+  // the drop_stale_packets / maximum_packet_size precedent). Default 0.0 =
+  // disabled: the reorder buffer is off and decodeData takes the exact
+  // pre-#35 stale-gate fast path (RemoteNode::admitForPublish before the
+  // payload copy). When > 0, decodeData routes sequenced packets through
+  // RemoteNode::admitOrBuffer instead, holding a gap-opening packet up to
+  // this window so an out-of-order gap-filler can be published first.
+  // Only active when drop_stale_packets_ is also true (the buffer is an
+  // extension of that gate). Clamped 0–500 ms in on_configure. Set once
+  // per configure; read on the socket-drain path.
+  double reorder_hold_window_ms_ {0.0};
+
   // Cumulative count of messages dropped by the stale-packet gate.
   // Touched only on the socket-drain thread (decodeData); used for the
   // throttled visibility log so the operator can see the gate working.

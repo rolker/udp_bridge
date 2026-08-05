@@ -151,6 +151,40 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   drop_stale_packets_ = get_parameter("drop_stale_packets").as_bool();
   RCLCPP_INFO_STREAM(get_logger(), "drop_stale_packets: " << std::boolalpha << drop_stale_packets_);
 
+  // Reorder/jitter buffer hold window (issue #35). Global parameter
+  // (recorded deviation from the per-topic nesting suggested in the issue
+  // review; per-topic tuning deferred to #34 — see the field comment on
+  // reorder_hold_window_ms_ in udp_bridge.h). Default 0.0 = disabled, so
+  // decodeData keeps its exact pre-#35 behaviour. When > 0 (and
+  // drop_stale_packets is on), a gap-opening sequenced packet is held up
+  // to this window so an out-of-order gap-filler can publish first. Clamp
+  // 0–500 ms with a WARN on out-of-range values, matching the both-bounds
+  // discipline used for maximum_packet_size / publish_queue_max_bytes — a
+  // large accidental value would otherwise add that much latency to every
+  // gap on every topic.
+  declareIfMissing("reorder_hold_window_ms", reorder_hold_window_ms_);
+  reorder_hold_window_ms_ = get_parameter("reorder_hold_window_ms").as_double();
+  {
+    constexpr double kMaxReorderHoldWindowMs = 500.0;
+    if(reorder_hold_window_ms_ < 0.0)
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "reorder_hold_window_ms " << reorder_hold_window_ms_
+        << " is negative; clamping to 0.0 (disabled)");
+      reorder_hold_window_ms_ = 0.0;
+    }
+    else if(reorder_hold_window_ms_ > kMaxReorderHoldWindowMs)
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "reorder_hold_window_ms " << reorder_hold_window_ms_
+        << " exceeds the " << kMaxReorderHoldWindowMs
+        << " ms ceiling; clamping to " << kMaxReorderHoldWindowMs);
+      reorder_hold_window_ms_ = kMaxReorderHoldWindowMs;
+    }
+  }
+  RCLCPP_INFO_STREAM(get_logger(), "reorder_hold_window_ms: " << reorder_hold_window_ms_
+    << (reorder_hold_window_ms_ > 0.0 ? "" : " (reorder buffer disabled)"));
+
   // Resend give-up rate thresholds (issue #22). Defaults calibrated
   // against the 2026-05-19 BizzyBoat storm (~3.9/s steady, ~700/s
   // burst): steady fires WARN, burst fires ERROR. Live-tunable: the
@@ -640,7 +674,16 @@ void UDPBridge::spin_once()
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     remotes.assign(remote_nodes_.begin(), remote_nodes_.end());
   }
-  auto cleanup_cutoff = get_clock()->now() - rclcpp::Duration(kReceiveHistoryWindow);
+  auto now = get_clock()->now();
+  auto cleanup_cutoff = now - rclcpp::Duration(kReceiveHistoryWindow);
+  // Reorder buffer (issue #35): age held packets out on every 10 ms tick,
+  // even when the link is idle, so a gap-opening packet on a briefly-idle
+  // topic is released on schedule rather than stalling until the next
+  // arriving packet. Computed once outside the loop; only walked when the
+  // buffer is enabled (window > 0).
+  const bool reorder_enabled = drop_stale_packets_ && reorder_hold_window_ms_ > 0.0;
+  const auto reorder_hold_window =
+    rclcpp::Duration::from_seconds(reorder_hold_window_ms_ / 1000.0);
   for(auto& remote: remotes)
   {
     if(remote.second)
@@ -648,6 +691,9 @@ void UDPBridge::spin_once()
       int discard_count = remote.second->defragmenter().cleanup(cleanup_cutoff);
       if(discard_count)
         RCLCPP_INFO_STREAM(get_logger(), "Discarded " << discard_count << " incomplete packets from " << remote.first);
+      if(reorder_enabled)
+        for(auto& item: remote.second->flushExpiredBuffer(now, reorder_hold_window))
+          publish_queue_.push(std::move(item));
     }
   }
   cleanupSentPackets();
@@ -843,15 +889,32 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   if(topic.empty())
     topic = outer_message.source_topic;
 
-  // Stale-packet gate: drop a decoded message whose wrapped packet_number
-  // is older than the newest already published for this destination topic
-  // — a late resend the resend protocol delivered out of order, which a
-  // newer message has already superseded (republishing it makes the
-  // consumer see the topic's stamp jump backward). Runs before the payload
-  // copy below so a dropped packet costs nothing. Un-sequenced packets
-  // (never wrapped) and the disabled case fall straight through. See
-  // RemoteNode::admitForPublish; the high-water marks live in the RemoteNode
-  // so they reset together with its sequence state on remote restart.
+  // Build the PublishItem the socket-drain thread hands to the publish
+  // worker. Only the CPU-bound deserialize + payload copy runs here — no
+  // publisher create / graph query / publish (see issue #10 and
+  // publishItem()); the drain thread must never make a call that can block
+  // on a single subscriber. Factored into a lambda because the reorder
+  // path (below) needs the built item *before* the admit decision (a
+  // Buffer decision stores it), whereas the historical fast path builds it
+  // only after the gate.
+  auto build_item = [&]() {
+    PublishItem item;
+    item.message.reserve(outer_message.data.size());
+    memcpy(item.message.get_rcl_serialized_message().buffer,
+           outer_message.data.data(), outer_message.data.size());
+    item.message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
+
+    item.topic = topic;
+    item.datatype = outer_message.datatype;
+    item.reliability = outer_message.reliability;
+    item.durability = outer_message.durability;
+    item.history_depth = outer_message.history_depth;
+    return item;
+  };
+
+  // Stale-packet / reorder gate. Applies only to sequenced packets when
+  // drop_stale_packets is on; un-sequenced packets (never wrapped) and the
+  // disabled case fall straight through to the plain build-and-push below.
   if(drop_stale_packets_ && source_info.sequenced)
   {
     std::shared_ptr<RemoteNode> remote_node;
@@ -861,6 +924,38 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
       if(it != remote_nodes_.end())
         remote_node = it->second;
     }
+
+    if(remote_node && reorder_hold_window_ms_ > 0.0)
+    {
+      // Reorder buffer enabled (issue #35). The payload copy happens
+      // BEFORE the admit call because a Buffer decision stores the item —
+      // so the "gate before payload copy costs nothing" property of the
+      // fast path below does NOT hold here (a dropped packet still paid
+      // for its copy). RemoteNode::admitOrBuffer returns the items to
+      // publish in wire order (an admitted packet, plus any buffered
+      // packet its arrival released); a Buffer decision holds the item and
+      // returns nothing to publish now (flushed later by spin_once).
+      auto result = remote_node->admitOrBuffer(
+        topic, source_info.packet_number, build_item(), get_clock()->now());
+      if(result.decision == RemoteNode::AdmitDecision::Drop)
+      {
+        ++stale_dropped_count_;
+        RCLCPP_INFO_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
+          "drop_stale_packets: dropped stale message for topic '" << topic
+          << "' (packet_number " << source_info.packet_number
+          << " older than newest published); cumulative dropped: "
+          << stale_dropped_count_);
+      }
+      for(auto& out : result.to_publish)
+        publish_queue_.push(std::move(out));
+      return;
+    }
+
+    // Reorder buffer disabled (window == 0): the historical fast path.
+    // Runs the gate before the payload copy so a dropped packet costs
+    // nothing. Byte-for-byte identical to pre-#35 behaviour. See
+    // RemoteNode::admitForPublish; the high-water marks live in the
+    // RemoteNode so they reset with its sequence state on remote restart.
     if(remote_node && !remote_node->admitForPublish(topic, source_info.packet_number))
     {
       ++stale_dropped_count_;
@@ -873,24 +968,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     }
   }
 
-  // Socket-drain thread does only the CPU-bound deserialize + payload copy,
-  // then hands everything rmw-touching to the publish worker. No publisher
-  // create / graph query / publish runs here — see issue #10 and
-  // publishItem(). The drain thread must never make a call that can block
-  // on a single subscriber.
-  PublishItem item;
-  item.message.reserve(outer_message.data.size());
-  memcpy(item.message.get_rcl_serialized_message().buffer,
-         outer_message.data.data(), outer_message.data.size());
-  item.message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
-
-  item.topic = topic;
-  item.datatype = outer_message.datatype;
-  item.reliability = outer_message.reliability;
-  item.durability = outer_message.durability;
-  item.history_depth = outer_message.history_depth;
-
-  publish_queue_.push(std::move(item));
+  publish_queue_.push(build_item());
 }
 
 void UDPBridge::publishItem(PublishItem&& item)
