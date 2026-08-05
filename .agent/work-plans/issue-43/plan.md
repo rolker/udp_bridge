@@ -32,7 +32,12 @@ delivered-vs-sent, no wire-protocol change needed (the field already exists in
 
 2. **Extend `Connection`** (`connection.h` + `connection.cpp`):
    - Add `float effective_rate_limit_` (init to `default_rate_limit`, guarded by
-     `config_mutex_`). Updated by `setRateLimit()` (reset to new limit) and by AIMD.
+     `config_mutex_`). Updated by AIMD; `setRateLimit()` **clamps it to
+     `min(effective, new_limit)`** rather than resetting (review-plan S2: a
+     CONNECT/adopt or addRemote re-applying an unchanged limit must not wipe
+     accumulated backoff and burst a congested link at full rate — the clamp
+     preserves backoff while still honoring a genuinely lowered cap; a raised
+     cap is reached via normal additive recovery).
    - Add `float admission_floor_fraction_` (default `kDefaultAdmissionFloorFraction`,
      guarded by `config_mutex_`).
    - New methods: `setAdmissionFloorFraction(float)` / `admissionFloorFraction()` /
@@ -81,6 +86,27 @@ delivered-vs-sent, no wire-protocol change needed (the field already exists in
    collapse), mechanism (delivered-vs-sent AIMD), decisions (signal choice rationale,
    constant values, fallback, scope honesty vs #19/#36, `data_rate_limit_` vs
    `effective_rate_limit_` for resend budget interaction), verification.
+   Per review-plan, the doc must also state honestly:
+   - **S1 scope boundary**: the stale-feedback fallback fires per connection on
+     BridgeInfo receipt, so it can only mark connections *other than* the one
+     that delivered the BridgeInfo; a single connection in total inbound
+     blackout receives no updateAdmissionControl calls at all and gets no AIMD
+     decrease from either path (that regime is #45/#44 territory — the resend
+     budget's own starvation backoff still bites there). Congestion-with-
+     feedback (the primary 08-04 field mode) is fully covered because
+     BridgeInfo keeps flowing under congestion.
+   - **S3 signal caveats**: the delivered/sent ratio is a trend signal, not an
+     exact loss measure — remote `received_bytes_per_second` includes
+     duplicates, our sent rate includes resend traffic, the two rates use
+     different smoothing windows, and BridgeInfo adds propagation delay.
+   - **Lock-ordering note**: `updateAdmissionControl` reads `data_sent_rate()`
+     and `last_receive_time()` (each under its own mutex) BEFORE acquiring
+     `config_mutex_` — never nested.
+
+8b. **Update `.agents/README.md`** (review-plan S4) — add
+   `admission_floor_fraction` to the "Key Parameters (verified in
+   on_configure)" table AND backfill the missing `resend_budget_fraction`
+   row (stale since #44).
 
 8. **Update `udp_bridge/README.md`** — Add `admission_floor_fraction` parameter entry
    alongside `resend_budget_fraction`.
