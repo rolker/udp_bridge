@@ -39,22 +39,46 @@ cap.  A resend storm can consume 100% of the budget.
      `2^min(starvation_steps, kMaxAckStarvationBackoffShift)`, where
      `starvation_steps = floor((now − last_receive_time) / kAckStarvationThreshold)`.
      Zero starvation (recent ack activity) → full fraction.
+   - **Sentinel (review-plan must-fix 2)**: `last_receive_time() == 0.0`
+     means "no packet received yet" (`connection.h:72-76`) — treat as zero
+     starvation (full budget), NOT as a huge starvation interval; otherwise a
+     brand-new connection would start at max backoff.
    - Budget bytes = `effective_fraction * data_rate_limit_`.
-   - Query recent resend sent bytes from `sent_packet_statistics_.get(PacketSendCategory::resend).success_bytes_per_second`.
-   - Iterate `packets_to_resend`; stop (drop remainder) once
-     `already_sent_resend_bps + pending_packet_size > budget_bytes`.
-   - Fresh data is never affected — only `PacketSendCategory::resend` packets.
+   - **Accounting window (review-plan must-fix 1)**: query recent resend
+     bytes via a new `PacketSendStatistics::bytes_in_window(category, now)` —
+     a strict 1 s-window sum matching the `can_send` pattern (full-deque scan,
+     skip `dropped`, skip entries older than `now − 1 s`). The 0–10 s smoothed
+     `get()` rate lags a sustained burst as the deque's time span grows,
+     under-shedding in exactly the until-restart storm mode.
+   - Iterate `packets_to_resend`; track attempted bytes in a local
+     accumulator seeded from the window sum; once
+     `accumulated + pending_packet_size > budget_bytes`, record the remainder
+     as `SendResult::dropped` / `PacketSendCategory::resend` (visible in the
+     existing `BridgeInfo` resend-dropped stats) and stop.
+   - **Scope honesty (review-plan suggestion)**: this budget bounds the
+     *resend* category only; the shared `can_send` total cap still meters all
+     categories together, so the budget leaves headroom for fresh data rather
+     than strictly prioritizing it. Worded accordingly in the design note.
+     Clock domain: `update_last_receive_time` and the `now` passed to
+     `resend_packets` both derive from the node's `clock_`, so the
+     subtraction is valid (noted in design note).
    - FIFO order within the resend list (as today); priority scheduling (#19)
      is a follow-up that decides *what* gets shed once a budget binds.
 
-4. **Wire parameter in `udp_bridge.cpp`** — alongside the existing
-   `maximum_bytes_per_second` read (line ~400), declare and read
+4. **Wire parameter in `udp_bridge.cpp`** *(re-targeted per review-plan
+   suggestion — line ~400 is a parameter read into a `RemoteConnection` msg,
+   not a live `Connection`)* — declare and read
    `remotes.<label>.connections.<id>.resend_budget_fraction` (double, default
-   `kDefaultResendBudgetFraction`), then call
-   `connection->setResendBudgetFraction(static_cast<float>(fraction))`.
-   Also call `setResendBudgetFraction` in the `addRemote` service handler
-   (line ~1805) if a per-connection fraction is carried in the service
-   request — otherwise set the default there.
+   `kDefaultResendBudgetFraction`) alongside the `maximum_bytes_per_second`
+   read, then after `remote_nodes_[...]->update(remote_info)` creates/updates
+   the live connection, look it up via `RemoteNode::connection(connection_id)`
+   and call `setResendBudgetFraction(static_cast<float>(fraction))`.
+   The other `setRateLimit` sites (`udp_bridge.cpp:1277` CONNECT/adopt,
+   `:1805`/`:1830` addRemote) apply rate limits carried in messages that do
+   NOT carry a fraction; new connections take `kDefaultResendBudgetFraction`
+   from the field initializer, so no change is needed there — the fraction is
+   config-file-set only for now (recorded in the design note; extending
+   `AddRemote.srv` is deferred until a caller needs it).
 
 5. **Update `README.md`** — add `resend_budget_fraction` (float, 0.0–1.0,
    default 0.25) under the per-connection parameter table.
@@ -73,18 +97,26 @@ cap.  A resend storm can consume 100% of the budget.
      socket; assert
      `data_sent_rate(PacketSendCategory::resend).success_bytes_per_second <=
      rate_limit * 0.25 * tolerance` (tolerance 1.1× for quantisation).
-   - **Ack-starvation reduction**: same setup but inject a stale
-     `last_receive_time` (2 × `kAckStarvationThreshold` seconds ago via a
-     `update_last_receive_time` call with an old timestamp); assert resend
-     budget is at most 0.5× the baseline budget (one backoff step).
+   - **Ack-starvation reduction** *(timing per review-plan suggestion)*: same
+     setup but inject a stale `last_receive_time` **1.5 ×**
+     `kAckStarvationThreshold` seconds ago (floor(1.5) = exactly one backoff
+     step → 0.5× budget; the originally-planned 2× would floor to two steps =
+     4× reduction); assert sent resend bytes ≈ 0.5× the baseline budget.
+   - **Never-received sentinel** (regression for must-fix 2): fresh
+     `Connection` with no `update_last_receive_time` call at all — assert the
+     FULL budget applies (not the max-backoff floor).
+   - **Max-backoff clamp**: `last_receive_time` far in the past (≫
+     `kMaxAckStarvationBackoffShift` steps) — assert budget floors at
+     `fraction / 2^kMaxAckStarvationBackoffShift`, not lower.
 
 ## Files to Change
 
 | File | Change |
 |------|--------|
 | `udp_bridge/include/udp_bridge/resend_constants.h` | Add `kDefaultResendBudgetFraction`, `kAckStarvationThreshold`, `kMaxAckStarvationBackoffShift` |
-| `udp_bridge/include/udp_bridge/connection.h` | Add `resend_budget_fraction_`, `setResendBudgetFraction()`, `resendBudgetFraction()` |
+| `udp_bridge/include/udp_bridge/connection.h` | Add `resend_budget_fraction_`, `setResendBudgetFraction()`, `resendBudgetFraction()`; extend `record_sent_packet_for_test` with a payload-size arg so resend tests can seed sendable packets |
 | `udp_bridge/src/connection.cpp` | Implement setter/getter; modify `resend_packets()` to enforce budget + starvation backoff |
+| `udp_bridge/include/udp_bridge/statistics.h` + `src/statistics.cpp` | Add `PacketSendStatistics::bytes_in_window(category, time)` — strict 1 s-window per-category sum (must-fix 1) |
 | `udp_bridge/src/udp_bridge.cpp` | Read `resend_budget_fraction` param (~line 400) and in `addRemote` handler (~line 1805); call `setResendBudgetFraction` |
 | `udp_bridge/README.md` | Add `resend_budget_fraction` to per-connection parameter table |
 | `udp_bridge/doc/resend_budget_design.md` | New design note (problem, algorithm, tuning, ordering) |
@@ -115,7 +147,7 @@ cap.  A resend storm can consume 100% of the budget.
 
 | If we change... | Also update... | Included in plan? |
 |---|---|---|
-| `Connection` adds `resend_budget_fraction_` | `remote_node.cpp` `adoptConnection` path (no change needed — fraction set via `setResendBudgetFraction` after adoption) | Yes — wiring in `udp_bridge.cpp` |
+| `Connection` adds `resend_budget_fraction_` | All `setRateLimit` sites audited (`remote_node.cpp:49` config path, `udp_bridge.cpp:1277` adopt, `:1805`/`:1830` addRemote): only the config path sets a non-default fraction (via live-connection lookup after `update()`); the message/service paths carry no fraction so the field-initializer default applies — recorded in design note | Yes — wiring in `udp_bridge.cpp` + design note |
 | New ROS 2 parameter | `README.md` parameter table | Yes — step 5 |
 | New algorithm in `resend_packets()` | Interaction with `kSentPacketTTL` / per-packet backoff (receiver-side); noted in design note | Yes — step 6 |
 | Resend admission changes | `#19` priority scheduling (WHAT gets shed once budget binds) | No — deliberate follow-up; design note records the interface boundary |
