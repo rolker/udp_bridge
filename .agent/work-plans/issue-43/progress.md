@@ -96,3 +96,38 @@ signal; that choice and the AIMD parameters need to be captured in a design doc
 
 ### Open questions
 - [ ] No open questions — plan is review-plan-ready. Operator checkpoint (2026-08-05) resolved all five open actions from the issue review.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-05 18:50 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Plan**: `.agent/work-plans/issue-43/plan.md` at `48b422d`
+**PR**: PR-less (`--issue` / file-path mode; feature/issue-43 worktree)
+**Verdict**: approve-with-suggestions
+
+Plan is sound, well-scoped (10 tightly-coupled files, mirrors #44's PR shape),
+and addresses all five issue-review actions: signal choice + design doc (1),
+`effective_rate_limit` telemetry field (2), 7 AIMD unit tests (3), README/param
+docs (4 — see finding 4), and `resend_budget_fraction`-pattern config wiring (5).
+Verified against source: `data_sent_rate()` exposes `success_bytes_per_second`;
+`connection_info.received_bytes_per_second` in `update(BridgeInfo)` genuinely is
+"bytes the remote received from us on this connection" (udp_bridge.cpp:1732-1733);
+both `send()` overloads meter on `data_rate_limit_` today (connection.cpp:203,281);
+`setRateLimit` callers are config/CONNECT/addRemote only, not steady-state periodic.
+Suggestions below are refinements for the design doc (step 7) + one doc file; none
+block implementation.
+
+### Findings
+- [ ] (suggestion) Stale-feedback fallback is only reachable in the multi-connection redundancy case. `updateAdmissionControl` is called *only* on BridgeInfo receipt (step 3), and BridgeInfo arrival refreshes `last_receive_time` via `unwrap()` (remote_node.cpp:337). So on the connection that delivered the BridgeInfo the fallback is never stale; it can only fire for *other* connections the remote still lists. A single connection in total inbound collapse (no BridgeInfo at all) gets no AIMD decrease from either path. The primary field scenario (congestion, not blackout) is covered because BridgeInfo keeps flowing under congestion — but the design doc must state this scope boundary honestly — `plan.md:44` / step 7
+- [ ] (suggestion) `setRateLimit()` resetting `effective_rate_limit_` wipes accumulated AIMD backoff whenever CONNECT/adopt (udp_bridge.cpp:1292) or addRemote re-applies a rate limit — even an unchanged one. Harmless in steady state (not periodic), but a flapping link that re-sends CONNECT would reset the cap to full and force re-backoff each reconnect. Consider gating the reset on an actual value change (as `setHostAndPort` does) or clamping to `min(effective, new_limit)`; document the choice — `plan.md:36` / step 2
+- [ ] (suggestion) Congestion signal is an approximation, not an exact loss measure: `received_bytes_per_second` includes duplicate bytes (`receive_rates.first + receive_rates.second`, udp_bridge.cpp:1733) and our `success_bytes_per_second` includes resend traffic, so both sides inflate under loss+resend; the two rates also use different smoothing windows (our ~0-10s `get()` vs the remote's 5s `data_receive_rate`) plus BridgeInfo propagation delay. Fine for a trend-based AIMD trigger — record these caveats in the design doc so a future reader doesn't treat the ratio as precise — `plan.md:17` / step 7
+- [ ] (suggestion) Consequences/docs gap: the agent-facing `.agents/README.md` "Key Parameters (verified in on_configure)" table (line 91) enumerates per-connection params but is missing the new `admission_floor_fraction` — and is in fact already stale for `resend_budget_fraction` (#44 never added it). Plan updates `README.md` + `example_params.yaml` but omits `.agents/README.md`. Add the param there (and optionally backfill `resend_budget_fraction`) — `plan.md:90-104`
+- [ ] (note) Preserve lock ordering in `updateAdmissionControl`: read `data_sent_rate()` and `last_receive_time()` (each takes its own mutex) *before* acquiring `config_mutex_`, never nesting `sent_packet_statistics_mutex_` inside `config_mutex_`. `send()` acquires them sequentially (config then stats, non-nested); the plan's "two separate lock acquisitions" intent is correct — keep it — `plan.md:41`
+
+### Next step
+Lifecycle: **Plan Review** → **implement** → **review-code**. Verdict is
+approve-with-suggestions: no must-fix blockers. Implementer should fold findings
+1-3 into `doc/admission_control_design.md` (step 7), pick up finding 4's
+`.agents/README.md` edit, and honor finding 5's lock-ordering note. Plan does not
+need re-approval before implementation.
