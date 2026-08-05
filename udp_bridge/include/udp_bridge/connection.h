@@ -46,6 +46,28 @@ public:
   void setResendBudgetFraction(float fraction);
   float resendBudgetFraction() const;
 
+  /// Set the minimum effective admission cap as a fraction [0, 1] of
+  /// the configured rate limit (issue #43). Values outside [0, 1] are
+  /// clamped; NaN falls back to the default.
+  void setAdmissionFloorFraction(float fraction);
+  float admissionFloorFraction() const;
+
+  /// The AIMD-adjusted admission cap in bytes/second — what send()
+  /// actually meters against. Starts equal to the configured rate
+  /// limit; halves on congestion, recovers additively when clean.
+  uint32_t effectiveRateLimit() const;
+
+  /// Feed one delivered-vs-sent feedback sample (issue #43). Called on
+  /// receipt of the remote's BridgeInfo with the remote's
+  /// received_bytes_per_second for this connection. Applies AIMD to
+  /// the effective rate limit: multiplicative decrease when delivery
+  /// falls below (1 - kAdmissionLossThreshold) of our sent rate or
+  /// when the connection's own feedback is stale (nothing received for
+  /// kAckStarvationThreshold); additive recovery otherwise. Reads the
+  /// stats and receive-history mutexes before config_mutex_ — never
+  /// nested.
+  void updateAdmissionControl(float remote_received_bps, rclcpp::Time now);
+
   std::string str() const;
 
   const std::string &id() const;
@@ -193,6 +215,21 @@ private:
   /// — see resend_packets(). Guarded by config_mutex_ like the other
   /// setter-writable config fields above.
   float resend_budget_fraction_ = kDefaultResendBudgetFraction;
+
+  /// AIMD-adjusted admission cap (issue #43): what send() meters
+  /// against. Halved by updateAdmissionControl on congestion, recovered
+  /// additively when clean, floored at admission_floor_fraction_ *
+  /// data_rate_limit_ and ceilinged at data_rate_limit_. setRateLimit
+  /// clamps it to min(effective, new limit) — never resets — so a
+  /// CONNECT flap re-applying an unchanged limit cannot wipe
+  /// accumulated backoff. Guarded by config_mutex_. Float (not
+  /// uint32_t) so repeated halvings and fractional recovery steps
+  /// don't accumulate rounding error.
+  float effective_rate_limit_ = default_rate_limit;
+
+  /// Minimum effective cap as a fraction of data_rate_limit_
+  /// (issue #43). Guarded by config_mutex_.
+  float admission_floor_fraction_ = kDefaultAdmissionFloorFraction;
 
   /// Info about a received packet useful for data rate statistics.
   struct ReceivedSize

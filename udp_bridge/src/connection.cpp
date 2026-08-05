@@ -58,10 +58,26 @@ void Connection::setSourceIPAndPort(const std::string &source_ip, uint16_t sourc
 void Connection::setRateLimit(uint32_t maximum_bytes_per_second)
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  const float old_limit = static_cast<float>(data_rate_limit_);
   if(maximum_bytes_per_second == 0)
     data_rate_limit_ = default_rate_limit;
   else
     data_rate_limit_ = maximum_bytes_per_second;
+  // AIMD cap follow/clamp (issue #43). If no backoff had accumulated
+  // (effective was at the old limit — including the freshly-constructed
+  // state where both hold default_rate_limit), the effective cap
+  // follows the new limit so configuring a larger cap takes effect
+  // immediately. If backoff HAD accumulated, clamp to
+  // min(effective, new) — never reset: CONNECT/adopt and addRemote
+  // re-apply the rate limit even when unchanged, and a reset would
+  // wipe the backoff and burst a congested link at full rate on every
+  // reconnect flap. A backed-off connection reaches a raised limit via
+  // normal additive recovery in updateAdmissionControl.
+  if(effective_rate_limit_ >= old_limit)
+    effective_rate_limit_ = static_cast<float>(data_rate_limit_);
+  else
+    effective_rate_limit_ = std::min(effective_rate_limit_,
+                                     static_cast<float>(data_rate_limit_));
 }
 
 uint32_t Connection::rateLimit() const
@@ -87,6 +103,80 @@ float Connection::resendBudgetFraction() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   return resend_budget_fraction_;
+}
+
+void Connection::setAdmissionFloorFraction(float fraction)
+{
+  // Same clamp semantics as setResendBudgetFraction: degrade a bad
+  // value to the nearest sane bound; NaN falls back to the default.
+  if(std::isnan(fraction))
+    fraction = kDefaultAdmissionFloorFraction;
+  fraction = std::max(0.0f, std::min(1.0f, fraction));
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  admission_floor_fraction_ = fraction;
+}
+
+float Connection::admissionFloorFraction() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return admission_floor_fraction_;
+}
+
+uint32_t Connection::effectiveRateLimit() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return static_cast<uint32_t>(effective_rate_limit_);
+}
+
+void Connection::updateAdmissionControl(float remote_received_bps, rclcpp::Time now)
+{
+  // Locking: read the stats and receive-history values under their own
+  // mutexes first, then take config_mutex_ for the AIMD update — the
+  // mutexes are never held simultaneously, so no lock-ordering
+  // constraint is created (send() likewise acquires them one at a
+  // time). Keep it that way: nesting any of them would introduce an
+  // ordering requirement that nothing else in Connection has.
+  udp_bridge_interfaces::msg::DataRates sent;
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    sent = sent_packet_statistics_.get();
+  }
+  const float sent_bps = sent.success_bytes_per_second;
+  const double receive_time = last_receive_time();  // own mutex inside
+
+  // Stale-feedback fallback: nothing received on THIS connection for a
+  // starvation interval means its feedback (and likely its delivery)
+  // is gone — treat as congested. The 0.0 never-received sentinel is
+  // not stale (see resend_packets). Scope boundary: this method runs
+  // on BridgeInfo receipt, so a connection in total inbound blackout
+  // while no OTHER connection delivers BridgeInfo gets no calls at all
+  // — documented in doc/admission_control_design.md.
+  const bool feedback_stale = receive_time > 0.0 &&
+    (now.seconds() - receive_time) >= kAckStarvationThreshold.count();
+
+  // Congestion trigger: the remote reports receiving meaningfully less
+  // than we sent, or we sent and heard nothing back (stale feedback).
+  // An idle link (sent_bps == 0) can never be congested — including
+  // the stale-feedback case: a dormant connection we are not offering
+  // traffic to must not accumulate backoff it would then have to
+  // recover from when traffic resumes. The ratio is a trend signal,
+  // not an exact loss measure — see the design note's caveats
+  // (duplicate/resend inflation, differing smoothing windows,
+  // propagation delay).
+  const bool congested = sent_bps > 0.0f &&
+    (feedback_stale ||
+     remote_received_bps < (1.0f - kAdmissionLossThreshold) * sent_bps);
+
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  const float floor = admission_floor_fraction_ * data_rate_limit_;
+  if(congested)
+    effective_rate_limit_ =
+      std::max(floor, effective_rate_limit_ * kAdmissionDecreaseFactor);
+  else
+    effective_rate_limit_ =
+      std::min(static_cast<float>(data_rate_limit_),
+               effective_rate_limit_ +
+                 kAdmissionAdditiveStepFraction * data_rate_limit_);
 }
 
 void Connection::resolveHost()
@@ -200,7 +290,9 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   uint32_t rate_limit;
   {
     std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-    rate_limit = data_rate_limit_;
+    // Meter against the AIMD-adjusted cap (issue #43), not the static
+    // configured limit — admission backs off when delivery drops.
+    rate_limit = static_cast<uint32_t>(effective_rate_limit_);
   }
 
   // Aggregate pre-check is a fast-path optimization: if the batch as a
@@ -278,7 +370,8 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
     no_address = addresses_.empty();
     if(!no_address)
       destination = addresses_.front();
-    rate_limit = data_rate_limit_;
+    // AIMD-adjusted cap (issue #43) — see the batch overload above.
+    rate_limit = static_cast<uint32_t>(effective_rate_limit_);
   }
   if(no_address)
   {
@@ -493,7 +586,14 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
   float fraction;
   {
     std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-    rate_limit = data_rate_limit_;
+    // The resend budget bases on the AIMD-adjusted cap (issue #43),
+    // not the configured limit: when admission backs off under
+    // congestion, resends must shrink proportionally — a 25%-of-
+    // configured budget could otherwise consume the ENTIRE reduced
+    // admission and starve fresh data. With no AIMD activity the
+    // effective cap equals the configured limit, so #44 behavior is
+    // unchanged.
+    rate_limit = static_cast<uint32_t>(effective_rate_limit_);
     fraction = resend_budget_fraction_;
   }
   uint32_t backoff_shift = 0;

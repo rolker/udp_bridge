@@ -146,6 +146,10 @@ if(BUILD_TESTING)
   # Sender-side resend budget (issue #44): bounded-under-load,
   # ack-starvation backoff steps, never-received sentinel, max clamp.
   add_udp_bridge_gtest(test_resend_budget test/test_resend_budget.cpp)
+  # Adaptive admission control (issue #43): AIMD decrease/recovery,
+  # floor/ceiling clamps, stale-feedback fallback, sentinel,
+  # effective-cap metering, setRateLimit clamp semantics.
+  add_udp_bridge_gtest(test_admission_control test/test_admission_control.cpp)
   # test_publish_queue (issue #10) exercises the bounded publish-worker
   # queue in isolation via an injected sink — no UDPBridge / node needed.
   add_udp_bridge_gtest(test_publish_queue test/test_publish_queue.cpp)

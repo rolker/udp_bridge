@@ -79,6 +79,11 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
             c->setHostAndPort(connection_info.return_host, connection_info.return_port);
         }
         c->setSourceIPAndPort(source_info.host, source_info.port);
+        // Delivered-vs-sent admission control (issue #43): the remote's
+        // received_bytes_per_second for this connection is what it
+        // actually received from us — feed it to the AIMD loop.
+        c->updateAdmissionControl(connection_info.received_bytes_per_second,
+                                  clock_->now());
       }
       if(bridge_info.next_packet_number < next_packet_number_)
       {
