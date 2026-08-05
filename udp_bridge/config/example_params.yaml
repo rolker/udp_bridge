@@ -40,6 +40,14 @@
             # Data rate limit for this connection (bytes per second). 0 = default (500000).
             maximum_bytes_per_second: 500000
 
+            # Maximum fraction of the rate limit resend traffic may consume
+            # (issue #44; see doc/resend_budget_design.md).
+            resend_budget_fraction: 0.25
+
+            # Floor of the AIMD-adjusted admission cap as a fraction of the
+            # rate limit (issue #43; see doc/admission_control_design.md).
+            admission_floor_fraction: 0.1
+
             # List of topics to forward over this connection.
             topics_list: ["/robot_a/odometry", "/robot_a/battery"]
             

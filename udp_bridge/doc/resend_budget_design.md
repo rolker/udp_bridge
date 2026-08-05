@@ -31,9 +31,14 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
 
 1. **Budget fraction.** Resend-category traffic may consume at most
    `resend_budget_fraction` (default `kDefaultResendBudgetFraction` = 0.25)
-   of the connection's `maximum_bytes_per_second`, measured over the same
+   of the connection's admission cap, measured over the same
    strict 1-second window the rate limiter's `can_send` uses
-   (`PacketSendStatistics::bytes_in_window`). Over-budget resends are
+   (`PacketSendStatistics::bytes_in_window`). Since issue #43 the base is
+   the **AIMD-adjusted `effective_rate_limit`** rather than the static
+   `maximum_bytes_per_second`: when admission backs off under congestion,
+   resends shrink proportionally instead of consuming the entire reduced
+   admission (see `doc/admission_control_design.md`). With no AIMD
+   activity the two are equal. Over-budget resends are
    recorded as `SendResult::dropped` in the `resend` category, so shedding
    is visible in the existing per-connection `BridgeInfo` DataRates — the
    same fields the field analyses read.
