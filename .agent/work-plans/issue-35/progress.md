@@ -110,3 +110,32 @@ must-fix + 5 suggestions were incorporated.
 - `50cd62b` udp_bridge: decodeData/spin_once integration + reorder_hold_window_ms param + docs
 - `fd33e5b` test: test_reorder_buffer suite + stale gtest-inventory fix
 - `b091f71` plan: sync plan.md with committed code
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-06 00:28 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-35 at `55760e6`
+**Mode**: pre-push
+**Depth**: Deep (reason: concurrency + networking on the socket-drain hot path, plus lifecycle/remote-restart interaction)
+**Must-fix**: 0 | **Suggestions**: 3
+**Round**: 1 | **Ship**: recommended — no must-fix findings; clean, well-tested, opt-in change; disabled default path is byte-for-byte pre-#35.
+
+### Findings
+- [ ] (suggestion) `admitOrBuffer` decision-rule docstring omits the equal-to-mark `P==H` admit case (code covers it inline) — `udp_bridge/include/udp_bridge/remote_node.h:236`
+- [ ] (suggestion) No occupancy diagnostic for `reorder_buffer_` (bounded ≤1/topic, ≤500ms; observability nice-to-have) — `udp_bridge/include/udp_bridge/remote_node.h:369`
+- [ ] (suggestion) `reorder_buffer_` not cleared on `on_deactivate`; a held packet would release as a slightly-stale publish on next activation (consistent with existing cross-activation state persistence — noting for an explicit decision) — `udp_bridge/src/udp_bridge.cpp:574`
+
+### Notes
+- Two Claude Adversarial passes (Lens A logic/correctness, Lens B systemic/safety). Lens A: no bugs. Lens B raised 6 candidates; all verified as false-positive or out-of-scope:
+  - race on `reorder_hold_window_ms_`: written only in `on_configure` (166/174/182); `on_set_parameters` handles only the giveup-rate params → no ACTIVE-time write.
+  - flush while INACTIVE: `spin_once` early-returns when state != ACTIVE (631-637) before the flush loop.
+  - held packets starve resend: resend uses `received_packet_times_`, independent of the frozen publish high-water mark; `getMissingPackets` still requests the gap.
+  - `reorder_buffer_` unbounded growth: self-draining (erased on publish or ≤500ms flush), at-most-one/topic; arbitrary-topic per-topic state is pre-existing (`publishers_`, `#33` high-water map), not introduced here.
+  - `highest_published_packet_number_` growth: pre-existing from #33, not in this diff.
+- Static analysis: package registers no `ament_lint` hooks; ~234 vanilla cpplint items are unenforced style consistent with the codebase (siblings carry no copyright header). cppcheck's 3 hits are false positives (RCLCPP `<<` as shift; `TEST_F` unparseable; one pre-existing perf nit outside the diff). Added lines have no trailing whitespace/CRLF → pre-commit/CI clean.
+- Governance: consequences satisfied (README gtest count 15 == 15 real targets; example_params updated; restart-clear + test present). Plan drift: none (files match plan; 12 gtest cases ⊇ 6 planned scenarios).
+- Local model adversarial skipped: Ollama not installed on this host.
+- Test attestation from the Implementation entry (140 tests, 0 failures at b091f71) relied upon; this review did not rebuild.
