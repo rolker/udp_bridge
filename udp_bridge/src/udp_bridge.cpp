@@ -2058,6 +2058,28 @@ void UDPBridge::syncDiagnosticTasks()
       });
     diagnostic_task_names_.insert(task_name);
   }
+  // Per-remote reorder-buffer diagnostic (issue #35 review follow-up).
+  // Registered only when the reorder buffer can actually run — same
+  // enable condition as the spin_once flush tick — so deployments with
+  // it disabled don't grow an always-zero status row. Both parameters
+  // are read in on_configure before the first syncDiagnosticTasks call
+  // and are not live-tunable. Same task-name convention and double-add
+  // gate as the loops above.
+  if(drop_stale_packets_ && reorder_hold_window_ms_ > 0.0)
+  {
+    for(const auto& remote_name: remote_names)
+    {
+      std::string task_name = "udp_bridge " + name_ + ": " + remote_name + ": reorder buffer";
+      if(diagnostic_task_names_.count(task_name))
+        continue;
+      diagnostic_updater_->add(task_name,
+        [this, remote_name](diagnostic_updater::DiagnosticStatusWrapper& stat)
+        {
+          diagnoseReorderBuffer(remote_name, stat);
+        });
+      diagnostic_task_names_.insert(task_name);
+    }
+  }
 }
 
 void UDPBridge::diagnoseConnection(const std::string& remote_name,
@@ -2191,6 +2213,46 @@ void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,
   else
     summary << "give-up rate " << diag.rate_per_s << "/s (total " << diag.total << ")";
   stat.summary(diag.level, summary.str());
+}
+
+void UDPBridge::diagnoseReorderBuffer(const std::string& remote_name,
+                                      diagnostic_updater::DiagnosticStatusWrapper& stat)
+{
+  // Snapshot under remote_nodes_mutex_; the RemoteNode getters take only
+  // the recursive RemoteNode::state_mutex_ and don't re-acquire
+  // remote_nodes_mutex_, so they are lock-friendly here (matching
+  // diagnoseRemoteGiveups). The STALE return mirrors the other per-remote
+  // tasks: the remote may have been removed between task registration and
+  // this callback firing.
+  std::size_t held = 0;
+  uint32_t buffered_total = 0;
+  uint32_t expired_total = 0;
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    auto remote_it = remote_nodes_.find(remote_name);
+    if(remote_it == remote_nodes_.end() || !remote_it->second)
+    {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::STALE, "remote not registered");
+      return;
+    }
+    held = remote_it->second->reorderBufferOccupancy();
+    buffered_total = remote_it->second->reorderBufferedTotal();
+    expired_total = remote_it->second->reorderExpiredTotal();
+  }
+
+  stat.add("remote", remote_name);
+  stat.add("held_packets", held);
+  stat.add("buffered_total", buffered_total);
+  stat.add("expired_released_total", expired_total);
+  // Always OK: occupancy is capacity-safe by construction (<=1
+  // packet/topic, each held <= the hold window), so there is no threshold
+  // to trip — this task is pure observability. expired_released_total is
+  // the number to watch: those packets waited the full window and still
+  // published without their gap being filled.
+  std::ostringstream summary;
+  summary << held << " held (buffered total " << buffered_total
+          << ", expired " << expired_total << ")";
+  stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, summary.str());
 }
 
 void UDPBridge::diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper& stat)

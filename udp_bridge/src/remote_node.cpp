@@ -474,6 +474,7 @@ RemoteNode::AdmitResult RemoteNode::admitOrBuffer(const std::string& topic,
     entry.arrival_time = now;
     entry.item = std::move(item);
     reorder_buffer_[topic] = std::move(entry);
+    ++reorder_buffered_total_;
     result.decision = AdmitDecision::Buffer;
   }
   return result;
@@ -494,6 +495,7 @@ std::vector<PublishItem> RemoteNode::flushExpiredBuffer(rclcpp::Time now,
       admitForPublish(it->first, it->second.packet_number);
       released.push_back(std::move(it->second.item));
       it = reorder_buffer_.erase(it);
+      ++reorder_expired_total_;
     }
     else
     {
@@ -501,6 +503,24 @@ std::vector<PublishItem> RemoteNode::flushExpiredBuffer(rclcpp::Time now,
     }
   }
   return released;
+}
+
+std::size_t RemoteNode::reorderBufferOccupancy() const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return reorder_buffer_.size();
+}
+
+uint32_t RemoteNode::reorderBufferedTotal() const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return reorder_buffered_total_;
+}
+
+uint32_t RemoteNode::reorderExpiredTotal() const
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  return reorder_expired_total_;
 }
 
 Defragmenter& RemoteNode::defragmenter()

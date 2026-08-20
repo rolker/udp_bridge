@@ -179,6 +179,24 @@ class RemoteNode
   // re-acquire remote_nodes_mutex_.
   uint32_t resendGiveupCount() const;
 
+  // Reorder-buffer observability (issue #35 review follow-up), read by
+  // UDPBridge::diagnoseReorderBuffer() at the ~1 Hz diagnostic tick.
+  // Lock-friendly like resendGiveupCount(): each takes only the recursive
+  // state_mutex_ and does NOT re-acquire remote_nodes_mutex_.
+  //   - reorderBufferOccupancy: topics currently holding a packet. At a
+  //     1 Hz sample against a <=500 ms hold window this is usually 0, so
+  //     the cumulative counters below are the observable signal.
+  //   - reorderBufferedTotal: cumulative Buffer decisions since this
+  //     RemoteNode was created.
+  //   - reorderExpiredTotal: cumulative held packets released by window
+  //     expiry rather than by a gap-filler — each one waited the full
+  //     window and still published without its gap being filled, so a
+  //     rising value means the wire is losing (or long-delaying) the
+  //     gap packets, not just jittering them.
+  std::size_t reorderBufferOccupancy() const;
+  uint32_t reorderBufferedTotal() const;
+  uint32_t reorderExpiredTotal() const;
+
   // Stale-packet gate (drop_stale_packets). Returns true if a message
   // for `topic` carrying wrapped sequence number `packet_number` should
   // be published, false if it is stale — i.e. a strictly-newer message
@@ -376,6 +394,13 @@ private:
     PublishItem item;
   };
   std::map<std::string, ReorderBufferEntry> reorder_buffer_;
+
+  // Cumulative reorder-buffer counters backing reorderBufferedTotal /
+  // reorderExpiredTotal. Guarded by state_mutex_. Deliberately NOT cleared
+  // on remote-restart detection (unlike reorder_buffer_ itself): they are
+  // lifetime observability counters, matching resend_giveup_count_.
+  uint32_t reorder_buffered_total_ = 0;
+  uint32_t reorder_expired_total_ = 0;
 
   // Per-missing-packet state used by getMissingPackets to apply
   // exponential backoff and the TTL-bounded give-up condition (issue

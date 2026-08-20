@@ -101,7 +101,9 @@ node's namespace). With the default node name: `udp_bridge/bridge_info`
 (`TopicStatisticsArray`, depth 10), and per-remote latched
 `udp_bridge/remotes/<remote>/bridge_info` + `.../topic_statistics`.
 Diagnostics go to `/diagnostics` via `diagnostic_updater` at ~1 Hz
-(per-connection status, per-remote resend give-ups, publish-queue health).
+(per-connection status, per-remote resend give-ups, publish-queue health,
+and — only when `reorder_hold_window_ms` > 0 with `drop_stale_packets` on —
+per-remote reorder-buffer occupancy/counters).
 Forwarded topics use dynamically created generic publishers/subscriptions.
 
 Services (all `udp_bridge_interfaces/srv`, on `<node_name>/...`):

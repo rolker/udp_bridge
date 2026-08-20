@@ -215,6 +215,16 @@ private:
   void diagnoseRemoteGiveups(const std::string& remote_name,
                              diagnostic_updater::DiagnosticStatusWrapper& stat);
 
+  /// Populate a diagnostic status message for one remote's reorder/jitter
+  /// buffer (issue #35 review follow-up): current occupancy plus the
+  /// cumulative buffered / expired-release counters from RemoteNode.
+  /// Always OK — the buffer is bounded (<=1 packet/topic, each held <= the
+  /// hold window), so this task is pure observability. Registered per
+  /// remote in syncDiagnosticTasks() only when the reorder buffer is
+  /// enabled (drop_stale_packets + reorder_hold_window_ms > 0).
+  void diagnoseReorderBuffer(const std::string& remote_name,
+                             diagnostic_updater::DiagnosticStatusWrapper& stat);
+
   /// Populate the publish-queue DiagnosticStatus: queued depth + total
   /// drops. WARNs when drops increased since the previous tick — drops mean
   /// a local destination subscriber stalled the publish path long enough to

@@ -304,6 +304,34 @@ TEST_F(ReorderBufferFixture, DisabledPathUsesAdmitForPublishUnchanged)
   EXPECT_EQ(remote_->bufferedPacketNumberForTest("topicA"), -1);
 }
 
+// Observability counters (review follow-up): a Buffer decision bumps the
+// cumulative buffered total; only a window-expiry release bumps the
+// expired total — an in-window gap-filler release does not.
+TEST_F(ReorderBufferFixture, ObservabilityCountersTrackBufferAndExpiry)
+{
+  const auto window = rclcpp::Duration::from_seconds(0.050);  // 50 ms
+  EXPECT_EQ(remote_->reorderBufferOccupancy(), 0u);
+  EXPECT_EQ(remote_->reorderBufferedTotal(), 0u);
+  EXPECT_EQ(remote_->reorderExpiredTotal(), 0u);
+
+  // Gap filled in-window: buffered_total 1, expired stays 0.
+  ASSERT_EQ(admit(1, 1.000).decision, AdmitDecision::Admit);
+  ASSERT_EQ(admit(3, 1.000).decision, AdmitDecision::Buffer);
+  EXPECT_EQ(remote_->reorderBufferOccupancy(), 1u);
+  EXPECT_EQ(remote_->reorderBufferedTotal(), 1u);
+  ASSERT_EQ(admit(2, 1.010).decision, AdmitDecision::Admit);  // releases 3
+  EXPECT_EQ(remote_->reorderBufferOccupancy(), 0u);
+  EXPECT_EQ(remote_->reorderExpiredTotal(), 0u);
+
+  // Gap never filled: window expiry bumps expired_total.
+  ASSERT_EQ(admit(5, 2.000).decision, AdmitDecision::Buffer);
+  EXPECT_EQ(remote_->reorderBufferedTotal(), 2u);
+  auto released = remote_->flushExpiredBuffer(t_at(2.100), window);
+  EXPECT_EQ(tags(released), (std::vector<uint64_t>{5}));
+  EXPECT_EQ(remote_->reorderBufferOccupancy(), 0u);
+  EXPECT_EQ(remote_->reorderExpiredTotal(), 1u);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
