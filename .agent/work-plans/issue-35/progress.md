@@ -157,3 +157,16 @@ must-fix + 5 suggestions were incorporated.
 
 ### False positives
 - (none)
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-20 14:05 -04:00
+**By**: Claude Code Agent (Claude Fable 5)
+
+**Branch**: feature/issue-35 (addresses all three Integrated Review findings for PR #48)
+
+- `7881db7` docs: document the P==H admit case in admitOrBuffer decision rules (cross-confirmed finding)
+- `f6549ee` diagnostics: per-remote reorder-buffer occupancy + cumulative counters (buffered_total / expired_released_total; task registered only when the buffer is enabled) + new ObservabilityCountersTrackBufferAndExpiry test + .agents/README.md diagnostics inventory update
+- `87b8b2f` lifecycle: clear the reorder buffer on deactivate (decision: discard held packets, keep high-water marks — matches existing cross-activation state behavior) + new ClearReorderBufferDiscardsHeldKeepsMark test
+
+Verified: package builds clean (no new warnings) and full suite passes — 142 tests, 0 failures (was 140 before the two new tests).
