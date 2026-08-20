@@ -234,8 +234,11 @@ class RemoteNode
   // Decision rules against the per-topic high-water mark H (see
   // admitForPublish) and the at-most-one buffered packet B for the topic:
   //   - P < H            -> Drop (stale; superseded by a newer publish).
-  //   - first-seen / P==H+1 -> Admit (advances H; identical to
-  //                          admitForPublish's admit path).
+  //   - first-seen / P==H / P==H+1 -> Admit (advances H; identical to
+  //                          admitForPublish's admit path, which also
+  //                          admits equal-to-mark — an exact-mark P is
+  //                          not a duplicate, since duplicates are
+  //                          filtered upstream in unwrap()).
   //   - P >= H+2         -> Buffer (gap below P; H is NOT advanced).
   // When a packet is already buffered for the topic:
   //   - P fills toward B (H<=P<B): Admit P; if that makes B contiguous
