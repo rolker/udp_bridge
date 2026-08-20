@@ -76,6 +76,12 @@ TEST_F(UnaddressedConnection, DoesNotFilePacketsForResend)
   // The point of the fix: nothing is queued for a resend that can never be
   // requested. Before the guard this was 50.
   EXPECT_EQ(0u, conn.sent_packet_count_for_test());
+
+  // The other half of the contract: the failure stays VISIBLE. The short-
+  // circuited packets must land in the send statistics as failed bytes so a
+  // misconfigured or out-of-range link cannot become an invisible one.
+  auto rates = conn.data_sent_rate(now, udp_bridge::PacketSendCategory::message);
+  EXPECT_GT(rates.failed_bytes_per_second, 0.0f);
 }
 
 TEST_F(UnaddressedConnection, StaysCheapAcrossRepeatedSends)
@@ -108,6 +114,10 @@ TEST_F(UnaddressedConnection, ShortCircuitsOverheadTraffic)
   EXPECT_EQ(udp_bridge::SendResult::failed,
             conn.send(packets, -1, "remote", true, now));
   EXPECT_EQ(0u, conn.sent_packet_count_for_test());
+
+  // Overhead traffic is recorded under its own category — visible there too.
+  auto rates = conn.data_sent_rate(now, udp_bridge::PacketSendCategory::overhead);
+  EXPECT_GT(rates.failed_bytes_per_second, 0.0f);
 }
 
 // The guard must key on "no resolved address", not on the connection being new.
