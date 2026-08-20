@@ -139,6 +139,7 @@ if(BUILD_TESTING)
   add_udp_bridge_gtest(test_connection_rate_limit test/test_connection_rate_limit.cpp)
   add_udp_bridge_gtest(test_remote_node_resend test/test_remote_node_resend.cpp)
   add_udp_bridge_gtest(test_connection_cleanup test/test_connection_cleanup.cpp)
+  add_udp_bridge_gtest(test_unaddressed_connection test/test_unaddressed_connection.cpp)
   # test_giveup_diagnostic merged in from jazzy (PR #24). Registered
   # through the same helper so it gets UDP_BRIDGE_BUILD_TESTING too —
   # required for in-package ABI alignment per the helper's contract.
