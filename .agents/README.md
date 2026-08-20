@@ -25,7 +25,7 @@ dropping those exclusions.
 
 | Package | Language | Build targets (from CMakeLists.txt) |
 |---------|----------|-------------------------------------|
-| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 13 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`) |
+| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 15 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`) |
 | `udp_bridge_interfaces` | rosidl | 13 messages + 3 services (`Subscribe`, `AddRemote`, `ListRemotes`) |
 
 `udp_bridge` depends on `rclcpp`, `rclcpp_lifecycle`, `diagnostic_updater`,
@@ -86,6 +86,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 | `port` | `4200` | UDP listen port; clamped 0–65535 |
 | `maximum_packet_size` | `65500` | Clamped 256–65500 |
 | `drop_stale_packets` | `true` | Gate dropping late out-of-order resends per destination topic |
+| `reorder_hold_window_ms` | `0.0` | Reorder/jitter buffer hold window (ms), global (#35); `0.0` = disabled. When > 0 (and `drop_stale_packets` on), a gap-opening packet is held up to this window so an out-of-order gap-filler publishes first; clamped 0–500 ms |
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
 | `remotes_list` | `[]` | Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of the cap resends may consume, #44, `doc/resend_budget_design.md`), `admission_floor_fraction` (0.1 — floor of the AIMD-adjusted admission cap, #43, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
@@ -100,7 +101,9 @@ node's namespace). With the default node name: `udp_bridge/bridge_info`
 (`TopicStatisticsArray`, depth 10), and per-remote latched
 `udp_bridge/remotes/<remote>/bridge_info` + `.../topic_statistics`.
 Diagnostics go to `/diagnostics` via `diagnostic_updater` at ~1 Hz
-(per-connection status, per-remote resend give-ups, publish-queue health).
+(per-connection status, per-remote resend give-ups, publish-queue health,
+and — only when `reorder_hold_window_ms` > 0 with `drop_stale_packets` on —
+per-remote reorder-buffer occupancy/counters).
 Forwarded topics use dynamically created generic publishers/subscriptions.
 
 Services (all `udp_bridge_interfaces/srv`, on `<node_name>/...`):
