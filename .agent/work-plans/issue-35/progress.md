@@ -139,3 +139,21 @@ must-fix + 5 suggestions were incorporated.
 - Governance: consequences satisfied (README gtest count 15 == 15 real targets; example_params updated; restart-clear + test present). Plan drift: none (files match plan; 12 gtest cases ⊇ 6 planned scenarios).
 - Local model adversarial skipped: Ollama not installed on this host.
 - Test attestation from the Implementation entry (140 tests, 0 failures at b091f71) relied upon; this review did not rebuild.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-20 13:53 -04:00
+**By**: Claude Code Agent (Claude Fable 5)
+
+**PR**: #48 at `d9c2c28`
+**Sources**: 3 (Copilot R1 @ `d9c2c28`, Local Review (Pre-Push) @ `55760e6`, CI rollup)
+**Cross-source confirmations**: 1
+**CI**: all-pass (build-and-test success)
+
+### Findings
+- [ ] (cross-confirmed: Copilot + Local Review (Pre-Push)) `admitOrBuffer` decision-rule docstring omits the `P == H` admit case — the implementation admits `packet_number <= H+1` (remote_node.cpp:459, inline comment covers it) but the header contract lists only `first-seen / P==H+1 -> Admit`. Doc-only fix: add `P == H` to the Admit rule line — `udp_bridge/include/udp_bridge/remote_node.h:237`
+- [ ] (suggestion, Local Review (Pre-Push)) No occupancy diagnostic for `reorder_buffer_` (bounded ≤1/topic, ≤500 ms; observability nice-to-have) — `udp_bridge/include/udp_bridge/remote_node.h:369`
+- [ ] (suggestion, Local Review (Pre-Push)) `reorder_buffer_` not cleared on `on_deactivate`; a held packet would release as a slightly-stale publish on next activation (consistent with existing cross-activation state persistence — needs an explicit keep/clear decision) — `udp_bridge/src/udp_bridge.cpp:574`
+
+### False positives
+- (none)
