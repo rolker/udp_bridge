@@ -332,6 +332,31 @@ TEST_F(ReorderBufferFixture, ObservabilityCountersTrackBufferAndExpiry)
   EXPECT_EQ(remote_->reorderExpiredTotal(), 1u);
 }
 
+// clearReorderBuffer (called from UDPBridge::on_deactivate) discards the
+// held packet without publishing it and without touching the high-water
+// mark, so nothing stale can release after reactivation; a subsequent
+// gap-filler still resolves in order against the preserved mark.
+TEST_F(ReorderBufferFixture, ClearReorderBufferDiscardsHeldKeepsMark)
+{
+  ASSERT_EQ(admit(1).decision, AdmitDecision::Admit);
+  ASSERT_EQ(admit(3).decision, AdmitDecision::Buffer);
+  ASSERT_EQ(remote_->bufferedPacketNumberForTest("topicA"), 3);
+
+  remote_->clearReorderBuffer();
+
+  EXPECT_EQ(remote_->bufferedPacketNumberForTest("topicA"), -1);
+  EXPECT_EQ(remote_->reorderBufferOccupancy(), 0u);
+  EXPECT_EQ(remote_->highestPublishedForTest("topicA"), 1)
+    << "clearReorderBuffer must not advance the high-water mark";
+
+  // The discarded packet's gap-filler arrives post-reactivation: still
+  // admitted in order by the normal rules (2 == mark+1), and nothing
+  // stale is released behind it (3's copy is gone).
+  auto r = admit(2, 2.000);
+  EXPECT_EQ(r.decision, AdmitDecision::Admit);
+  EXPECT_EQ(tags(r.to_publish), (std::vector<uint64_t>{2}));
+}
+
 }  // namespace
 
 int main(int argc, char** argv)

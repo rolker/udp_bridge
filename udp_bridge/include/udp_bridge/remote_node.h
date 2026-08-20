@@ -197,6 +197,18 @@ class RemoteNode
   uint32_t reorderBufferedTotal() const;
   uint32_t reorderExpiredTotal() const;
 
+  // Discard any held reorder-buffer packets without publishing them and
+  // without touching the per-topic high-water marks. Called from
+  // UDPBridge::on_deactivate: spin_once (and with it the flushExpiredBuffer
+  // tick) does not run while INACTIVE, so a packet held at deactivation
+  // would otherwise sit out the whole INACTIVE period and be published —
+  // long stale — by the first flush tick after reactivation. The high-water
+  // marks deliberately persist, matching their existing cross-activation
+  // behavior; a discarded packet's gap-filler arriving post-reactivation is
+  // still admitted in order by the normal admitOrBuffer rules. Takes
+  // state_mutex_.
+  void clearReorderBuffer();
+
   // Stale-packet gate (drop_stale_packets). Returns true if a message
   // for `topic` carrying wrapped sequence number `packet_number` should
   // be published, false if it is stale — i.e. a strictly-newer message

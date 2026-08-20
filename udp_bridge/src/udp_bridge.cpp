@@ -579,6 +579,19 @@ UDPBridge::CallbackReturn UDPBridge::on_deactivate(const rclcpp_lifecycle::State
   // rmw max_blocking_time), not the whole backlog. A subsequent on_activate
   // restarts a fresh worker.
   publish_queue_.stop();
+  // Discard any reorder-buffer packets held at deactivation (issue #35
+  // review follow-up). spin_once returns early while INACTIVE, so the
+  // window-expiry flush stops ticking; a packet held here would sit out
+  // the whole INACTIVE period and then publish — long stale — on the
+  // first flush tick after reactivation. Only the held packets are
+  // dropped; the per-topic high-water marks persist like the rest of the
+  // per-remote state (see RemoteNode::clearReorderBuffer).
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    for(auto& remote_entry: remote_nodes_)
+      if(remote_entry.second)
+        remote_entry.second->clearReorderBuffer();
+  }
   return LifecycleNode::on_deactivate(state);
 }
 

@@ -523,6 +523,12 @@ uint32_t RemoteNode::reorderExpiredTotal() const
   return reorder_expired_total_;
 }
 
+void RemoteNode::clearReorderBuffer()
+{
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  reorder_buffer_.clear();
+}
+
 Defragmenter& RemoteNode::defragmenter()
 {
   return defragmenter_;
