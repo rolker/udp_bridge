@@ -283,6 +283,48 @@ void Connection::update_last_receive_time(double t, int data_size, bool duplicat
 
 SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socket, const std::string& remote, bool is_overhead, rclcpp::Time now)
 {
+  // A connection whose host has never been advertised has nowhere to send.
+  // Short-circuit here, BEFORE the per-packet loop below copies each packet
+  // into a WrappedPacket and files it in sent_packets_. That buffer exists so
+  // a peer can ask for a resend; a peer we have never heard from cannot ask,
+  // so every entry is a copy and a map insert that can only ever be evicted by
+  // cleanup. The inner per-packet send() already refuses to call sendto()
+  // without an address, so this costs the copies and the bookkeeping for
+  // nothing.
+  //
+  // Measured on BizzyBoat 2026-08-20: the operator station was reachable only
+  // over vpn and cell and never advertised a wifi address, so the configured
+  // wifi connection sat at host='' with the full topic list pointed at it --
+  // roughly 1.8 MB/s of copies, map churn and resend bookkeeping, holding a
+  // CPU core at ~96% indefinitely while delivering exactly zero bytes.
+  //
+  // Statistics are still recorded, so an unaddressed connection stays VISIBLE
+  // in topic_statistics as failing. Dropping it silently would turn a
+  // misconfigured or out-of-range link into an invisible one, which is how
+  // this went unnoticed in the first place.
+  bool no_address;
+  {
+    std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+    no_address = addresses_.empty();
+  }
+  if(no_address)
+  {
+    std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+    for(const auto& p: packets)
+    {
+      PacketSizeData size_data;
+      size_data.timestamp = now;
+      size_data.size = p.packet_size;
+      if(is_overhead)
+        size_data.category = PacketSendCategory::overhead;
+      else
+        size_data.category = PacketSendCategory::message;
+      size_data.send_result = SendResult::failed;
+      sent_packet_statistics_.add(size_data);
+    }
+    return SendResult::failed;
+  }
+
   uint32_t total_size = 0;
   for(const auto& p: packets)
     total_size += p.packet_size;
