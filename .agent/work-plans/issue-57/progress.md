@@ -298,3 +298,30 @@ behind. No behavior change — README prose + one dead constant/comment.
 
 ### Next step
 Lifecycle: **Implementation → review-code** (re-review the fixes, pre-push).
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-22 23:46 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-57 at `fa7490a`
+**Mode**: pre-push
+**Depth**: Deep (reason: test_range_degradation.py +274/-6 ≥200 lines; project plan.md override-trigger)
+**Must-fix**: 1 | **Suggestions**: 2
+**Round**: 2 | **Ship**: recommended — one must-fix is a mechanical fail-not-skip fix mirroring the in-file recv_q guard; not rising vs round 1; no design/correctness concern
+
+### Findings
+- [ ] (must-fix) New Bulk invariants `pytest.skip` on the degenerate empty-clean-phase-stats case, conflating "no topic_statistics captured" with "captured but no usable Bulk sample" — the latter is a stats-capture collapse and should fail, per the file's own fail-not-skip convention (284-307) and the co-tenant `assert evaluated > 0` (763). Weakens the #57 regression guard — `udp_bridge/test/bench/test_range_degradation.py:906,941`
+- [ ] (suggestion) `K_cotenant_transient_p95_latency_s` 20 s (derived from the 62.5 kB/s worst-case drain) is applied uniformly to every downshift window; fringe (1.25 MB/s, ~0.8 s bound) and lossy (375 kB/s, ~2.7 s) are under-guarded on latency. Scale per-window from the window's link rate (delivery ratio still guards all windows) — `udp_bridge/test/bench/test_range_degradation.py:747`
+- [ ] (suggestion) `recvq_wedge_ceiling_bytes` 100_000 left with TODO(#57 part 2); the host run now provides real fragmented-Bulk data (test passed under it) — re-derive or confirm-and-close the TODO — `udp_bridge/test/bench/test_subscriber_death.py:63`
+
+### Notes
+- Static analysis (flake8 E/W/F) clean of correctness issues; only E241 on untouched table-alignment lines and W503 (ament/PEP8 prefer this style). Repo keeps flake8 off for bench Python by policy.
+- Local Adversarial skipped: Ollama not available on this host. Copilot off (default).
+- Verified correct by both adversarial passes: os.urandom buffer-reuse safety, connection_id bucket filter (cross-checked 254→508), downshift↔PHASE_TRAJECTORY 1:1 index alignment, division/empty-collection guards.
+- Accepted-by-design (not a finding): resend `xfail(strict=True)` XPASS-flip risk is a deliberate #54 decision; host run confirmed it stays xfail (range_degradation 10 pass, 2 xfail, 0 fail).
+- Round-1 findings both confirmed fixed (README/code offered-rate drift; dead WIFI_BUDGET_BPS removed).
+
+### Next step
+Lifecycle: **Local Review** → address-findings (verdict changes-requested) → re-review → push / open PR. Ship: recommended — one mechanical must-fix, then shippable.
