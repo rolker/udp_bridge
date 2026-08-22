@@ -89,9 +89,12 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
   `can_send`'s window and full-deque scan (the deque is not monotone in
   timestamps under the reserve-then-record send pattern).
 
-- **Fraction of the cap, not an absolute rate.** Connections already carry
-  a per-link `maximum_bytes_per_second`; a fraction inherits per-link
-  sizing for free and keeps one intuitive knob.
+- **Fraction of measured goodput, not the configured cap.** The budget is
+  a fraction of what the link is actually delivering (issue #52), not of
+  the per-link `maximum_bytes_per_second`. Scaling off the configured cap
+  (the #44 basis) inherited every admission-scaling error — see the
+  Mechanism section's 2291 kB/s-on-a-62.5 kB/s-link example. The fraction
+  stays the single intuitive knob; only what it multiplies changed.
 
 - **Default 0.25.** Keeps ≥75% of a saturated link for fresh data while
   allowing meaningful recovery on lossy-but-alive links. On the 2026-08-04

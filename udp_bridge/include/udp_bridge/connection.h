@@ -39,8 +39,9 @@ public:
   void setRateLimit(uint32_t maximum_bytes_per_second);
   uint32_t rateLimit() const;
 
-  /// Set the maximum fraction [0, 1] of the rate limit that resend
-  /// traffic may consume (issue #44). Values outside [0, 1] are
+  /// Set the maximum fraction [0, 1] of measured goodput that resend
+  /// traffic may consume (issue #44; rebased from the configured rate
+  /// limit to goodput by issue #52). Values outside [0, 1] are
   /// clamped. See resend_constants.h for the default and the
   /// ack-starvation backoff that scales this down further.
   void setResendBudgetFraction(float fraction);
@@ -244,9 +245,10 @@ private:
   /// Maximum bytes per second to send.
   uint32_t data_rate_limit_ = default_rate_limit;
 
-  /// Maximum fraction [0, 1] of data_rate_limit_ that resend traffic
-  /// may consume (issue #44); scaled down further under ack starvation
-  /// — see resend_packets(). Guarded by config_mutex_ like the other
+  /// Maximum fraction [0, 1] of measured goodput that resend traffic
+  /// may consume (issue #44; rebased from data_rate_limit_ to goodput by
+  /// issue #52); scaled down further under ack starvation — see
+  /// resend_packets(). Guarded by config_mutex_ like the other
   /// setter-writable config fields above.
   float resend_budget_fraction_ = kDefaultResendBudgetFraction;
 
