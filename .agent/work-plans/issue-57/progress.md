@@ -273,3 +273,28 @@ Lifecycle: **Implementation → review-code** (pre-push). Nothing pushed; no PR.
 ### Findings
 - [x] (must-fix) README invariant #11 / W_wire_pct row / refinement item 6 describe `send.success_bytes_per_second` × the 4 MB/s WiFi budget, but code asserts offered (success+dropped) × 4.8 MB/s BULK_NOMINAL_BPS — `udp_bridge/test/bench/README.md:129,191,224` (code at `test_range_degradation.py:947`)
 - [x] (suggestion) Dead constant `WIFI_BUDGET_BPS = 4_000_000.0`, never referenced — `udp_bridge/test/bench/test_range_degradation.py:61`
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-22 23:34 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-57 at `3313b4a`
+**Addressed**: `## Local Review (Pre-Push)` (2026-08-22 23:28 +00:00, `db937b2`) — both open findings
+**Commits**: `992d1cb`, `3313b4a`
+
+Both findings closed the doc/code drift between the bench README and what the
+wire-rate invariant actually asserts, then removed the constant that drift left
+behind. No behavior change — README prose + one dead constant/comment.
+
+### Actions
+- [x] (must-fix) README aligned to code: invariant #11, the `W_wire_pct` row, and refinement item 6 now describe the **offered** rate (`send.success_bytes_per_second` + `send.dropped_bytes_per_second`) measured against the ~4.8 MB/s nominal Bulk offered load, matching `test_invariant_bulk_wire_rate` (`offered_bps` vs `W_wire_pct × BULK_NOMINAL_BPS`). The stale "`send.success_bytes_per_second` × 4 MB/s WiFi budget" wording is gone — `udp_bridge/test/bench/README.md:129,191,224` (`992d1cb`)
+- [x] (suggestion) Removed dead `WIFI_BUDGET_BPS = 4_000_000.0` and trimmed the shared comment so it describes only the still-used `BULK_TOPIC`; `BULK_NOMINAL_BPS` is the sole rate the invariants scale against — `udp_bridge/test/bench/test_range_degradation.py:61` (`3313b4a`)
+
+### Verification
+- `py_compile` on `test_range_degradation.py` — pass; `WIFI_BUDGET_BPS` has zero remaining references, `BULK_TOPIC` still used at line 865.
+- Changed files: no trailing whitespace, final newline present (pre-commit hooks
+  not runnable in this container — host owns the full pre-commit/build pass).
+
+### Next step
+Lifecycle: **Implementation → review-code** (re-review the fixes, pre-push).
