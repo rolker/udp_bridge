@@ -11,6 +11,11 @@
 //   DecreaseTargetsHeadroomOfGoodput — a congested sample drops the cap to
 //                                 (1 - link_headroom_fraction) * goodput,
 //                                 not merely half of where it was (#52).
+//   HeadroomFractionAffectsDecreaseTarget — a non-default headroom moves
+//                                 the congested-branch target off the
+//                                 default fraction of goodput (#52).
+//   HeadroomFractionClampedToContract — the setter clamps to [0, 0.99],
+//                                 negatives to 0, NaN to the default (#52).
 //   DuplicatesExcludedFromGoodput — duplicate bytes are subtracted before
 //                                 the headroom target is computed (#52).
 //   CongestionDetectionUsesRawReceivedNotGoodput — the congested predicate
@@ -191,6 +196,54 @@ TEST_F(AdmissionControl, DecreaseTargetsHeadroomOfGoodput)
             static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
     << "Regression guard: a plain halving would leave the cap far above "
        "measured delivery.";
+}
+
+TEST_F(AdmissionControl, HeadroomFractionAffectsDecreaseTarget)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  // A non-default headroom must change where a congested sample lands.
+  // DecreaseTargetsHeadroomOfGoodput only exercises the default (0.2);
+  // set 0.5 so the target is a materially different fraction of goodput.
+  conn->setLinkHeadroomFraction(0.5f);
+  ASSERT_EQ(conn->linkHeadroomFraction(), 0.5f);
+
+  send_traffic(*conn, t0, 80);                   // sent ~80 kB/s
+  conn->update_last_receive_time(t0.seconds(), 100, false);  // feedback fresh
+  conn->updateAdmissionControl(20000.0f, 0.0f, t0);          // 20 kB/s delivered
+
+  // Target is (1 - 0.5) x 20000 = 10000, above the 8192 floor, and it must
+  // reflect the configured headroom — not the default 0.2 (which would give
+  // 16000) nor a plain halving (50000).
+  EXPECT_EQ(conn->effectiveRateLimit(), static_cast<uint32_t>(0.5f * 20000.0f))
+    << "A congested sample must target (1 - link_headroom_fraction) x goodput "
+       "using the CONFIGURED headroom, not the default (#52).";
+}
+
+TEST_F(AdmissionControl, HeadroomFractionClampedToContract)
+{
+  auto conn = make_connection();
+
+  // Contract [0, 1): 1.0 would target zero throughput forever, so the
+  // setter clamps to 0.99; values above clamp the same way.
+  conn->setLinkHeadroomFraction(1.0f);
+  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(), 0.99f)
+    << "A headroom of 1.0 must clamp to 0.99 so a congested sample never "
+       "targets exactly zero throughput.";
+  conn->setLinkHeadroomFraction(5.0f);
+  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(), 0.99f);
+
+  // Below 0: clamps to 0 (no headroom, target == goodput).
+  conn->setLinkHeadroomFraction(-0.5f);
+  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(), 0.0f)
+    << "A negative headroom must clamp to 0, not pass through.";
+
+  // NaN falls back to the default, never to 0.
+  conn->setLinkHeadroomFraction(std::numeric_limits<float>::quiet_NaN());
+  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(),
+                  udp_bridge::kDefaultLinkHeadroomFraction)
+    << "A NaN headroom must fall back to the default, not clamp to 0.";
 }
 
 TEST_F(AdmissionControl, DuplicatesExcludedFromGoodput)
