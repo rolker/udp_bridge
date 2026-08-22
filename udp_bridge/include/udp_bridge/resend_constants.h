@@ -107,7 +107,7 @@ inline constexpr std::chrono::duration<double> kAckStarvationThreshold{1.0};
 
 // Clamp on the starvation halvings: budget floor is
 // fraction / 2^kMaxAckStarvationBackoffShift (4 -> 16x reduction,
-// ~1.6% of the rate limit at the default fraction). Keeps a trickle
+// ~1.6% of measured goodput at the default fraction). Keeps a trickle
 // of resends flowing as a probe so recovery is possible the moment
 // the inbound path returns.
 inline constexpr uint32_t kMaxAckStarvationBackoffShift = 4;
