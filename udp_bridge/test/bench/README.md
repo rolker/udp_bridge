@@ -138,10 +138,15 @@ not exist under DDS.
 
 **Finding (2026-05-25):** the wedge could **not** be reproduced at bench scale
 — across FastDDS, CycloneDDS, and Zenoh, with clean-kill and freeze triggers,
-even at ~58 MB/s Bulk into a frozen consumer, the operator Recv-Q and Send-Q
+with Bulk streaming into a frozen consumer, the operator Recv-Q and Send-Q
 stayed flat at 0 and the surviving tiers were unaffected. At bench scale
 `publish()` does not block the drain thread (under Zenoh it's an async
-hand-off). The field wedge (4× on 2026-04-27, `rmw_zenoh_cpp`) evidently needs
+hand-off). **Correction (#57):** that run used the pre-#57 all-zeros Bulk
+payload, which compressed to a single ~488 B packet — so the harness pushed
+only ~5 kB/s of single-packet traffic, not the ~58 MB/s originally claimed.
+The no-wedge finding was reached in a zero-fragmentation regime; #57 now
+streams real incompressible, fragmented Bulk (~4.8 MB/s, ~480+ fragments per
+image), so it must be re-validated on the host bench run. The field wedge (4× on 2026-04-27, `rmw_zenoh_cpp`) evidently needs
 conditions this harness can't hit at bench scale, or a root cause other than
 the back-pressure hypothesis the issue records. So `test_subscriber_death`
 is a **no-wedge regression guard** — it asserts the healthy behavior (Recv-Q
