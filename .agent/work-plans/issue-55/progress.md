@@ -70,3 +70,17 @@ a blocker.
 - [ ] Explicitly answer the `can_send` metering question in the PR description — even if the answer is "yes, it does meter correctly" — so the #52 goodput signal question is closed.
 - [ ] Before merging, verify bench behavior under the fix: if the rate limiter starts seeing fragmented traffic for the first time, large-message delivery rates may change. Document in the PR description.
 - [ ] Run `ci_local.sh` for full-scope attestation (ADR-0018) before opening the PR, given the stats-path changes touch concurrent send paths.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-22 00:00 +00:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-55/plan.md` at `a89b594`
+**Branch**: feature/issue-55 at `a89b594`
+**Phases**: single
+
+### Open questions
+- [ ] Diagnostic test will identify exact fix location in connection.cpp or statistics.cpp (TBD after test).
+- [ ] Audit whether receive-side `ReceivedSize::size` (uint16_t) has a symmetric gap; fix here or file follow-up.
+- [ ] After fix, bench run to observe whether rate limiter engages for Bulk traffic for the first time.
