@@ -188,3 +188,72 @@ cannot grant. **No existing THRESHOLDS value was changed.**
 - Re-check (new regime touches them for the first time): **X** (recovery), **R** (stats rate), **Y** (cross-path), **K** (co-tenant), **N** (Recv-Q climb)
 
 All changed-threshold TODOs carry `TODO(#57 part 2)` markers in-tree.
+
+## Implementation
+**Status**: complete (part 2 of 2) — host bench run + threshold disposition
+**When**: 2026-08-22 19:20 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Branch**: feature/issue-57 at `c05d426`
+**Commits**: `d3bf110` (metric fixes), `c05d426` (defect recording + threshold annotations)
+
+Part 1 stopped at the measurement boundary. This is the host side: the run
+part 1 could not do, and the threshold work that depends on it.
+
+### The first honest run produced three failures — all different in kind
+- [x] **fragmentation 254 vs floor 400 — measurement artifact, fixed.**
+      `MessageStatistics::get()` buckets by (remote, connection) and
+      `UDPBridge::callback` records a pre-send point keyed `("","")` with
+      `fragment_count` 0 (`udp_bridge.cpp:773-777`); averaging it with the real
+      `("operator","wifi")` bucket halved the metric. Filtered on non-empty
+      `connection_id`. Observed after: **508** (predicted ~505).
+- [x] **Bulk wire rate 467 kB/s vs 2 MB/s — wrong metric, fixed.** Asserted
+      SUCCESS where the limiter legitimately sheds an over-budget tier; that
+      would have been asserting admission control fails. Now asserts OFFERED
+      (success + dropped) against `BULK_NOMINAL_BPS`. Observed **5.08 MB/s =
+      1.06x nominal**; the 6% is fragment-header overhead and cross-checks the
+      fragment count.
+- [x] **recovery to 0.1% / 0.3% of baseline — real defect.** Filed
+      [#60](https://github.com/rolker/udp_bridge/issues/60); `xfail(strict=True)`
+      with the ramp arithmetic (~54 s vs `T_recovery_s` 30) and an explicit
+      prohibition on lowering `X_recovery_pct` / widening `T_recovery_s`.
+
+### A fourth surfaced on the next run
+- [x] **co-tenant p95 15.768 s at `critical#3` — real defect, different cause.**
+      Investigated at operator request rather than deferred. Latency spikes at
+      the downshift and decays monotonically (13.2 -> 4.7 -> 1.9 -> 0.12 s):
+      a standing queue draining, not starvation. netem inherits the kernel
+      default `limit 1000`; 1000 x 1000 B / 62,500 B/s = **16.0 s** against
+      15.768 s observed — 1.5%. Rate headroom cannot recall bytes already
+      committed to a FIFO, so `maximum_bytes_per_second` and #52's
+      `link_headroom_fraction` were never going to prevent it. Filed
+      [#61](https://github.com/rolker/udp_bridge/issues/61).
+      Invariant refined to carry two bounds for two phenomena: 5 s steady
+      state, 20 s for windows whose link rate dropped (derived from the drain
+      arithmetic). **Intermittent** — a later run measured 0.132 s in the same
+      window — so the bound stays asserted, and #61 records that a single
+      clean run does not retire it.
+
+### Thresholds — re-derived or reason stated (plan step 6)
+| threshold | observed | disposition |
+|---|---|---|
+| `T_fragment_floor` 400 | 508 frags | unchanged; ~21% margin, guards collapse-to-1 not exact count |
+| `W_wire_pct` 0.5 | 1.06x nominal | unchanged; the failure it guards is 4 orders below the floor |
+| `K_cotenant_delivery_pct` 0.50 | worst 0.89 | unchanged; margin is real headroom against jitter |
+| `K_cotenant_p95_latency_s` 5.0 | steady max 0.054 s | unchanged; two orders of margin |
+| `K_cotenant_transient_p95_latency_s` | new, 20.0 | derived from the 16.0 s worst-case drain |
+| `X_recovery_pct` / `T_recovery_s` | 0.3% of baseline | untouched — #60 xfail forbids adjusting them |
+| `F_resend_multiplier` | — | untouched — #54 xfail forbids raising it |
+
+### Verification (host)
+- Clean rebuild; **178 tests, 0 errors, 0 failures** (default suite).
+- `range_degradation`: **10 pass, 2 xfail, 0 fail**.
+- `subscriber_death`: **both invariants pass** — and for the first time this
+  means something, since the frozen consumer is now fed 4.8 MB/s of
+  incompressible fragmented Bulk rather than ~5 kB/s of single packets. The
+  "no wedge at bench scale" finding has narrowed three times; this is the
+  first run that actually tests it.
+- flake8 + `pre-commit run --from-ref origin/jazzy --to-ref HEAD` clean.
+
+### Next step
+Lifecycle: **Implementation → review-code** (pre-push). Nothing pushed; no PR.
