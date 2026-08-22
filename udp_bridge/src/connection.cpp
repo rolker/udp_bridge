@@ -222,9 +222,19 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // the very pathology the received-channel guard prevents, re-entered
   // through the duplicate channel. Mark it unusable so it falls back to
   // the plain halving instead (#52).
+  //
+  // Negative rates on EITHER channel are nonsensical (a rate cannot be
+  // below zero) and reach us over an unauthenticated transport (#53).
+  // They pass the finite and duplicate>received checks — e.g. received
+  // = −100, duplicate = −200 gives duplicate > received == false — yet a
+  // negative received is below any congestion threshold, so the sample
+  // would be treated as congested with a headroom target of 0 and slam
+  // the cap to the floor in one sample. Reject negatives here so they
+  // fall back to the plain halving instead (#52).
   const bool feedback_unusable =
     feedback_stale || !std::isfinite(remote_received_bps) ||
     !std::isfinite(remote_duplicate_bps) ||
+    remote_received_bps < 0.0f || remote_duplicate_bps < 0.0f ||
     remote_duplicate_bps > remote_received_bps;
   const bool congested = sent_bps > 0.0f &&
     (feedback_unusable ||

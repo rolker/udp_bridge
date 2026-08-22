@@ -33,6 +33,10 @@
 //   NanFeedbackTreatedAsCongestion — a non-finite delivery report is
 //                                 unusable feedback: congestion + plain
 //                                 halving, never read as clean (#52).
+//   NegativeRatesTreatedAsCongestion — a negative received/duplicate pair
+//                                 is unusable feedback: plain halving, never
+//                                 a floor slam (slips past duplicate>received
+//                                 yet is below any threshold) (#52, #53).
 //   NeverReceivedSentinel       — last_receive_time 0.0 ("nothing yet")
 //                                 is NOT stale; an idle link recovers.
 //   EffectiveLimitAffectsCanSend— send() actually meters against the
@@ -464,6 +468,31 @@ TEST_F(AdmissionControl, NegativeDuplicateDoesNotInflateGoodput)
   EXPECT_EQ(conn->goodputBytesPerSecond(), 40000.0f)
     << "Stored goodput must clamp to received; a negative duplicate rate "
        "must not inflate it above what the remote reported receiving (#52).";
+}
+
+TEST_F(AdmissionControl, NegativeRatesTreatedAsCongestion)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  // A negative received/duplicate pair is nonsensical (a rate cannot be
+  // below zero) and reaches us over an unauthenticated transport (#53). It
+  // slips past the finite and duplicate>received guards — with received =
+  // −100, duplicate = −200 the check duplicate > received is FALSE — yet a
+  // negative received is below any congestion threshold, so without the
+  // negative guard the sample would be treated as usable-and-congested with
+  // a headroom target of 0 and slam the cap to the floor in one report.
+  // Reject negatives as unusable feedback: plain halving, not a floor slam.
+  conn->updateAdmissionControl(-100.0f, -200.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
+    << "A negative received/duplicate pair must count as unusable feedback "
+       "and apply the multiplicative decrease, not slam the cap to the floor "
+       "(#52).";
 }
 
 TEST_F(AdmissionControl, NeverReceivedSentinel)
