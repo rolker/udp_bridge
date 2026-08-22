@@ -81,8 +81,11 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
         c->setSourceIPAndPort(source_info.host, source_info.port);
         // Delivered-vs-sent admission control (issue #43): the remote's
         // received_bytes_per_second for this connection is what it
-        // actually received from us — feed it to the AIMD loop.
+        // actually received from us — feed it to the AIMD loop, along
+        // with the duplicate rate it reports, so the loop can work from
+        // goodput rather than a figure that resends inflate (issue #52).
         c->updateAdmissionControl(connection_info.received_bytes_per_second,
+                                  connection_info.duplicate_bytes_per_second,
                                   clock_->now());
       }
       if(bridge_info.next_packet_number < next_packet_number_)
@@ -109,7 +112,7 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           // pre-restart number, re-rejecting every post-restart packet.
           reorder_buffer_.clear();
         }
-      } 
+      }
       next_packet_number_ = bridge_info.next_packet_number;
       last_packet_time_ = bridge_info.last_packet_time;
     }

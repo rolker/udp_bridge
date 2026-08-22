@@ -56,13 +56,22 @@
             # Data rate limit for this connection (bytes per second). 0 = default (500000).
             maximum_bytes_per_second: 500000
 
-            # Maximum fraction of the rate limit resend traffic may consume
-            # (issue #44; see doc/resend_budget_design.md).
+            # Maximum fraction of MEASURED GOODPUT that resend traffic may
+            # consume (issues #44/#52; see doc/resend_budget_design.md).
             resend_budget_fraction: 0.25
 
-            # Floor of the AIMD-adjusted admission cap as a fraction of the
-            # rate limit (issue #43; see doc/admission_control_design.md).
-            admission_floor_fraction: 0.1
+            # Absolute floor of the AIMD-adjusted admission cap, bytes/second
+            # (issue #52; see doc/admission_control_design.md). Sized to keep
+            # the control tier and the BridgeInfo feedback loop alive. Was a
+            # fraction of the rate limit under #43, which floored six times
+            # above capacity on a degraded link.
+            admission_floor_bytes_per_second: 8192.0
+
+            # Fraction of measured goodput deliberately left unused, so a
+            # co-tenant on the same path (an SSH session, operator management
+            # traffic) is not starved (issue #52). This, not the absolute
+            # rate limit, is what keeps a degraded link usable by others.
+            link_headroom_fraction: 0.2
 
             # List of topics to forward over this connection.
             topics_list: ["/robot_a/odometry", "/robot_a/battery"]

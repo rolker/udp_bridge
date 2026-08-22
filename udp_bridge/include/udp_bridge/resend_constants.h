@@ -86,16 +86,16 @@ inline constexpr uint32_t kMaxBackoffShift = 7;
 // retries vs a 1.0 MB/s VPN link; 2026-08-04: ~1.5 MB/s dropped +
 // 220 kB/s sent resends vs a 1.2 MB/s cap, sustained until restart).
 // Connection::resend_packets bounds the resend category to a fraction
-// of the connection's rate limit, and shrinks that fraction
-// exponentially while nothing is being received (no packets from the
-// remote implies no acks — retrying harder cannot help).
+// of measured goodput (issue #52; was the connection's rate limit under
+// #44), and shrinks that fraction exponentially while nothing is being
+// received (no packets from the remote implies no acks — retrying harder
+// cannot help).
 
-// Default maximum fraction of a connection's maximum_bytes_per_second
-// that resend traffic may consume, measured over the same strict
-// 1-second window can_send uses. Overridable per connection via the
-// `resend_budget_fraction` parameter. 0.25 keeps 75% of a saturated
-// link for fresh data while still allowing meaningful recovery on
-// lossy-but-alive links.
+// Default maximum fraction of measured goodput that resend traffic may
+// consume, measured over the same strict 1-second window can_send uses.
+// Overridable per connection via the `resend_budget_fraction` parameter.
+// 0.25 keeps 75% of what the link is delivering for fresh data while
+// still allowing meaningful recovery on lossy-but-alive links.
 inline constexpr float kDefaultResendBudgetFraction = 0.25f;
 
 // How long the connection must have received nothing before the
@@ -107,7 +107,7 @@ inline constexpr std::chrono::duration<double> kAckStarvationThreshold{1.0};
 
 // Clamp on the starvation halvings: budget floor is
 // fraction / 2^kMaxAckStarvationBackoffShift (4 -> 16x reduction,
-// ~1.6% of the rate limit at the default fraction). Keeps a trickle
+// ~1.6% of measured goodput at the default fraction). Keeps a trickle
 // of resends flowing as a probe so recovery is possible the moment
 // the inbound path returns.
 inline constexpr uint32_t kMaxAckStarvationBackoffShift = 4;
@@ -124,9 +124,23 @@ inline constexpr uint32_t kMaxAckStarvationBackoffShift = 4;
 inline constexpr float kAdmissionDecreaseFactor = 0.5f;
 
 // Additive recovery per clean feedback interval, as a fraction of the
-// configured maximum_bytes_per_second. 0.1 recovers from the floor to
-// the full cap in ~9 clean BridgeInfo intervals (~9 s at 1 Hz).
+// CURRENT effective cap — not of the configured maximum_bytes_per_second.
+//
+// It was cap-relative until issue #52. On a link delivering a small
+// fraction of its configured cap that made the probe step enormous
+// relative to reality: the 2026-08-22 bench measured a 4 MB/s configured
+// cap against a 62.5 kB/s path, so each clean sample added 400 kB/s —
+// six times the whole link, undoing three multiplicative halvings. The
+// effective cap oscillated around 2291 kB/s and never even reached its
+// own floor. A controller's step size has to be measured against where
+// the controller currently is, not against a number an operator typed.
 inline constexpr float kAdmissionAdditiveStepFraction = 0.1f;
+
+// Absolute lower bound on the additive step. Relative-only recovery is
+// asymptotically slow near the floor (10% of 8 kB/s is 800 B/s), so a
+// link that has genuinely healed would crawl back. Keeps recovery from
+// the floor to a usable rate on the order of tens of seconds.
+inline constexpr float kAdmissionAdditiveStepMinimumBytesPerSecond = 2048.0f;
 
 // Congestion trigger: decrease when the remote reports receiving less
 // than (1 - threshold) of what we sent. 0.1 tolerates the signal's
@@ -134,11 +148,36 @@ inline constexpr float kAdmissionAdditiveStepFraction = 0.1f;
 // smoothing windows) without triggering on noise.
 inline constexpr float kAdmissionLossThreshold = 0.1f;
 
-// Default minimum effective cap as a fraction of the configured
-// maximum_bytes_per_second. Keeps enough flow for the control/telemetry
-// topics plus the feedback loop itself. Overridable per connection via
-// the `admission_floor_fraction` parameter.
-inline constexpr float kDefaultAdmissionFloorFraction = 0.1f;
+// Default minimum effective cap, in absolute bytes per second.
+// Overridable per connection via `admission_floor_bytes_per_second`.
+//
+// Absolute since issue #52. As a fraction of the configured cap this was
+// 400 kB/s against a 62.5 kB/s bench link — the floor itself was six
+// times the path, so backing off "to the floor" still meant offering
+// several times what the link could carry. A floor exists to keep the
+// control tier and the BridgeInfo feedback loop alive; that is a real
+// quantity of bytes, not a proportion of an operator's declared cap.
+//
+// 8192 covers the measured overhead tier (BridgeInfo + topic_statistics
+// ran ~5.7 kB/s on the bench) plus the critical tier, and is still only
+// 13% of that same degraded 62.5 kB/s link.
+inline constexpr float kDefaultAdmissionFloorBytesPerSecond = 8192.0f;
+
+// Default fraction of measured goodput deliberately left unused, so a
+// co-tenant on the same path (an SSH session, the operator's own
+// management traffic) is not starved by the bridge.
+//
+// This is the property that actually prevents the lockout
+// `maximum_bytes_per_second` was originally added for. A ceiling in
+// absolute bytes binds only while the link is healthy: the same bench
+// run had a 4 MB/s cap and still saw the bridge take 61% of a 62.5 kB/s
+// path (100% in individual samples), because a degraded link is a
+// saturated link. A headroom target scales with whatever the link is
+// actually delivering, so it holds in exactly the case the ceiling
+// abandons.
+//
+// Overridable per connection via `link_headroom_fraction`.
+inline constexpr float kDefaultLinkHeadroomFraction = 0.2f;
 
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant

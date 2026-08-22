@@ -52,7 +52,7 @@ machine does not false-fail. The full scenario (opt-in via
 |---|---|---|
 | `smoke`              | Critical only                  | pytest under `colcon test`; asserts sub_count > 0 |
 | `full-mix`           | Critical + Telemetry + Bulk    | manual `run_scenario.py` invocation; exits 0 iff every tier sub_count > 0 |
-| `range_degradation`  | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; 5 single-path + 4 multi-link invariants |
+| `range_degradation`  | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; 6 single-path + 4 multi-link invariants |
 | `subscriber_death`   | Critical + Telemetry + Bulk    | pytest opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`; **forces Zenoh**; no-wedge regression guard (see below) |
 
 `full-mix` actively generates the pinned three-tier mix
@@ -87,6 +87,7 @@ BENCH_PHASE_LOG=<path>
 BENCH_RECVQ_OPERATOR=<path>
 BENCH_BRIDGE_STDERR_OPERATOR=<path>
 BENCH_BRIDGE_STDERR_BOAT=<path>
+BENCH_COTENANT=<path>
 BENCH_RESULT_<TIER>_{PUB,SUB}_COUNT=<n>
 ```
 
@@ -103,12 +104,13 @@ UDP_BRIDGE_BENCH_SCENARIOS=1 colcon test --packages-select udp_bridge \
     --pytest-args -k test_bench_range_degradation
 ```
 
-The five single-path invariants checked are:
+The six single-path invariants checked are:
 
 1. **Recv-Q stability** — no monotonic climb longer than N seconds at any phase boundary.
 2. **No ERROR/FATAL log during over_horizon** — graceful disconnect is a mode, not a fault.
 3. **Recovery completeness** — `message.success_bytes_per_second` reaches ≥ X% of the pre-event in_range baseline (over the final in_range phase, which serves as the T-second convergence window).
 4. **Resend amplification** — `resend.success_bytes_per_second / message.success_bytes_per_second` ≤ F × applied netem loss rate in each lossy phase.
+4b. **Co-tenant management flow survives** (#52) — a small co-tenant flow sharing the impaired path (traced via the `BENCH_COTENANT` CSV) delivers ≥ `K_cotenant_delivery_pct` of its own link-survivable rate in every phase the path can carry traffic (each phase window evaluated independently), and its p95 one-way latency stays under `K_cotenant_p95_latency_s`. This is the operator-lockout protection `link_headroom_fraction` provides, made testable.
 5. **Stats publication rate floor** — `bridge_info` and `topic_statistics` publication rate stays ≥ R% of the in-range baseline in every phase. Catches #20-class stalls in the stats path while the data plane keeps working.
 
 The four multi-link invariants (same run) are:
@@ -118,7 +120,9 @@ The four multi-link invariants (same run) are:
 8. **Critical gap over-horizon** — no Critical inter-arrival gap overlapping an over-horizon window exceeds G (the always-on paths keep Critical flowing while WiFi is dark).
 9. **Drop-by-tier (measure-and-report)** — records per-tier send success/dropped in the most-degraded phase. Does **not** fail: preferential tier dropping needs per-topic scheduling ([#19](https://github.com/rolker/udp_bridge/issues/19), not yet implemented).
 
-Threshold values N/X/T/F/R/Y/G live in the "Values" table below.
+Threshold values N/X/T/F/R/Y/G and the co-tenant K thresholds
+(`K_cotenant_delivery_pct`, `K_cotenant_p95_latency_s`) live in the
+"Values" table below.
 
 ### `subscriber_death` — stalled-subscriber (wedge) regression guard
 
@@ -167,6 +171,8 @@ assertions in `test_range_degradation.py`.
 | **X** | 90% | 2026-04-21 bags are MCAP-format; no SQLite DB yet. Starting value: post-recovery DataRates must be within 10% of pre-event baseline. Refine after 2026-04-21 import. |
 | **T** | 30 s | As X. Recovery convergence target; refine. |
 | **Y** | 10% | No field bag isolates cross-path poisoning (2026-05-01 was Starlink-only). Bootstrap from harness clean-link rates. |
+| **K_cotenant_delivery_pct** | 0.50 | Co-tenant management flow (#52): a co-tenant must get ≥ half of what the physical path would give it on its own (i.e. ≥ 0.5 × (1 − loss)). Generous room for queueing while still failing loudly if the bridge takes the link. |
+| **K_cotenant_p95_latency_s** | 5.0 s | Co-tenant management flow (#52): p95 one-way latency ceiling per phase. Loud on real starvation (a flow queued-but-delivering can pass the delivery ratio yet be useless for interactive traffic); generous on ordinary queueing. Initial value; refine as field/bench co-tenant traces accumulate. |
 
 ## Methodology
 

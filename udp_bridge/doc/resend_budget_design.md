@@ -31,14 +31,27 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
 
 1. **Budget fraction.** Resend-category traffic may consume at most
    `resend_budget_fraction` (default `kDefaultResendBudgetFraction` = 0.25)
-   of the connection's admission cap, measured over the same
+   of **measured goodput**, measured over the same
    strict 1-second window the rate limiter's `can_send` uses
-   (`PacketSendStatistics::bytes_in_window`). Since issue #43 the base is
-   the **AIMD-adjusted `effective_rate_limit`** rather than the static
-   `maximum_bytes_per_second`: when admission backs off under congestion,
-   resends shrink proportionally instead of consuming the entire reduced
-   admission (see `doc/admission_control_design.md`). With no AIMD
-   activity the two are equal. Over-budget resends are
+   (`PacketSendStatistics::bytes_in_window`). Goodput is the remote's
+   reported `received_bytes_per_second` minus its
+   `duplicate_bytes_per_second`, from the most recent
+   `updateAdmissionControl()` sample.
+
+   The basis was the configured `maximum_bytes_per_second` under #44 and
+   the AIMD `effective_rate_limit` under #43. **Issue #52 moved it to
+   goodput** because both of those inherited the same flaw: they are
+   scaled by a number the operator declared, not one the link
+   demonstrated. The 2026-08-22 bench measured an effective cap of
+   2291 kB/s on a 62.5 kB/s path, so a 25% budget authorized 573 kB/s of
+   retransmission — nine times the whole link. The budget behaved exactly
+   as specified and bounded nothing. Measured resend traffic reached 3.1×
+   the message traffic; see `doc/admission_control_design.md` for the
+   per-phase table. Sizing retransmission against what the link is
+   actually delivering is the only basis that cannot be wrong by orders
+   of magnitude.
+
+   Over-budget resends are
    recorded as `SendResult::dropped` in the `resend` category, so shedding
    is visible in the existing per-connection `BridgeInfo` DataRates — the
    same fields the field analyses read.
@@ -47,7 +60,7 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
    (no inbound packets ⇒ no acks ⇒ retrying harder cannot help), the
    budget halves for each `kAckStarvationThreshold` (1 s) elapsed since
    `last_receive_time()`, clamped at `kMaxAckStarvationBackoffShift` (4)
-   halvings — a floor of 1/16 of the fraction (~1.6% of the rate limit at
+   halvings — a floor of 1/16 of the fraction (~1.6% of goodput at
    the default). The floor deliberately keeps a **probe trickle** flowing
    so recovery begins the moment the inbound path returns, without waiting
    for a timer. On links whose floored budget is smaller than a single
@@ -55,7 +68,11 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
    comparison alone would shed everything, so when nothing has been resent
    in the current window the first packet is admitted regardless of size —
    the trickle is bounded at roughly one packet per window, never zero.
-   Exception: a fraction of 0.0 is the operator's "no resends on this
+   The probe is gated on the **fraction**, not on the computed budget
+   (#52). A zero budget now also arises from a zero goodput basis — a
+   brand-new connection before its first BridgeInfo sample, or a link
+   currently delivering nothing — and both are exactly the cases the
+   trickle exists for. Exception: a fraction of 0.0 is the operator's "no resends on this
    connection" switch and never probes.
 
    `last_receive_time() == 0.0` is the "no packet received yet" sentinel:
@@ -72,9 +89,12 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
   `can_send`'s window and full-deque scan (the deque is not monotone in
   timestamps under the reserve-then-record send pattern).
 
-- **Fraction of the cap, not an absolute rate.** Connections already carry
-  a per-link `maximum_bytes_per_second`; a fraction inherits per-link
-  sizing for free and keeps one intuitive knob.
+- **Fraction of measured goodput, not the configured cap.** The budget is
+  a fraction of what the link is actually delivering (issue #52), not of
+  the per-link `maximum_bytes_per_second`. Scaling off the configured cap
+  (the #44 basis) inherited every admission-scaling error — see the
+  Mechanism section's 2291 kB/s-on-a-62.5 kB/s-link example. The fraction
+  stays the single intuitive knob; only what it multiplies changed.
 
 - **Default 0.25.** Keeps ≥75% of a saturated link for fresh data while
   allowing meaningful recovery on lossy-but-alive links. On the 2026-08-04
