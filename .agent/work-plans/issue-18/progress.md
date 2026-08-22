@@ -104,3 +104,87 @@ keeping both; no semantic overlap. All 18 commits replayed clean.
 - Multi-agent `/review-code` was **not** run on this delta (sub-agent dispatch
   disabled for this session); the delta was self-reviewed against the diff
   instead. Worth a pass before merge if the session constraint lifts.
+
+## Implementation
+**Status**: netns defect fixed; **one invariant now fails legitimately — open decision**
+**When**: 2026-08-22 10:35 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Branch**: feature/issue-18 (PR #27)
+
+### Round-2 review findings — all seven addressed
+Copilot's re-review after the rebase raised seven items. The headline one was
+real and load-bearing.
+
+- [x] **`run_scenario.py:186` — tc netem was a total no-op.** Both veth ends
+      were addressed in one network namespace, so the kernel installed a
+      `local` route per address and delivered over `lo`; nothing egressed the
+      veth and the qdisc was never traversed. **Confirmed by experiment, not
+      inspection**: same-namespace pair with `netem loss 100%` → ping 0% loss,
+      device TX counter 0 packets; after splitting → ping 100% loss.
+      Fix: orchestrator's own namespace is the operator side; boat side is a
+      nested namespace held open by a keeper process, addressed by PID via
+      `nsenter -t <pid> -n` (PID rather than `ip netns add`, which would need
+      a writable /run/netns and so a private mount namespace). Boat bridges,
+      publishers and their lifecycle clients run under nsenter; Zenoh gets a
+      router per namespace; both `lo`s come up at setup.
+      Also fixed while in there: impairment was applied to the operator end
+      only, i.e. to the *return* direction — the boat→operator bulk flow was
+      the unshaped one. Now applied to both ends, so `delay_ms` is a one-way
+      delay and RTT is 2× it.
+- [x] `run_scenario.py:757` — `any(c > 0 ...)` let a documented three-tier run
+      pass with one tier delivering. Now `all`, and names the empty tiers.
+- [x] `test_subscriber_death.py:222` — skipped on an empty post-stall slice;
+      the tracer starts before the stall and runs a full observation window
+      afterwards, so empty means it died mid-run. Now fails.
+- [x] README: stderr described as tee'd (it is captured to a file); CI section
+      said the repo has no CI workflow (it does — `ci.yml`, added after this
+      branch was last touched); added a Topology section documenting the
+      namespace split and why collapsing it re-breaks every impairment.
+- [x] `.archived/README.md` pointed at a `recv_q_trace.py` that moved to
+      `test/bench/`.
+- [x] `plan.md:95` documented `UDP_BRIDGE_BENCH_OUTDIR`, never implemented.
+
+### Verification after the fix
+- Smoke, run directly: 8 published / 8 delivered across the real veth path.
+- Default suite: **162 tests, 0 errors, 0 failures, 11 skipped**.
+- `subscriber_death`: **both invariants pass** (39 s). Worth noting this
+  *strengthens* the PR's "no wedge at bench scale" finding rather than
+  flipping it — that scenario runs clean profiles by design, but "clean" still
+  means 30 mbit / 5 ms, which was previously not applied at all. Bulk offers
+  ~4.8 MB/s into a now-real 3.75 MB/s cap and the drain still does not wedge.
+- `range_degradation`: **8 of 9 invariants pass. `test_invariant_resend_amplification`
+  now FAILS** — see below.
+
+### OPEN — resend amplification fails under real impairment
+```
+fringe:   resend/tx_ok = 0.045 > F×loss = 0.010  (loss 0.5%)
+lossy:    resend/tx_ok = 1.643 > F×loss = 0.060  (loss 3%)
+critical: resend/tx_ok = 3.108 > F×loss = 0.200  (loss 10%)
+```
+This is the failure mode issue #9 exists for, and the invariant was written to
+catch it — it only ever passed because the link was never impaired.
+
+Two candidate explanations, not yet separated, and **not** to be resolved by
+loosening `F`:
+
+1. **A real amplification path in `Connection::send`.** The aggregate
+   `can_send` pre-check drops a whole batch *before* `WrappedPacket` assigns a
+   packet number — those cost nothing. But the per-packet inner `send()` runs
+   `can_send` again *after* the packet has been numbered and stored in
+   `sent_packets_` (`connection.cpp` ~line 375-390 vs ~479). A rate-limiter
+   drop on that path burns a sequence number without transmitting, the
+   receiver sees a gap, NAKs, and the sender resends a packet it deliberately
+   chose not to send — under load, repeatedly. Matches the field picture in
+   #9 (~22% resend overhead, 126% rx_duplicate) and the 2026-08-03 saturation
+   episode.
+2. **The invariant's threshold model is wrong under oversubscription.** The
+   ceiling is `F × netem_loss`, but in the `critical` phase Bulk offers
+   ~4.8 MB/s into a 500 kbit/s shaped path — ~77× oversubscribed. Most loss is
+   queue/limiter drop, not netem's 10%, so the denominator does not describe
+   the packet loss the resend machinery actually sees.
+
+Both may be true. Needs a decision before this PR merges: recommended path is
+`xfail(strict=True)` on that one invariant with a pointer to a new udp_bridge
+issue, so the signal is recorded rather than suppressed and flips to a failure
+when fixed. **Not done unilaterally — awaiting Roland.**
