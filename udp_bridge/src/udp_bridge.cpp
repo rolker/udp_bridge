@@ -310,19 +310,19 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     RCLCPP_ERROR(get_logger(),"Failed creating socket");
     exit(1);
   }
-    
+
   sockaddr_in bind_address; // address to listen on
   memset((char *)&bind_address, 0, sizeof(bind_address));
   bind_address.sin_family = AF_INET;
   bind_address.sin_addr.s_addr = htonl(INADDR_ANY);
   bind_address.sin_port = htons(port_);
-  
+
   if(bind(socket_, (sockaddr*)&bind_address, sizeof(bind_address)) < 0)
   {
     RCLCPP_ERROR(get_logger(), "Error binding socket");
     exit(1);
   }
-  
+
   timeval socket_timeout;
   socket_timeout.tv_sec = 0;
   socket_timeout.tv_usec = 1000;
@@ -388,7 +388,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     node_name+"/list_remotes",
     std::bind(&UDPBridge::listRemotes, this, _1, _2),
     service_qos, periodic_group_);
-  
+
   topic_statistics_publisher_ = create_publisher<TopicStatisticsArray>(node_name+"/topic_statistics",10);
 
   rclcpp::QoS latching_qos(1);
@@ -414,7 +414,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     {
       RemoteConnection connection;
       connection.connection_id = connection_name;
-      
+
       std::string host_param = "remotes." + remote_name + ".connections." + connection_name + ".host";
       declareIfMissing(host_param, "");
       connection.host = get_parameter(host_param).as_string();
@@ -422,7 +422,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       std::string port_param = "remotes." + remote_name + ".connections." + connection_name + ".port";
       declareIfMissing(port_param, 0);
       connection.port = get_parameter(port_param).as_int();
-      
+
       std::string return_host_param = "remotes." + remote_name + ".connections." + connection_name + ".return_host";
       declareIfMissing(return_host_param, "");
       connection.return_host = get_parameter(return_host_param).as_string();
@@ -530,8 +530,8 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       }
     }
   }
-  
-  
+
+
   stats_report_timer_ = create_wall_timer(
     1s, std::bind(&UDPBridge::statsReportCallback, this), periodic_group_);
   bridge_info_timer_ = create_wall_timer(
@@ -1510,7 +1510,7 @@ template <typename MessageType> MessageSizeData UDPBridge::send(MessageType cons
   serializer.serialize_message(&message, &serialized_message);
 
   auto serial_size = serialized_message.size();
-    
+
   std::vector<uint8_t> packet_data(sizeof(PacketHeader)+serial_size);
   Packet * packet = reinterpret_cast<Packet *>(packet_data.data());
   memcpy(&packet->data, serialized_message.get_rcl_serialized_message().buffer, serial_size);
@@ -1632,7 +1632,7 @@ void UDPBridge::remoteSubscribe(
   std::shared_ptr<udp_bridge::Subscribe::Response> response)
 {
   RCLCPP_INFO_STREAM(get_logger(), "subscribe: remote: " << request->remote << ":" << " connection: " << request->connection_id << " source topic: " << request->source_topic << " destination topic: " << request->destination_topic);
-  
+
   udp_bridge::RemoteSubscribeInternal remote_request;
   remote_request.source_topic = request->source_topic;
   remote_request.destination_topic = request->destination_topic;
@@ -1641,7 +1641,7 @@ void UDPBridge::remoteSubscribe(
   remote_request.connection_id = request->connection_id;
 
   send(remote_request, request->remote, true);
-  
+
 }
 
 void UDPBridge::remoteAdvertise(

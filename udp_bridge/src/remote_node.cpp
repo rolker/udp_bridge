@@ -112,7 +112,7 @@ void RemoteNode::update(const BridgeInfo& bridge_info, const SourceInfo& source_
           // pre-restart number, re-rejecting every post-restart packet.
           reorder_buffer_.clear();
         }
-      } 
+      }
       next_packet_number_ = bridge_info.next_packet_number;
       last_packet_time_ = bridge_info.last_packet_time;
     }

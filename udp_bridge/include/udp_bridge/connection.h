@@ -330,7 +330,7 @@ private:
 
 
 std::string addressToDotted(const sockaddr_in &address);
-    
+
 } // namespace udp_bridge
 
 #endif
