@@ -19,5 +19,5 @@ issue: 58
 
 ### Findings
 - [x] (must-fix) `.agents/README.md` param table still lists maximum_packet_size default 65500 — stale after lowering to 1200 — `udp_bridge/.agents/README.md:87`
-- [ ] (suggestion) Bench config explicitly sets maximum_packet_size: 65500 — confirm intentional (IP-fragmentation path) or lower/comment — `udp_bridge/test/bench/configs/three_path.yaml:24,48`
+- [x] (suggestion) Bench config explicitly sets maximum_packet_size: 65500 — confirm intentional (IP-fragmentation path) or lower/comment — `udp_bridge/test/bench/configs/three_path.yaml:24,48`
 - [ ] (suggestion) Add a one-line CHANGELOG/release note that the implicit default dropped to 1200 (behavior change; strictly safer) — `udp_bridge/README.md`

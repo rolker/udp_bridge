@@ -21,6 +21,9 @@ operator_bridge:
   ros__parameters:
     name: "operator"
     port: 4200
+    # Explicit override, not the node default (which is 1200 as of #58). The
+    # bench deliberately sets this high; whether that value is representative
+    # of a real link is the bench harness's own concern (#57), not this change.
     maximum_packet_size: 65500
     remotes_list: ["boat"]
     remotes:
@@ -45,6 +48,8 @@ boat_bridge:
   ros__parameters:
     name: "boat"
     port: 4300
+    # Explicit override, not the node default (which is 1200 as of #58). See
+    # the operator_bridge note above: the bench's high value is #57's concern.
     maximum_packet_size: 65500
     remotes_list: ["operator"]
     remotes:
