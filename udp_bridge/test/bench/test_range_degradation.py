@@ -7,14 +7,15 @@ test/bench/README.md "Prerequisites") or ROS 2 isn't sourced.
 
 The fixture runs `run_scenario.py --scenario range_degradation` ONCE
 per pytest invocation and feeds the produced artifacts (bag, phase log,
-Recv-Q CSV, bridge stderr logs) into the five invariant tests below.
+Recv-Q CSV, bridge stderr logs) into the six single-path invariant
+tests below (four more multi-link invariants run in the same file).
 
 Thresholds (N, X, T, F, R) live in `test/bench/README.md` along with
 the bag queries that anchor them; this file references them by name
 and pulls the constants from `THRESHOLDS` below — keep the two in
 sync if you change a value.
 
-Note on the issue's six single-path invariants vs. the five below: the
+Note on the issue's six single-path invariants vs. the tests here: the
 issue lists "Forwarding resumes without bridge restart after the
 over-horizon window ends" as a separate invariant. The orchestrator
 never restarts the bridge — there is no respawn path in
@@ -24,7 +25,10 @@ caught structurally by `test_invariant_recovery_completeness`: a
 dead bridge means post-recovery success_bps is zero, which trips the
 X% threshold. The "no restart" invariant is therefore implicit in
 the harness shape and the recovery-completeness check; encoding it
-as a separate test would be tautological.
+as a separate test would be tautological. That leaves five of the
+issue's six encoded explicitly; issue #52 then added the co-tenant
+management-flow invariant, so six single-path invariant tests run
+below (see `test/bench/README.md`, "six single-path invariants").
 """
 
 from __future__ import annotations
