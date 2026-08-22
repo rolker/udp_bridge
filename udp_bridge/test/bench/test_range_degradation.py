@@ -53,6 +53,13 @@ THIS_DIR = Path(__file__).parent
 # so a starved sender cannot flatter the delivery ratio.
 COTENANT_RATE_HZ = 20.0
 
+# The Bulk tier topic and the WiFi connection's rate cap
+# (maximum_bytes_per_second on the wifi connection in
+# configs/three_path.yaml). Used by the #57 fragmentation and wire-rate
+# acceptance invariants below.
+BULK_TOPIC = '/boat/bulk/image'
+WIFI_BUDGET_BPS = 4_000_000.0
+
 # Match THRESHOLDS section of `test/bench/README.md`. These are
 # initial values; the README's "Refinement plan" section governs how
 # each one is re-derived as field bags accumulate.
@@ -78,6 +85,22 @@ THRESHOLDS = {
     # ordinary queueing; an initial value to be refined as field/bench
     # co-tenant traces accumulate (see README "Refinement plan").
     'K_cotenant_p95_latency_s': 5.0,
+    # Bulk fragmentation floor (#57). A 480 KB incompressible Image over a
+    # 1000-byte maximum_packet_size fragments into floor(480000/1000)=480
+    # pieces at minimum; per-fragment bridge headers cut the effective payload
+    # per packet, so the real count trends ABOVE 480, not below -- an
+    # incompressible payload gets no header-compression discount. 400 sits
+    # safely under that with margin for partial-window sampling.
+    # TODO(#57 part 2): re-derive from the host bench run's observed
+    # average_fragment_count for /boat/bulk/image.
+    'T_fragment_floor': 400,
+    # Bulk wire-rate floor as a fraction of the 4 MB/s WiFi budget (#57).
+    # Offered load is ~4.8 MB/s (120% of budget); the rate limiter trims it
+    # toward 4 MB/s. 0.5 is a deliberately generous start -- WiFi is shared
+    # with Telemetry/Critical and fragment-header overhead consumes budget.
+    # TODO(#57 part 2): re-derive from the host bench run's observed Bulk
+    # send success_bytes_per_second.
+    'W_wire_pct': 0.5,
 }
 
 # Topic-list confinement: which connections each forwarded topic is allowed
@@ -681,6 +704,110 @@ def test_invariant_stats_publish_rates(artifacts):
     if evaluated == 0:
         pytest.skip('No baseline pub rate established for any stats topic.')
     assert not violators, '\n'.join(violators)
+
+
+# -----------------------------------------------------------------------
+# Invariants 10 & 11 (#57): the Bulk tier actually fragments, and delivers
+# at a field-representative wire rate.
+#
+# Both read the boat send-side per-topic statistics (mirrored on the
+# operator as /operator_bridge/remotes/boat/topic_statistics), filtered to
+# the Bulk topic. Before #57 the Bulk payload compressed to a single packet,
+# so average_fragment_count was ~1 and the wire rate was a ~0.5 kB/s
+# trickle; these two invariants fail loudly if a regression returns the
+# harness to that unrepresentative regime.
+# -----------------------------------------------------------------------
+
+def _bulk_stats_per_phase(artifacts) -> dict[str, dict[str, float]]:
+    """Per-phase Bulk (`/boat/bulk/image`) averages from the boat send-side
+    `topic_statistics`: `average_fragment_count` and
+    `send.success_bytes_per_second`, aggregated by phase name across repeats.
+    """
+    bag_reader = _import_bag_reader()
+    arrays = bag_reader.read_topic_statistics_arrays(
+        artifacts.bag_dir, '/operator_bridge/remotes/boat/topic_statistics')
+    phase_log = _load_phase_log(artifacts.phase_log)
+    windows = _phase_windows(phase_log)
+    walk_start_ns = int(phase_log['walk_start_unix'] * 1e9)
+
+    acc: dict[str, dict[str, list]] = {}
+    for t, msg in arrays:
+        phase = next(
+            (name for name, s, e in windows
+             if walk_start_ns + int(s * 1e9) <= t
+             < walk_start_ns + int(e * 1e9)),
+            None)
+        if phase is None:
+            continue
+        for ts_stat in msg.topics:
+            if ts_stat.source_topic != BULK_TOPIC:
+                continue
+            d = acc.setdefault(phase, {'frag': [], 'send': []})
+            d['frag'].append(ts_stat.average_fragment_count)
+            d['send'].append(ts_stat.send.success_bytes_per_second)
+    out: dict[str, dict[str, float]] = {}
+    for phase, d in acc.items():
+        if not d['frag']:
+            continue
+        out[phase] = {
+            'avg_fragment_count': sum(d['frag']) / len(d['frag']),
+            'send_success_bps': sum(d['send']) / len(d['send']),
+            'samples': len(d['frag']),
+        }
+    return out
+
+
+def test_invariant_fragmentation_exercised(artifacts):
+    """The Bulk tier must actually fragment (#57 Acceptance criterion 2).
+
+    With an incompressible 480 KB payload and a 1000-byte
+    maximum_packet_size, each `/boat/bulk/image` message splits into
+    floor(480000/1000)=480 fragments at minimum -- per-fragment bridge
+    headers push the real count above that, not below (an incompressible
+    payload gets no compression discount). Asserts the boat send-side
+    `average_fragment_count` for Bulk stays >= T_fragment_floor in the clean
+    in-range phase (the most fully-delivered window). The pre-#57
+    single-packet bug would drive this to ~1 and fail here.
+    """
+    per_phase = _bulk_stats_per_phase(artifacts)
+    stats = per_phase.get('in_range_clean')
+    if stats is None or stats['samples'] == 0:
+        pytest.skip(
+            'No Bulk topic_statistics samples in an in_range_clean phase.')
+    floor = THRESHOLDS['T_fragment_floor']
+    avg_frag = stats['avg_fragment_count']
+    assert avg_frag >= floor, (
+        f'Bulk average_fragment_count {avg_frag:.1f} in in_range_clean is '
+        f'below T_fragment_floor {floor} -- the harness is not exercising '
+        f'fragmentation (expected >= 480: 480000 B / 1000 B packets, headers '
+        f'push it higher). {stats["samples"]} samples.')
+
+
+def test_invariant_bulk_wire_rate(artifacts):
+    """Bulk delivers at a field-representative wire rate (#57 Acceptance
+    criterion 1).
+
+    With the incompressible payload Bulk is offered at ~4.8 MB/s
+    (10 Hz x 480 KB, ~120% of the 4 MB/s WiFi budget) and the rate limiter
+    trims it toward the 4 MB/s cap. Asserts the boat send-side per-topic Bulk
+    `send.success_bytes_per_second` clears W_wire_pct x the WiFi budget in the
+    clean in-range phase -- catching a regression that silently drops Bulk
+    back to the pre-#57 single-packet ~0.5 kB/s trickle. Sourced per-topic
+    from topic_statistics (not the WiFi connection aggregate, which folds in
+    Critical + Telemetry).
+    """
+    per_phase = _bulk_stats_per_phase(artifacts)
+    stats = per_phase.get('in_range_clean')
+    if stats is None or stats['samples'] == 0:
+        pytest.skip(
+            'No Bulk topic_statistics samples in an in_range_clean phase.')
+    floor = THRESHOLDS['W_wire_pct'] * WIFI_BUDGET_BPS
+    send_bps = stats['send_success_bps']
+    assert send_bps >= floor, (
+        f'Bulk send success rate {send_bps:.0f} B/s in in_range_clean is below '
+        f'{floor:.0f} B/s (W_wire_pct={THRESHOLDS["W_wire_pct"]} x '
+        f'{WIFI_BUDGET_BPS:.0f} B/s WiFi budget) -- Bulk is not saturating the '
+        f'link as a field payload would. {stats["samples"]} samples.')
 
 
 # =======================================================================
