@@ -218,8 +218,15 @@ def test_no_wedge_recvq_bounded(artifacts):
     assert not (total > 0 and usable == 0), (
         f'Recv-Q trace has {total} rows but found the operator socket in none '
         f'of them — the tracer never bound to port 4200 (harness failure).')
-    if not post:
-        pytest.skip('No post-stall Recv-Q samples recorded.')
+    # Zero post-stall samples is also a harness failure, not a quiet result:
+    # the tracer is started before the stall and the scenario runs a full
+    # observation window afterwards, so an empty post-stall slice means the
+    # tracer died or exited early and the guard never observed the event it
+    # exists to watch. Skipping here would report that as a pass.
+    assert post, (
+        f'Recv-Q trace has {usable} usable samples but none at or after the '
+        f'stall instant -- the tracer did not survive the observation window '
+        f'(harness failure).')
     ceiling = THRESHOLDS['recvq_wedge_ceiling_bytes']
     worst = max(post)
     assert worst < ceiling, (
