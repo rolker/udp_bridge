@@ -680,21 +680,30 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
   if(packets_to_resend.empty())
     return;
 
-  // Resend budget (issue #44). Resends may consume at most
-  // resend_budget_fraction_ of the rate limit per second; while the
-  // connection is receiving nothing (which starves acks — retrying
+  // Resend budget (issue #44, rebased by #52). Resends may consume at
+  // most resend_budget_fraction_ of measured goodput per second; while
+  // the connection is receiving nothing (which starves acks — retrying
   // harder cannot help), the budget halves per kAckStarvationThreshold
   // elapsed, floored at 1/2^kMaxAckStarvationBackoffShift. Bounds the
   // self-amplifying resend storms of 2026-05-01 / 2026-08-04 while the
   // overall can_send cap in send() continues to meter the total.
-  uint32_t rate_limit;
+  uint32_t basis;
   float fraction;
   {
     std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-    // The resend budget bases on the AIMD-adjusted cap (issue #43),
-    // not the configured limit: when admission backs off under
-    // congestion, resends must shrink proportionally.
-    rate_limit = static_cast<uint32_t>(effective_rate_limit_);
+    // Basis is measured goodput, not any configured or admission-derived
+    // cap. Under #44 it was resend_budget_fraction_ * effective_rate_limit_,
+    // which inherited every scaling error in the admission cap: the
+    // 2026-08-22 bench measured an effective cap of 2291 kB/s on a
+    // 62.5 kB/s link, so the 25% budget authorized 573 kB/s of resends —
+    // nine times the entire path. Sizing retransmission against what the
+    // link is actually delivering is the only basis that cannot be wrong
+    // by orders of magnitude.
+    //
+    // Before the first feedback sample goodput is 0.0; the probe
+    // guarantee below still admits one packet per window, so a brand-new
+    // connection can bootstrap.
+    basis = static_cast<uint32_t>(goodput_bytes_per_second_);
     fraction = resend_budget_fraction_;
   }
   uint32_t backoff_shift = 0;
@@ -711,7 +720,7 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
         kMaxAckStarvationBackoffShift);
   }
   const double budget_bytes =
-    (static_cast<double>(fraction) * rate_limit) / static_cast<double>(1u << backoff_shift);
+    (static_cast<double>(fraction) * basis) / static_cast<double>(1u << backoff_shift);
 
   // Seed the accumulator with the resend bytes already SENT (success
   // or failed at the socket — not budget-dropped) in the same strict
@@ -729,9 +738,23 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
     attempted_bytes = sent_packet_statistics_.bytes_in_window(PacketSendCategory::resend, now);
   }
 
-  // Probe guarantee: when nothing has been resent in the current
-  // window, the first packet is admitted regardless of its size.
-  const bool admit_probe = (attempted_bytes == 0 && budget_bytes > 0.0);
+  // Probe guarantee: on links whose floored budget is smaller than one
+  // packet (e.g. a 50 kB/s goodput at max backoff: 781 bytes), a pure
+  // byte comparison would shed every resend and the "probe trickle
+  // keeps recovery possible" property would silently vanish. When
+  // nothing has been resent in the current window, the first packet is
+  // admitted regardless of its size — bounding the trickle at roughly
+  // one packet per window rather than zero.
+  //
+  // Gated on the FRACTION, not the computed budget (#52). Only
+  // `resend_budget_fraction == 0` means "the operator turned resends
+  // off"; a zero *budget* now also arises from a zero goodput basis —
+  // a brand-new connection before its first BridgeInfo sample, or a
+  // link currently delivering nothing. Both of those are precisely the
+  // cases the probe trickle exists for: without it a connection that
+  // has never received feedback could never resend, and a blacked-out
+  // link could never recover once the inbound path returned.
+  const bool admit_probe = (attempted_bytes == 0 && fraction > 0.0f);
   for(std::size_t i = 0; i < packets_to_resend.size(); ++i)
   {
     const auto& packet = packets_to_resend[i];

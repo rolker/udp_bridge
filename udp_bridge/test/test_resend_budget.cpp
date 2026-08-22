@@ -7,9 +7,15 @@
 // dropped + 220 kB/s sent resends vs a 1.2 MB/s cap).
 //
 // Connection::resend_packets bounds the resend category to
-// resend_budget_fraction (default kDefaultResendBudgetFraction) of the
-// connection's rate limit, measured over the same strict 1-second
-// window can_send uses, and halves that budget per
+// resend_budget_fraction (default kDefaultResendBudgetFraction) of
+// MEASURED GOODPUT — the remote's reported received rate minus its
+// reported duplicates. It was a fraction of the connection's rate limit
+// until issue #52, which inherited every scaling error in that cap: the
+// 2026-08-22 bench measured an effective cap of 2291 kB/s on a 62.5 kB/s
+// link, so a 25% budget authorized nine times the whole path. Goodput is
+// established here by feeding one clean admission-control sample in the
+// fixture. The budget is measured over the same strict 1-second window
+// can_send uses, and halves per
 // kAckStarvationThreshold elapsed since the last received packet
 // (clamped at kMaxAckStarvationBackoffShift halvings). These tests pin:
 //
@@ -111,12 +117,16 @@ SocketFd bind_localhost_listener(uint16_t* port)
 }
 
 constexpr uint32_t kRateLimitBytesPerSec = 100000;
+// Goodput the fixture reports to the admission loop. Equal to the rate
+// limit so the budget arithmetic below is numerically what it was when
+// the budget was cap-relative — only the basis changed (#52).
+constexpr float kGoodputBytesPerSec = 100000.0f;
 constexpr int kPacketSize = 1000;
 constexpr int kNumPackets = 100;  // 100 kB requested — 4x the default budget.
 
 // Full budget at the default fraction: 0.25 * 100000 = 25000 bytes.
 const double kFullBudget =
-  static_cast<double>(udp_bridge::kDefaultResendBudgetFraction) * kRateLimitBytesPerSec;
+  static_cast<double>(udp_bridge::kDefaultResendBudgetFraction) * kGoodputBytesPerSec;
 
 }  // namespace
 
@@ -144,6 +154,12 @@ protected:
     auto conn = std::make_unique<udp_bridge::Connection>(
       "resend-budget-test", "127.0.0.1", listener_port_, "", 0);
     conn->setRateLimit(kRateLimitBytesPerSec);
+    // Establish the goodput the budget is now measured against (#52).
+    // Nothing has been sent through send() yet, so this sample is not
+    // congested and leaves the effective cap alone; it only records the
+    // delivery figure. Callers that need a starvation scenario set
+    // update_last_receive_time AFTER this.
+    conn->updateAdmissionControl(kGoodputBytesPerSec, 0.0f, t0);
     missing->resize(kNumPackets);
     std::iota(missing->begin(), missing->end(), 1);
     for(auto n: *missing)
@@ -275,11 +291,14 @@ TEST_F(ResendBudget, ProbeFloorLowRateLink)
 
   std::vector<uint64_t> missing;
   auto conn = make_seeded_connection(t0, &missing);
-  // Default-class link: 50 kB/s. At max backoff the floored budget is
-  // 50000 * 0.25 / 16 = 781 bytes — smaller than one 1000-byte packet.
-  // The probe guarantee must still admit exactly one packet per window
-  // rather than shedding everything (pre-push review suggestion 1).
+  // Default-class link: 50 kB/s of goodput. At max backoff the floored
+  // budget is 50000 * 0.25 / 16 = 781 bytes — smaller than one
+  // 1000-byte packet. The probe guarantee must still admit exactly one
+  // packet per window rather than shedding everything (pre-push review
+  // suggestion 1). Expressed as goodput rather than a rate limit since
+  // #52 moved the budget's basis.
   conn->setRateLimit(50000);
+  conn->updateAdmissionControl(50000.0f, 0.0f, t0);
   conn->update_last_receive_time(
     t0.seconds() - 100.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
 
