@@ -193,3 +193,27 @@ re-review should, if it can run the `range_degradation` bench in a
 namespace-capable environment: (a) confirm the new co-tenant p95 assertion
 passes with margin at the chosen 5.0 s ceiling, and (b) take up deferred
 finding #9 (headroom ratchet) with proper before/after bench numbers.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-22 18:50 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-52 at `ddb3420` (code at `1517514`)
+**Mode**: pre-push
+**Depth**: Deep (reason: rework of a live congestion/admission-control data plane; concurrency + adversarial peer input + cross-cutting)
+**Must-fix**: 2 | **Suggestions**: 4
+**Round**: 2 | **Ship**: continue — Round 1's must-fixes are all resolved, but Round 2 surfaces a genuine correctness/safety concern (must-fix #1) that warrants a fix + re-read
+
+Specialists: Static analysis — cppcheck + ament_flake8 ran; no actionable findings on changed lines (cppcheck items are pre-existing untouched lines; Python E241 is intentional alignment in flake8's default-ignore set and the repo's pre-commit disables flake8; D-docstring nits at 765/798 are pre-existing untouched). Claude Adversarial — 2 passes (Lens A logic + Lens B systemic); both independently converged on must-fix #1 (cross-pass confirmed). Copilot — off (default). Local — skipped (local_review.sh is a workspace script, absent from this project repo).
+
+Note: the prior round's 3 must-fixes (example-config double literal, negative-floor fallback, the doc staleness cluster) are all correctly fixed; the 5 new unit tests genuinely pin the new behavior; concurrency/lock-ordering/bootstrap are clean.
+
+### Findings
+- [ ] (must-fix) non-finite/oversized peer-reported `remote_duplicate_bps` is not validated (`feedback_unusable` checks only `remote_received_bps`) → `goodput = max(0, finite − NaN) = 0` slams the admission cap to the floor in one sample; benign `duplicate > received` window mismatch does the same; re-opens the pathology the NaN guard claims to prevent, via the duplicate channel — `udp_bridge/src/connection.cpp:216,225,252` (cross-pass confirmed, Lens A + Lens B)
+- [ ] (must-fix) `.agents/README.md:92` verified-parameter table still advertises the removed `admission_floor_fraction`, omits `admission_floor_bytes_per_second` + `link_headroom_fraction`, and states the old cap basis for `resend_budget_fraction` — missing parameter-surface consequence (flagged by Copilot in Integrated Review; dropped from the Round-1 Local Review cluster, so never fixed) — `.agents/README.md:92`
+- [ ] (suggestion) `goodput_bytes_per_second_` stored peer-controlled and unbounded (negative duplicate inflates above received); no current exploit (downstream re-clamps) but a storage-site clamp would localize containment — `udp_bridge/src/connection.cpp:228`
+- [ ] (suggestion) `NanFeedbackTreatedAsCongestion` feeds NaN only into received (duplicate=0), so the NaN-duplicate / duplicate>received slam path is untested — `udp_bridge/test/test_admission_control.cpp:384`
+- [ ] (suggestion) headroom target ratchets the cap geometrically to the floor under sustained congestion rather than converging to `(1−h)·goodput` (already consciously deferred in progress.md; needs the bench, not runnable here) — `udp_bridge/src/connection.cpp:245-253`
+- [ ] (suggestion) `test_range_degradation.py` module docstring still says "five invariant tests below" / "six vs the five below"; there are now six single-path invariants (co-tenant #52), contradicting `test/bench/README.md` — `udp_bridge/test/bench/test_range_degradation.py` (module docstring)
