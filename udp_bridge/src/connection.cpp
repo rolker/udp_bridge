@@ -234,7 +234,18 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // duplicates. Resends and duplicates inflate received_bytes_per_second
   // exactly when amplification is worst, so the raw figure flatters the
   // link at the moment we most need the truth (issue #52).
-  const float goodput = std::max(0.0f, remote_received_bps - remote_duplicate_bps);
+  //
+  // Clamp the stored value to [0, received]. A peer reporting a negative
+  // duplicate rate would otherwise inflate goodput above what it received
+  // (received − (−dup) > received), and the resend-budget basis downstream
+  // would size retransmission against a fabricated number. Storing 0 when
+  // either channel is non-finite keeps a NaN from ever reaching a consumer
+  // (the sample is already treated as unusable feedback above).
+  const float goodput =
+    (std::isfinite(remote_received_bps) && std::isfinite(remote_duplicate_bps))
+      ? std::clamp(remote_received_bps - remote_duplicate_bps,
+                   0.0f, std::max(0.0f, remote_received_bps))
+      : 0.0f;
 
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   goodput_bytes_per_second_ = goodput;
