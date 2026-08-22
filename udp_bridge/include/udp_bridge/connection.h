@@ -46,27 +46,61 @@ public:
   void setResendBudgetFraction(float fraction);
   float resendBudgetFraction() const;
 
-  /// Set the minimum effective admission cap as a fraction [0, 1] of
-  /// the configured rate limit (issue #43). Values outside [0, 1] are
-  /// clamped; NaN falls back to the default.
-  void setAdmissionFloorFraction(float fraction);
-  float admissionFloorFraction() const;
+  /// Set the minimum effective admission cap in absolute bytes per
+  /// second (issue #52 — it was a fraction of the configured rate
+  /// limit under #43, which made the floor scale with a number that
+  /// does not describe the link). Negative values and NaN fall back to
+  /// the default; the floor is additionally clamped to the configured
+  /// rate limit at use, so a floor above the cap cannot raise it.
+  void setAdmissionFloorBytesPerSecond(float bytes_per_second);
+  float admissionFloorBytesPerSecond() const;
+
+  /// Set the fraction [0, 1) of measured goodput deliberately left
+  /// unused for co-tenant traffic (issue #52). Values outside the range
+  /// are clamped; NaN falls back to the default. See
+  /// kDefaultLinkHeadroomFraction for why a headroom target and not
+  /// only an absolute ceiling.
+  void setLinkHeadroomFraction(float fraction);
+  float linkHeadroomFraction() const;
+
+  /// Most recent goodput estimate for this connection, bytes/second:
+  /// the remote's reported received rate minus its reported duplicate
+  /// rate, from the last updateAdmissionControl() sample. 0.0 before
+  /// any sample. This is the only quantity in the connection that
+  /// describes the physical link, so it is what the admission floor's
+  /// congested branch and the resend budget are measured against.
+  float goodputBytesPerSecond() const;
 
   /// The AIMD-adjusted admission cap in bytes/second — what send()
   /// actually meters against. Starts equal to the configured rate
   /// limit; halves on congestion, recovers additively when clean.
   uint32_t effectiveRateLimit() const;
 
-  /// Feed one delivered-vs-sent feedback sample (issue #43). Called on
-  /// receipt of the remote's BridgeInfo with the remote's
-  /// received_bytes_per_second for this connection. Applies AIMD to
-  /// the effective rate limit: multiplicative decrease when delivery
-  /// falls below (1 - kAdmissionLossThreshold) of our sent rate or
-  /// when the connection's own feedback is stale (nothing received for
-  /// kAckStarvationThreshold); additive recovery otherwise. Reads the
-  /// stats and receive-history mutexes before config_mutex_ — never
-  /// nested.
-  void updateAdmissionControl(float remote_received_bps, rclcpp::Time now);
+  /// Feed one delivered-vs-sent feedback sample (issue #43, rescaled by
+  /// #52). Called on receipt of the remote's BridgeInfo with that
+  /// remote's received_bytes_per_second and duplicate_bytes_per_second
+  /// for this connection; goodput is their difference, since duplicates
+  /// and resends inflate the received figure exactly when amplification
+  /// is worst.
+  ///
+  /// Applies AIMD to the effective rate limit: on congestion (delivery
+  /// below (1 - kAdmissionLossThreshold) of our sent rate, or this
+  /// connection's own feedback stale for kAckStarvationThreshold)
+  /// decrease to the lower of a multiplicative halving and the headroom
+  /// target (1 - link_headroom_fraction_) * goodput, floored at
+  /// admission_floor_bytes_per_second_; on clean feedback recover by a
+  /// step relative to the CURRENT effective cap.
+  ///
+  /// The headroom target is applied only on the congested branch.
+  /// Measured goodput is bounded above by offered load, so it is a
+  /// lower bound on capacity and never an estimate of it — clamping to
+  /// it unconditionally would ratchet a healthy, lightly-loaded link
+  /// down to nothing.
+  ///
+  /// Reads the stats and receive-history mutexes before config_mutex_ —
+  /// never nested.
+  void updateAdmissionControl(float remote_received_bps,
+                              float remote_duplicate_bps, rclcpp::Time now);
 
   std::string str() const;
 
@@ -217,9 +251,9 @@ private:
   float resend_budget_fraction_ = kDefaultResendBudgetFraction;
 
   /// AIMD-adjusted admission cap (issue #43): what send() meters
-  /// against. Halved by updateAdmissionControl on congestion, recovered
-  /// additively when clean, floored at admission_floor_fraction_ *
-  /// data_rate_limit_ and ceilinged at data_rate_limit_. setRateLimit
+  /// against. Reduced by updateAdmissionControl on congestion, recovered
+  /// additively when clean, floored at admission_floor_bytes_per_second_
+  /// and ceilinged at data_rate_limit_. setRateLimit
   /// clamps it to min(effective, new limit) — never resets — so a
   /// CONNECT flap re-applying an unchanged limit cannot wipe
   /// accumulated backoff. Guarded by config_mutex_. Float (not
@@ -227,9 +261,18 @@ private:
   /// don't accumulate rounding error.
   float effective_rate_limit_ = default_rate_limit;
 
-  /// Minimum effective cap as a fraction of data_rate_limit_
-  /// (issue #43). Guarded by config_mutex_.
-  float admission_floor_fraction_ = kDefaultAdmissionFloorFraction;
+  /// Minimum effective cap in absolute bytes/second (issue #52).
+  /// Guarded by config_mutex_.
+  float admission_floor_bytes_per_second_ = kDefaultAdmissionFloorBytesPerSecond;
+
+  /// Fraction of measured goodput left unused for co-tenant traffic
+  /// (issue #52). Guarded by config_mutex_.
+  float link_headroom_fraction_ = kDefaultLinkHeadroomFraction;
+
+  /// Latest goodput estimate (remote received minus remote duplicates),
+  /// bytes/second, from the last updateAdmissionControl() sample.
+  /// Guarded by config_mutex_.
+  float goodput_bytes_per_second_ = 0.0f;
 
   /// Info about a received packet useful for data rate statistics.
   struct ReceivedSize

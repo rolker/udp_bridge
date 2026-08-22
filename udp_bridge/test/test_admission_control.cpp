@@ -8,11 +8,19 @@
 // path stayed healthy), with a stale-feedback fallback derived from
 // last_receive_time. Pinned contract points:
 //
-//   DecreaseOnCongestion        — delivery < 90% of sent halves the cap.
-//   AdditiveRecovery            — clean delivery recovers 10% of the
-//                                 configured limit per feedback sample.
-//   FloorClamp                  — repeated congestion never drops below
-//                                 admission_floor_fraction * limit.
+//   DecreaseTargetsHeadroomOfGoodput — a congested sample drops the cap to
+//                                 (1 - link_headroom_fraction) * goodput,
+//                                 not merely half of where it was (#52).
+//   DuplicatesExcludedFromGoodput — duplicate bytes are subtracted before
+//                                 the headroom target is computed (#52).
+//   AdditiveRecoveryIsRelativeToEffectiveCap — a clean sample recovers a
+//                                 step relative to the CURRENT cap, never
+//                                 a fraction of the configured limit (#52).
+//   FloorIsAbsoluteNotCapRelative — repeated congestion clamps at
+//                                 kDefaultAdmissionFloorBytesPerSecond,
+//                                 independent of the configured limit (#52).
+//   FloorNeverExceedsConfiguredLimit — a floor above a connection's own
+//                                 limit yields the limit, not a raise (#52).
 //   CeilingClamp                — recovery never exceeds the configured
 //                                 limit.
 //   FeedbackStaleBackoff        — stale last_receive_time is congestion
@@ -34,6 +42,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <vector>
@@ -145,55 +154,138 @@ protected:
   uint16_t listener_port_ = 0;
 };
 
-TEST_F(AdmissionControl, DecreaseOnCongestion)
+TEST_F(AdmissionControl, DecreaseTargetsHeadroomOfGoodput)
 {
   rclcpp::Clock clock(RCL_STEADY_TIME);
   const auto t0 = clock.now();
   auto conn = make_connection();
-  send_traffic(*conn, t0);                       // sent ~10 kB
+  send_traffic(*conn, t0, 80);                   // sent ~80 kB/s
   conn->update_last_receive_time(t0.seconds(), 100, false);  // feedback fresh
 
-  // Remote reports receiving half of what we sent — congested.
-  conn->updateAdmissionControl(5000.0f, t0);
+  // Remote reports 20 kB/s delivered against 80 kB/s sent — congested.
+  conn->updateAdmissionControl(20000.0f, 0.0f, t0);
 
-  EXPECT_EQ(conn->effectiveRateLimit(),
-            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
-    << "Delivery at 50% of sent must apply one multiplicative decrease.";
-}
-
-TEST_F(AdmissionControl, AdditiveRecovery)
-{
-  rclcpp::Clock clock(RCL_STEADY_TIME);
-  const auto t0 = clock.now();
-  auto conn = make_connection();
-  send_traffic(*conn, t0);
-  conn->update_last_receive_time(t0.seconds(), 100, false);
-
-  conn->updateAdmissionControl(5000.0f, t0);     // halve: 50000
-  conn->updateAdmissionControl(10000.0f, t0);    // clean (100% delivered)
-
+  // The cap goes to the headroom target, not to half of where it was.
+  // Half of 100000 is 50000, which is still 2.5x what the link is
+  // actually carrying — the #52 failure mode in miniature.
   const uint32_t expected = static_cast<uint32_t>(
-    kRateLimit * udp_bridge::kAdmissionDecreaseFactor +
-    udp_bridge::kAdmissionAdditiveStepFraction * kRateLimit);
+    (1.0f - udp_bridge::kDefaultLinkHeadroomFraction) * 20000.0f);
   EXPECT_EQ(conn->effectiveRateLimit(), expected)
-    << "One clean feedback sample must recover additively by "
-       "kAdmissionAdditiveStepFraction of the configured limit.";
+    << "A congested sample must target (1 - headroom) x goodput, so the "
+       "cap converges on what the link delivers instead of walking down "
+       "from a configured number that does not describe it.";
+  EXPECT_LT(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
+    << "Regression guard: a plain halving would leave the cap far above "
+       "measured delivery.";
 }
 
-TEST_F(AdmissionControl, FloorClamp)
+TEST_F(AdmissionControl, DuplicatesExcludedFromGoodput)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+
+  // Same reported received rate; one connection's traffic is mostly
+  // duplicates. received_bytes_per_second counts resends and duplicates,
+  // so it flatters the link exactly when amplification is worst.
+  auto clean = make_connection();
+  send_traffic(*clean, t0, 80);
+  clean->update_last_receive_time(t0.seconds(), 100, false);
+  clean->updateAdmissionControl(40000.0f, 0.0f, t0);
+
+  auto churning = make_connection();
+  send_traffic(*churning, t0, 80);
+  churning->update_last_receive_time(t0.seconds(), 100, false);
+  churning->updateAdmissionControl(40000.0f, 30000.0f, t0);
+
+  EXPECT_EQ(clean->goodputBytesPerSecond(), 40000.0f);
+  EXPECT_EQ(churning->goodputBytesPerSecond(), 10000.0f);
+  EXPECT_LT(churning->effectiveRateLimit(), clean->effectiveRateLimit())
+    << "Duplicate bytes must be subtracted before the headroom target is "
+       "computed — otherwise resend churn reads as healthy delivery.";
+}
+
+TEST_F(AdmissionControl, AdditiveRecoveryIsRelativeToEffectiveCap)
 {
   rclcpp::Clock clock(RCL_STEADY_TIME);
   const auto t0 = clock.now();
   auto conn = make_connection();
-  send_traffic(*conn, t0);
+  send_traffic(*conn, t0, 80);
   conn->update_last_receive_time(t0.seconds(), 100, false);
 
   for(int i = 0; i < 10; ++i)
-    conn->updateAdmissionControl(0.0f, t0);      // total loss, repeatedly
+    conn->updateAdmissionControl(0.0f, 0.0f, t0);      // drive to the floor
+  const uint32_t floor =
+    static_cast<uint32_t>(udp_bridge::kDefaultAdmissionFloorBytesPerSecond);
+  ASSERT_EQ(conn->effectiveRateLimit(), floor);
 
-  EXPECT_EQ(conn->effectiveRateLimit(),
-            static_cast<uint32_t>(udp_bridge::kDefaultAdmissionFloorFraction * kRateLimit))
-    << "Repeated congestion must clamp at the admission floor, not zero.";
+  conn->updateAdmissionControl(80000.0f, 0.0f, t0);    // clean (100% delivered)
+
+  const float step = std::max(
+    udp_bridge::kAdmissionAdditiveStepMinimumBytesPerSecond,
+    udp_bridge::kAdmissionAdditiveStepFraction *
+      udp_bridge::kDefaultAdmissionFloorBytesPerSecond);
+  EXPECT_EQ(conn->effectiveRateLimit(), static_cast<uint32_t>(floor + step))
+    << "Recovery must step relative to the CURRENT effective cap.";
+  EXPECT_LT(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(
+              floor + udp_bridge::kAdmissionAdditiveStepFraction * kRateLimit))
+    << "Regression guard for #52: a cap-relative step would add 10% of the "
+       "configured limit here, which on a collapsed link is many times the "
+       "whole path and undoes several decreases in one sample.";
+}
+
+TEST_F(AdmissionControl, FloorIsAbsoluteNotCapRelative)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  const uint32_t floor =
+    static_cast<uint32_t>(udp_bridge::kDefaultAdmissionFloorBytesPerSecond);
+
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+  for(int i = 0; i < 10; ++i)
+    conn->updateAdmissionControl(0.0f, 0.0f, t0);      // total loss, repeatedly
+
+  EXPECT_EQ(conn->effectiveRateLimit(), floor)
+    << "Repeated congestion must clamp at the absolute admission floor.";
+
+  // The same floor on a connection configured ten times larger. Under
+  // #43 the floor was a fraction of the configured limit, so this
+  // connection would have floored ten times higher — on a degraded link
+  // that meant "backing off to the floor" still offered several times
+  // what the path could carry.
+  auto big = std::make_unique<udp_bridge::Connection>(
+    "admission-test-big", "127.0.0.1", listener_port_, "", 0);
+  big->setRateLimit(kRateLimit * 10);
+  send_traffic(*big, t0, 80);
+  big->update_last_receive_time(t0.seconds(), 100, false);
+  for(int i = 0; i < 20; ++i)
+    big->updateAdmissionControl(0.0f, 0.0f, t0);
+
+  EXPECT_EQ(big->effectiveRateLimit(), floor)
+    << "The floor must not scale with the configured limit (#52).";
+}
+
+TEST_F(AdmissionControl, FloorNeverExceedsConfiguredLimit)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  // A connection whose configured limit is below the default floor.
+  const uint32_t small_limit =
+    static_cast<uint32_t>(udp_bridge::kDefaultAdmissionFloorBytesPerSecond) / 2;
+  auto conn = std::make_unique<udp_bridge::Connection>(
+    "admission-test-small", "127.0.0.1", listener_port_, "", 0);
+  conn->setRateLimit(small_limit);
+  send_traffic(*conn, t0, 80);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+  for(int i = 0; i < 10; ++i)
+    conn->updateAdmissionControl(0.0f, 0.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(), small_limit)
+    << "A floor above the connection's own limit must yield the limit — "
+       "the floor is a lower bound on backoff, never a way to raise the cap.";
 }
 
 TEST_F(AdmissionControl, CeilingClamp)
@@ -201,11 +293,13 @@ TEST_F(AdmissionControl, CeilingClamp)
   rclcpp::Clock clock(RCL_STEADY_TIME);
   const auto t0 = clock.now();
   auto conn = make_connection();
-  send_traffic(*conn, t0);
+  send_traffic(*conn, t0, 80);
   conn->update_last_receive_time(t0.seconds(), 100, false);
 
-  for(int i = 0; i < 5; ++i)
-    conn->updateAdmissionControl(10000.0f, t0);  // clean, repeatedly
+  // Recovery is relative to the current cap now, so reaching the ceiling
+  // takes more clean samples than the old cap-relative step did.
+  for(int i = 0; i < 60; ++i)
+    conn->updateAdmissionControl(80000.0f, 0.0f, t0);  // clean, repeatedly
 
   EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
     << "Recovery must never exceed the configured maximum_bytes_per_second.";
@@ -223,12 +317,15 @@ TEST_F(AdmissionControl, FeedbackStaleBackoff)
 
   // Even a high reported delivery must not mask a dead inbound path —
   // that report is by definition old news.
-  conn->updateAdmissionControl(10000.0f, t0);
+  conn->updateAdmissionControl(10000.0f, 0.0f, t0);
 
   EXPECT_EQ(conn->effectiveRateLimit(),
             static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
     << "Stale feedback (nothing received for kAckStarvationThreshold) "
-       "must count as congestion regardless of the reported delivery.";
+       "must count as congestion regardless of the reported delivery, and "
+       "must fall back to a plain multiplicative decrease — the headroom "
+       "target needs a goodput reading, which is exactly what stale means "
+       "we do not have (#52).";
 }
 
 TEST_F(AdmissionControl, NeverReceivedSentinel)
@@ -239,7 +336,7 @@ TEST_F(AdmissionControl, NeverReceivedSentinel)
   // No traffic sent, nothing ever received (0.0 sentinel): an idle,
   // brand-new connection is NOT congested — the cap stays at the
   // configured limit (additive step is ceiling-clamped).
-  conn->updateAdmissionControl(0.0f, t0);
+  conn->updateAdmissionControl(0.0f, 0.0f, t0);
 
   EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
     << "last_receive_time 0.0 (never received) must not read as stale "
@@ -253,10 +350,16 @@ TEST_F(AdmissionControl, EffectiveLimitAffectsCanSend)
   auto conn = make_connection();
   // Real congestion path (the idle guard means stale feedback alone,
   // with nothing sent, is deliberately NOT congestion): seed 10 kB of
-  // sent traffic, then a delivery report at 50%.
+  // sent traffic, then take the stale-feedback branch. Stale is used
+  // here rather than a low delivery report because it is the one
+  // congested path that does NOT apply the headroom target (there is no
+  // trustworthy goodput reading when feedback is stale), so it yields a
+  // plain halving and keeps this test's arithmetic about can_send
+  // rather than about the target calculation.
   send_traffic(*conn, t0);                       // 10 kB @ t0
-  conn->update_last_receive_time(t0.seconds(), 100, false);
-  conn->updateAdmissionControl(5000.0f, t0);     // halve to 50000
+  conn->update_last_receive_time(
+    t0.seconds() - 2.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
+  conn->updateAdmissionControl(10000.0f, 0.0f, t0);   // halve to 50000
   ASSERT_EQ(conn->effectiveRateLimit(), kRateLimit / 2);
 
   // Offer 2x the configured limit in a fresh 1-second window: can_send
@@ -293,7 +396,7 @@ TEST_F(AdmissionControl, IdleStaleLinkNotThrottled)
   // only penalize the link when traffic resumes.
   conn->update_last_receive_time(
     t0.seconds() - 10.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
-  conn->updateAdmissionControl(0.0f, t0);
+  conn->updateAdmissionControl(0.0f, 0.0f, t0);
 
   EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
     << "An idle link with stale feedback must not accumulate backoff.";
@@ -305,8 +408,11 @@ TEST_F(AdmissionControl, SetRateLimitClampPreservesBackoff)
   const auto t0 = clock.now();
   auto conn = make_connection();
   send_traffic(*conn, t0);
-  conn->update_last_receive_time(t0.seconds(), 100, false);
-  conn->updateAdmissionControl(5000.0f, t0);     // halve to 50000
+  // Stale feedback: the congested branch that applies a plain halving,
+  // giving this test a deterministic reduced cap to flap against.
+  conn->update_last_receive_time(
+    t0.seconds() - 2.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);
+  conn->updateAdmissionControl(10000.0f, 0.0f, t0);   // halve to 50000
   ASSERT_EQ(conn->effectiveRateLimit(), kRateLimit / 2);
 
   // A CONNECT/addRemote flap re-applies the same configured limit.

@@ -441,27 +441,33 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       declareIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
       double resend_budget_fraction = get_parameter(resend_budget_fraction_param).as_double();
 
-      std::string admission_floor_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_floor_fraction";
-      declareIfMissing(admission_floor_fraction_param, static_cast<double>(kDefaultAdmissionFloorFraction));
-      double admission_floor_fraction = get_parameter(admission_floor_fraction_param).as_double();
+      std::string admission_floor_bps_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_floor_bytes_per_second";
+      declareIfMissing(admission_floor_bps_param, static_cast<double>(kDefaultAdmissionFloorBytesPerSecond));
+      double admission_floor_bps = get_parameter(admission_floor_bps_param).as_double();
+
+      std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
+      declareIfMissing(link_headroom_fraction_param, static_cast<double>(kDefaultLinkHeadroomFraction));
+      double link_headroom_fraction = get_parameter(link_headroom_fraction_param).as_double();
 
       remote_info.connections.push_back(connection);
       remote_nodes_[remote_info.name]->update(remote_info);
 
-      // Both fractions are applied to the live Connection after
+      // These tunables are applied to the live Connection after
       // update() creates/refreshes it — `connection` above is a
       // RemoteConnection msg (config data), not the live object. The
       // message/service paths that also call setRateLimit
-      // (CONNECT/adopt, addRemote) carry neither fraction, so
-      // connections created there keep the field-initializer defaults
-      // (kDefaultResendBudgetFraction, kDefaultAdmissionFloorFraction);
-      // the parameters here are the only non-default source (see
-      // doc/resend_budget_design.md and
+      // (CONNECT/adopt, addRemote) carry none of them, so connections
+      // created there keep the field-initializer defaults
+      // (kDefaultResendBudgetFraction,
+      // kDefaultAdmissionFloorBytesPerSecond,
+      // kDefaultLinkHeadroomFraction); the parameters here are the only
+      // non-default source (see doc/resend_budget_design.md and
       // doc/admission_control_design.md).
       if(auto live_connection = remote_nodes_[remote_info.name]->connection(connection_name))
       {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
-        live_connection->setAdmissionFloorFraction(static_cast<float>(admission_floor_fraction));
+        live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
+        live_connection->setLinkHeadroomFraction(static_cast<float>(link_headroom_fraction));
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";

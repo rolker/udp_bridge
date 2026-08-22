@@ -44,32 +44,60 @@ second job as the system's model of link capacity.
    Recovery becomes proportional to where the controller actually is, so a
    clean sample on a collapsed link cannot leap back over the real capacity.
 2. **Rescale the floor.** Replace `admission_floor_fraction x data_rate_limit_`
-   with an absolute floor parameter (`admission_floor_bytes_per_second`) sized
-   to the control/telemetry traffic that must always flow plus the BridgeInfo
-   feedback loop itself. Keep the fraction parameter accepted for one release,
-   applying `max(absolute, fraction x cap)` only if the operator set it
-   explicitly — see Open Questions.
-3. **Rebase the resend budget on delivered throughput.** `resend_packets()`
+   with an absolute, configurable `admission_floor_bytes_per_second`, default
+   **8192** — sized to cover the BridgeInfo/topic_statistics feedback loop
+   (measured at ~5.7 kB/s on the bench) plus the critical tier, and still only
+   13% of the bench's degraded 62.5 kB/s link. `admission_floor_fraction` is
+   **removed outright**, not deprecated (operator decision 2026-08-22; workspace
+   preference is to remove obsolete parameters rather than keep an opt-in).
+3. **Add a headroom contract.** New configurable `link_headroom_fraction`,
+   default **0.2**: on congestion the controller targets
+   `(1 - headroom) x goodput` rather than merely halving, so in steady state
+   the bridge deliberately leaves a fifth of what the link actually delivers
+   for co-tenant traffic. This is the property that prevents lockout, and it
+   holds on a 62.5 kB/s path as well as a 30 Mbit one — which an absolute
+   ceiling cannot do.
+
+   **Design trap to avoid**: measured goodput is bounded above by offered load,
+   so it is a *lower bound* on capacity, never an estimate of it. Clamping the
+   effective rate to `(1-headroom) x goodput` unconditionally would ratchet a
+   healthy, lightly-loaded link down to nothing. It is therefore applied only
+   on the congested branch, as the floor-of-two with the classic halving; the
+   clean branch keeps probing upward.
+
+   Resulting update, replacing the body of `updateAdmissionControl()`:
+
+   ```
+   goodput = max(0, remote_received_bps - remote_duplicate_bps)
+   if congested:                       # incl. stale feedback (no goodput reading)
+       target   = (1 - headroom) * goodput
+       effective = max(floor, min(effective * 0.5, target))   # target skipped if stale
+   else:
+       step      = max(step_min, step_fraction * effective)   # relative, not cap-scaled
+       effective = min(configured_cap, effective + step)
+   ```
+
+4. **Rebase the resend budget on delivered throughput.** `resend_packets()`
    currently takes `resend_budget_fraction x effective_rate_limit_`. Change the
    basis to the remote's reported delivery (received minus duplicates), which
    is the only number in the system that describes the link. Keep the existing
    ack-starvation backoff and the one-packet probe guarantee unchanged.
-4. **Subtract duplicates from the delivery signal.** `received_bytes_per_second`
+5. **Subtract duplicates from the delivery signal.** `received_bytes_per_second`
    counts resends and duplicates, so it overstates goodput exactly when
    amplification is worst. `duplicate_bytes_per_second` is already reported per
    connection; use `received - duplicate` as the goodput estimate for both the
    congestion test and step 3.
-5. **New bench invariant — management-flow survivability.** A low-rate
+6. **New bench invariant — management-flow survivability.** A low-rate
    co-tenant flow on the veth, sized like an interactive SSH session, asserted
    to keep flowing with bounded added latency through every phase of the
    trajectory including `critical` and both `over_horizon` edges. This is the
    acceptance criterion for relaxing the cap operationally, and it is only
    testable because of PR #27's two-namespace fix.
-6. **Un-xfail `test_invariant_resend_amplification`** and remove the
+7. **Un-xfail `test_invariant_resend_amplification`** and remove the
    `xfail(strict=True)` marker added in PR #27. `F_resend_multiplier` is not to
    be loosened; if the invariant cannot pass on its own terms, that is a
    finding, not a threshold to retune.
-7. **Update both design notes** to describe measured-throughput scaling and to
+8. **Update both design notes** to describe measured-throughput scaling and to
    record why configured-cap scaling failed, with the bench numbers.
 
 ## Files to Change
@@ -78,8 +106,9 @@ second job as the system's model of link capacity.
 |------|--------|
 | `udp_bridge/include/udp_bridge/resend_constants.h` | Rescale AIMD constants; add absolute-floor default; document why cap-relative scaling failed |
 | `udp_bridge/src/connection.cpp` | `updateAdmissionControl()` step/floor; `resend_packets()` budget basis; goodput = received − duplicate |
-| `udp_bridge/include/udp_bridge/connection.h` | Absolute-floor member + setter; goodput accessor |
-| `udp_bridge/src/udp_bridge.cpp` | Declare/read `admission_floor_bytes_per_second`; deprecation path for the fraction parameter |
+| `udp_bridge/include/udp_bridge/connection.h` | Absolute-floor + headroom members and setters; goodput accessor |
+| `udp_bridge/src/remote_node.cpp` | Pass the remote's `duplicate_bytes_per_second` alongside `received_bytes_per_second` |
+| `udp_bridge/src/udp_bridge.cpp` | Declare/read `admission_floor_bytes_per_second` + `link_headroom_fraction`; remove `admission_floor_fraction` |
 | `udp_bridge/test/test_admission_control.cpp` | Convergence-on-real-capacity cases; step no longer overshoots; floor semantics |
 | `udp_bridge/test/test_resend_budget.cpp` | Budget follows delivered throughput; starvation backoff and probe unchanged |
 | `udp_bridge/test/bench/run_scenario.py` | Co-tenant management flow (launch, trace, teardown) |
@@ -128,24 +157,25 @@ second job as the system's model of link capacity.
   worth a line in `.agent/knowledge/`. Also worth recording that an impairment
   harness must prove it impairs before any result from it is trusted.
 
+## Settled (operator decisions, 2026-08-22)
+
+- **Absolute floor**: configurable, `admission_floor_bytes_per_second`,
+  reasonable default — **8192 B/s**.
+- **Headroom**: in scope for this issue, configurable
+  `link_headroom_fraction`, reasonable default — **0.2**.
+- **`admission_floor_fraction`**: dropped outright, no deprecation window.
+- **Delivery**: one PR with atomic commits.
+
 ## Open Questions
 
-- **Absolute floor value.** What rate must always be admitted? Suggest sizing
-  from the critical-tier topics plus BridgeInfo (order 4–8 kB/s), but the boat's
-  real control set should set it.
-- **Headroom target.** Should the controller aim for a fraction of measured
-  capacity (leaving room for SSH by construction), or only avoid overshooting
-  it? The first is what actually prevents lockout; it is a behaviour change
-  beyond fixing the scaling, and may belong in a follow-up.
-- **Deprecation of `admission_floor_fraction`.** Drop outright (workspace
-  preference: remove obsolete, not opt-in) or keep one release?
-- **PR split.** One PR with atomic commits, or admission / resend-budget /
-  bench as three stacked PRs?
 - **Stacking.** This branch is stacked on `feature/issue-18` (PR #27), which is
   unmerged. If #27 merges first, rebase onto `jazzy` before opening the PR.
+- **Boat/operator config values** — whether the shipped defaults suit the real
+  links, or the boat wants explicit floor/headroom values, is a question for
+  the water, not for this PR.
 
 ## Estimated Scope
 
-Multiple PRs likely — admission scaling, resend-budget basis, and the bench
-invariant are separately reviewable and separately verifiable. Default to one
-PR with atomic commits unless review depth argues for splitting.
+One PR with atomic commits (operator decision). Admission scaling,
+resend-budget basis, and the bench invariant remain separable commits inside it
+if review depth later argues for splitting.

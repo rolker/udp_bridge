@@ -105,21 +105,48 @@ float Connection::resendBudgetFraction() const
   return resend_budget_fraction_;
 }
 
-void Connection::setAdmissionFloorFraction(float fraction)
+void Connection::setAdmissionFloorBytesPerSecond(float bytes_per_second)
 {
   // Same clamp semantics as setResendBudgetFraction: degrade a bad
   // value to the nearest sane bound; NaN falls back to the default.
-  if(std::isnan(fraction))
-    fraction = kDefaultAdmissionFloorFraction;
-  fraction = std::max(0.0f, std::min(1.0f, fraction));
+  // No upper clamp here — the floor is bounded by the configured rate
+  // limit where it is applied, so a connection whose limit is later
+  // raised does not carry a silently truncated floor.
+  if(std::isnan(bytes_per_second))
+    bytes_per_second = kDefaultAdmissionFloorBytesPerSecond;
+  bytes_per_second = std::max(0.0f, bytes_per_second);
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  admission_floor_fraction_ = fraction;
+  admission_floor_bytes_per_second_ = bytes_per_second;
 }
 
-float Connection::admissionFloorFraction() const
+float Connection::admissionFloorBytesPerSecond() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  return admission_floor_fraction_;
+  return admission_floor_bytes_per_second_;
+}
+
+void Connection::setLinkHeadroomFraction(float fraction)
+{
+  // Clamped below 1.0: a headroom of exactly 1.0 would target zero
+  // throughput on every congested sample and the connection could
+  // never carry data again.
+  if(std::isnan(fraction))
+    fraction = kDefaultLinkHeadroomFraction;
+  fraction = std::max(0.0f, std::min(0.99f, fraction));
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  link_headroom_fraction_ = fraction;
+}
+
+float Connection::linkHeadroomFraction() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return link_headroom_fraction_;
+}
+
+float Connection::goodputBytesPerSecond() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return goodput_bytes_per_second_;
 }
 
 uint32_t Connection::effectiveRateLimit() const
@@ -128,7 +155,9 @@ uint32_t Connection::effectiveRateLimit() const
   return static_cast<uint32_t>(effective_rate_limit_);
 }
 
-void Connection::updateAdmissionControl(float remote_received_bps, rclcpp::Time now)
+void Connection::updateAdmissionControl(float remote_received_bps,
+                                        float remote_duplicate_bps,
+                                        rclcpp::Time now)
 {
   // Locking: read the stats and receive-history values under their own
   // mutexes first, then take config_mutex_ for the AIMD update — the
@@ -167,16 +196,50 @@ void Connection::updateAdmissionControl(float remote_received_bps, rclcpp::Time 
     (feedback_stale ||
      remote_received_bps < (1.0f - kAdmissionLossThreshold) * sent_bps);
 
+  // Goodput: what the remote reports receiving, less what it reports as
+  // duplicates. Resends and duplicates inflate received_bytes_per_second
+  // exactly when amplification is worst, so the raw figure flatters the
+  // link at the moment we most need the truth (issue #52).
+  const float goodput = std::max(0.0f, remote_received_bps - remote_duplicate_bps);
+
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  const float floor = admission_floor_fraction_ * data_rate_limit_;
+  goodput_bytes_per_second_ = goodput;
+
+  // The floor is absolute (#52) but can never exceed the configured
+  // cap: an operator who sets a floor above a connection's own limit
+  // gets the limit, not a floor that would raise it.
+  const float floor =
+    std::min(admission_floor_bytes_per_second_, static_cast<float>(data_rate_limit_));
+
   if(congested)
-    effective_rate_limit_ =
-      std::max(floor, effective_rate_limit_ * kAdmissionDecreaseFactor);
+  {
+    float decreased = effective_rate_limit_ * kAdmissionDecreaseFactor;
+    // Headroom target: aim at a fraction of what the link is actually
+    // delivering, so a co-tenant (SSH, operator management traffic)
+    // keeps a share. Applied ONLY here. Measured goodput is bounded
+    // above by offered load, so it is a lower bound on capacity, never
+    // an estimate of it — clamping to it on the clean branch too would
+    // ratchet a healthy, lightly-loaded link down to nothing.
+    //
+    // Stale feedback carries no usable goodput reading (that is what
+    // stale means), so it falls back to the multiplicative decrease
+    // alone rather than targeting a number we did not measure.
+    if(!feedback_stale)
+      decreased = std::min(decreased, (1.0f - link_headroom_fraction_) * goodput);
+    effective_rate_limit_ = std::max(floor, decreased);
+  }
   else
+  {
+    // Additive recovery relative to where the controller currently is,
+    // with an absolute minimum so escaping the floor is not
+    // asymptotically slow. Cap-relative steps were the #52 defect: on a
+    // link delivering 1.6% of its configured cap, one clean sample
+    // added six times the whole link and undid three halvings.
+    const float step = std::max(kAdmissionAdditiveStepMinimumBytesPerSecond,
+                                kAdmissionAdditiveStepFraction * effective_rate_limit_);
     effective_rate_limit_ =
-      std::min(static_cast<float>(data_rate_limit_),
-               effective_rate_limit_ +
-                 kAdmissionAdditiveStepFraction * data_rate_limit_);
+      std::min(static_cast<float>(data_rate_limit_), effective_rate_limit_ + step);
+  }
 }
 
 void Connection::resolveHost()
@@ -630,11 +693,7 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
     std::lock_guard<std::recursive_mutex> lock(config_mutex_);
     // The resend budget bases on the AIMD-adjusted cap (issue #43),
     // not the configured limit: when admission backs off under
-    // congestion, resends must shrink proportionally — a 25%-of-
-    // configured budget could otherwise consume the ENTIRE reduced
-    // admission and starve fresh data. With no AIMD activity the
-    // effective cap equals the configured limit, so #44 behavior is
-    // unchanged.
+    // congestion, resends must shrink proportionally.
     rate_limit = static_cast<uint32_t>(effective_rate_limit_);
     fraction = resend_budget_fraction_;
   }
@@ -670,14 +729,8 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
     attempted_bytes = sent_packet_statistics_.bytes_in_window(PacketSendCategory::resend, now);
   }
 
-  // Probe guarantee: on links whose floored budget is smaller than one
-  // packet (e.g. the default 50 kB/s limit at max backoff: 781 bytes),
-  // a pure byte comparison would shed every resend and the "probe
-  // trickle keeps recovery possible" property would silently vanish.
-  // When nothing has been resent in the current window, the first
-  // packet is admitted regardless of its size — bounding the trickle
-  // at roughly one packet per window rather than zero. A zero budget
-  // (fraction 0.0 = operator disabled resends) never probes.
+  // Probe guarantee: when nothing has been resent in the current
+  // window, the first packet is admitted regardless of its size.
   const bool admit_probe = (attempted_bytes == 0 && budget_bytes > 0.0);
   for(std::size_t i = 0; i < packets_to_resend.size(); ++i)
   {
