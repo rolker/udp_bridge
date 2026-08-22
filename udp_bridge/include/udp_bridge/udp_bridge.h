@@ -38,11 +38,11 @@ class RemoteNode;
 
 /// The top level class containing all the functionality of the udp_bridge_node.
 /// Once the constructor has read initial parameters and created the network socket,
-/// the \ref spin method then sets up the services and reads the initial remote 
-/// connections and topics from the parameter server before going into a loop to read 
+/// the \ref spin method then sets up the services and reads the initial remote
+/// connections and topics from the parameter server before going into a loop to read
 /// incoming UDP packets and decode them.
 ///
-/// Meanwhile, the \ref callback method handles sending ROS messages from locally 
+/// Meanwhile, the \ref callback method handles sending ROS messages from locally
 /// subscribed topics to remote nodes.
 ///
 /// Additional timer callbacks are used to locally publish and send to remotes
@@ -68,9 +68,9 @@ public:
 
   /// Listens in a loop for incoming UDP packets and decodes them.
   /// The decode(std::vector<uint8_t> const &message, const SourceInfo& source_info) is
-  /// called when a packet is received. 
+  /// called when a packet is received.
   void spin_once();
-    
+
 private:
   /// Sets the node name as seen by other udp_bridge nodes
   /// Warns if truncated to size specified in packet header.
@@ -86,7 +86,7 @@ private:
   /// @param message packet data as vector of bytes
   /// @param source_info info about the packet sender
   ///
-  /// The main packet sorting method. More specific packet decoding routines get 
+  /// The main packet sorting method. More specific packet decoding routines get
   /// selected based on Packet::type.
   void decode(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
@@ -104,7 +104,7 @@ private:
     serializer.deserialize_message(&serialized_message, &deserialized_message);
     return deserialized_message;
   }
-    
+
   /// Decodes data from a remote subscription received over the UDP link.
   /// @param message bytes representing a serialized MessageInternal message
   /// @param source_info info about the packet sender
@@ -123,7 +123,7 @@ private:
   /// dead-but-matched subscriber; first-arrival rmw discovery) stalls only
   /// the worker, never the socket-drain thread.
   void publishItem(PublishItem&& item);
-    
+
   /// Decodes topic info from remote.
   void decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
@@ -316,7 +316,39 @@ private:
   // are read-only afterward — no synchronization needed.
   int socket_;
   uint16_t port_ {4200};
-  int max_packet_size_ {65500};
+
+  // Default sized for the links this bridge actually runs over, not for
+  // the IPv4/UDP maximum (issue #58). Everything here is tunnelled:
+  // WireGuard over Starlink or cellular. The cell tunnel runs MTU 1280,
+  // leaving 1280 - 20 (IPv4) - 8 (UDP) = 1252 bytes of usable payload;
+  // 1200 fits with headroom for any additional encapsulation, and is the
+  // same conservative figure QUIC uses for the same reason.
+  //
+  // The previous 65500 default was not merely oversized, it was
+  // counterproductive: the kernel IP-fragments such a datagram into ~45
+  // pieces, and IP fragments are NOT individually recoverable, so
+  // udp_bridge's own resend machinery cannot repair one. Losing any single
+  // IP fragment discards the whole datagram — on a lossy radio link, most
+  // of them. Letting the bridge fragment at 1200 is strictly better than
+  // letting IP fragment at 65500. See the MTU black-hole diagnosis in
+  // unh_echoboats_project11 (bizzyboat_deployment_log.md) and the sizing
+  // decision in that repo's issue #389.
+  //
+  // Raise this only for a path whose end-to-end MTU has been verified.
+  //
+  // The static_assert is the enforcement: a comment alone would not survive
+  // someone raising the constant back toward the UDP maximum.
+  static constexpr int kTunnelMtuBytes = 1280;   // cellular WireGuard path
+  static constexpr int kIpUdpHeaderBytes = 28;   // 20 (IPv4) + 8 (UDP)
+  static constexpr int kDefaultMaxPacketSize = 1200;
+  static_assert(
+    kDefaultMaxPacketSize <= kTunnelMtuBytes - kIpUdpHeaderBytes,
+    "Default maximum_packet_size must fit inside the cellular WireGuard "
+    "tunnel's MTU without IP fragmentation (issue #58). IP fragments are not "
+    "individually recoverable by the resend machinery, so one lost fragment "
+    "discards the whole datagram. If a deployment has a verified larger "
+    "end-to-end MTU, raise it in that deployment's config -- not here.");
+  int max_packet_size_ {kDefaultMaxPacketSize};
 
   // Protocol counters — incremented from multiple callback groups via
   // send<>(), so atomic is required. fetch_add(1) gives a unique value

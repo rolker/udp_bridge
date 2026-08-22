@@ -84,7 +84,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 |---|---|---|
 | `name` | node name | Bridge name as seen by remote bridges (unique per network) |
 | `port` | `4200` | UDP listen port; clamped 0–65535 |
-| `maximum_packet_size` | `65500` | Clamped 256–65500 |
+| `maximum_packet_size` | `1200` | Clamped 256–65500; default sized for a tunnelled link (WireGuard-over-cellular MTU), not the IPv4/UDP maximum (#58) |
 | `drop_stale_packets` | `true` | Gate dropping late out-of-order resends per destination topic |
 | `reorder_hold_window_ms` | `0.0` | Reorder/jitter buffer hold window (ms), global (#35); `0.0` = disabled. When > 0 (and `drop_stale_packets` on), a gap-opening packet is held up to this window so an out-of-order gap-filler publishes first; clamped 0–500 ms |
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
