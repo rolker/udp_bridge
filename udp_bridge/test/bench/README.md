@@ -123,8 +123,14 @@ The four multi-link invariants (same run) are:
 8. **Critical gap over-horizon** — no Critical inter-arrival gap overlapping an over-horizon window exceeds G (the always-on paths keep Critical flowing while WiFi is dark).
 9. **Drop-by-tier (measure-and-report)** — records per-tier send success/dropped in the most-degraded phase. Does **not** fail: preferential tier dropping needs per-topic scheduling ([#19](https://github.com/rolker/udp_bridge/issues/19), not yet implemented).
 
-Threshold values N/X/T/F/R/Y/G and the co-tenant K thresholds
-(`K_cotenant_delivery_pct`, `K_cotenant_p95_latency_s`) live in the
+The two Bulk acceptance invariants ([#57](https://github.com/rolker/udp_bridge/issues/57), same run) are:
+
+10. **Fragmentation exercised** — the boat send-side `average_fragment_count` for `/boat/bulk/image` stays ≥ `T_fragment_floor` in the clean in-range phase. With the incompressible 480 KB payload and a 1000-byte `maximum_packet_size`, an image fragments into ≥ 480 pieces (`floor(480000/1000)`; per-fragment headers push it higher), so the resend/reassembly machinery is exercised for real. The pre-#57 single-packet bug would drive this to ~1 and fail here. (#57 Acceptance criterion 2.)
+11. **Bulk wire rate** — the boat send-side per-topic Bulk `send.success_bytes_per_second` clears `W_wire_pct` × the 4 MB/s WiFi budget in the clean in-range phase. Bulk is offered at ~4.8 MB/s (120% of budget) and the limiter trims toward the cap; this catches a regression that silently drops Bulk back to the pre-#57 ~0.5 kB/s single-packet trickle. Sourced per-topic from `topic_statistics`, not the WiFi connection aggregate. (#57 Acceptance criterion 1.)
+
+Threshold values N/X/T/F/R/Y/G, the co-tenant K thresholds
+(`K_cotenant_delivery_pct`, `K_cotenant_p95_latency_s`), and the #57
+Bulk thresholds (`T_fragment_floor`, `W_wire_pct`) live in the
 "Values" table below.
 
 ### `subscriber_death` — stalled-subscriber (wedge) regression guard
@@ -181,6 +187,8 @@ assertions in `test_range_degradation.py`.
 | **Y** | 10% | No field bag isolates cross-path poisoning (2026-05-01 was Starlink-only). Bootstrap from harness clean-link rates. |
 | **K_cotenant_delivery_pct** | 0.50 | Co-tenant management flow (#52): a co-tenant must get ≥ half of what the physical path would give it on its own (i.e. ≥ 0.5 × (1 − loss)). Generous room for queueing while still failing loudly if the bridge takes the link. |
 | **K_cotenant_p95_latency_s** | 5.0 s | Co-tenant management flow (#52): p95 one-way latency ceiling per phase. Loud on real starvation (a flow queued-but-delivering can pass the delivery ratio yet be useless for interactive traffic); generous on ordinary queueing. Initial value; refine as field/bench co-tenant traces accumulate. |
+| **T_fragment_floor** | 400 | Bulk fragmentation floor (#57): a 480 KB incompressible Image over a 1000-byte `maximum_packet_size` fragments into `floor(480000/1000)=480` pieces at minimum; per-fragment bridge headers cut effective payload per packet, so the real count trends **above** 480, not below (no compression discount on an incompressible payload). 400 sits safely under with margin for partial-window sampling. **Initial value — re-derive from the first host bench run's observed `average_fragment_count` (#57 part 2).** |
+| **W_wire_pct** | 0.50 | Bulk wire-rate floor as a fraction of the 4 MB/s WiFi budget (#57): offered load ~4.8 MB/s (120% of budget), rate limiter trims toward 4 MB/s. 0.5 is a deliberately generous start — WiFi is shared with Telemetry/Critical and fragment-header overhead consumes budget. **Initial value — re-derive from the first host bench run's observed Bulk `send.success_bytes_per_second` (#57 part 2).** |
 
 ## Methodology
 
@@ -213,6 +221,7 @@ refinement plan below.
 3. **Y**: after first harness run, set to observed variance of cell-path rate with WiFi idle.
 4. **G**: tighten if subsequent deployments show consistently sub-2s worst case.
 5. **R**: loosen if false-trips occur on legitimate brief stalls.
+6. **T_fragment_floor**, **W_wire_pct** (#57): re-derive both from the first host bench run's observed `average_fragment_count` and Bulk `send.success_bytes_per_second`. That same run must also re-examine **F** (fragment resends now dominate) and re-check **X, R, Y, K, N** — real saturating Bulk exercises them for the first time (they were only ever validated at ~0.5 kB/s single-packet traffic). Note the resend xfail interaction: real fragmentation may flip `test_invariant_resend_amplification` (xfail `strict=True`) to XPASS, i.e. a CI failure; whether the marker comes off is a #54 decision made from the run, not by loosening **F**.
 
 Each refinement lands as its own commit alongside the assertion change that consumes it.
 
