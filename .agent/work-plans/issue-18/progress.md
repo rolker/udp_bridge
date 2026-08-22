@@ -46,3 +46,61 @@ Two unaddressed prior-round (Copilot) findings block:
 - **#2 (must-fix): missing rosbag2 `<test_depend>`s in package.xml** — the range scenario shells `ros2 bag record` and `bag_reader.py` imports `rosbag2_py`/`rclpy.serialization`/`rosidl_runtime_py`; none declared. Opt-in path fails on a clean install. Add `rosbag2_py`, `rosbag2_transport`, `rosidl_runtime_py` test_depends.
 
 Nice-to-have (round-2 one-liners, unaddressed): tee docstring lie (run_scenario.py:322), leaked log_fp handle (:326), per-tick 480KB alloc in Bulk pub (pub.py:66 — determinism), dead SQLite shims in bag_reader.py, run_scenario docstring omits subscriber_death scenario. Fix #1+#2 and optionally sweep these → APPROVE.
+
+## Implementation
+**Status**: complete — PR #27 rehabbed (rebase + all review findings addressed)
+**When**: 2026-08-22 10:05 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Branch**: feature/issue-18 (PR #27), rebased onto `origin/jazzy`
+
+### Rebase
+PR had gone 58 commits behind `jazzy` and GitHub reported it DIRTY. Single
+conflict: `udp_bridge/CMakeLists.txt` — jazzy added gtest registrations
+(`test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`)
+where this branch adds the `ament_add_pytest_test` bench block. Resolved by
+keeping both; no semantic overlap. All 18 commits replayed clean.
+
+### Findings addressed (both must-fix from the 2026-06-14 review + all five nice-to-haves)
+- [x] **(must-fix #1) Vacuous-pass guard** — `test_invariant_recv_q_no_sustained_climb`
+      folded empty `recv_q_bytes` rows in as q=0, so a tracer that never bound
+      the operator socket made the invariant pass vacuously. Now counts total vs
+      usable rows: skips only when nothing was recorded, and **fails** with an
+      explicit harness-failure message when there are rows but none usable.
+      Synthetic zeros also broke genuine climb runs in two, so dropping them
+      strengthens the assertion in the healthy case too.
+- [x] **(must-fix #2) rosbag2 test_depends** — added `ros2bag`, `rosbag2_py`,
+      `rosbag2_transport`, `rosidl_runtime_py`, plus `rosbag2_storage_mcap`
+      (Jazzy records mcap by default, so the plugin is needed to read back what
+      the scenario just recorded — not in the original finding).
+- [x] Dead SQLite shims in `bag_reader.py` — `list_topics`/`count_messages`/
+      `find_bag_db` had no callers anywhere and were sqlite3-only against a
+      mcap default. **Removed** rather than re-documented (workspace preference:
+      remove obsolete outright). Deferred-import comment corrected.
+- [x] `pub.py` per-tick 480 KB allocation — hoisted to one reused immutable
+      buffer. ~4.6 MB/s of allocator churn inside the publisher used to measure
+      the link; the harness was perturbing its own measurement.
+- [x] `launch_bridge_logged` docstring claimed a `tee` that does not exist.
+- [x] Same function leaked the parent's `log_fp` handle — closed after spawn.
+- [x] `run_scenario.py` Usage block omitted the `subscriber_death` scenario.
+
+### Verification
+- `colcon build` clean (only pre-existing `-Wpedantic` flexible-array warnings).
+- Default suite: **162 tests, 0 failures, 11 skipped**.
+- Opt-in `UDP_BRIDGE_BENCH_SCENARIOS=1 ... -k test_bench_range_degradation`:
+  **all 9 invariants pass** (3 min 4 s), including the modified recv_q invariant
+  running against real (non-empty) tracer data.
+- Guard logic verified against synthetic traces: rows-but-no-values → FAIL
+  (harness failure), healthy trace → proceed, zero rows → skip.
+- `pre-commit run --from-ref origin/jazzy --to-ref HEAD` clean. Note the repo
+  has **no pre-commit git hook installed** and CI excludes linter tests pending
+  #40, so nothing automated would have caught the four end-of-file misses fixed
+  here; hooks were run by hand.
+
+### Notes / follow-ups
+- The PR body's "no CI workflow in this repo" is stale — `.github/workflows/ci.yml`
+  landed in `973ead7` after this branch was last touched. This push is the
+  first time CI will run against #27. PR body needs that line corrected.
+- Multi-agent `/review-code` was **not** run on this delta (sub-agent dispatch
+  disabled for this session); the delta was self-reviewed against the diff
+  instead. Worth a pass before merge if the session constraint lifts.
