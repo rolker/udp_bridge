@@ -7,6 +7,7 @@ scenario only enables Critical; Phase 2 enables the full mix.
 """
 
 import argparse
+import os
 import sys
 
 import rclpy
@@ -27,12 +28,17 @@ class BenchPublisher(Node):
     def __init__(self, topic: str, msg_type: str, rate_hz: float, payload_bytes: int):
         super().__init__('bench_pub')
         self._payload_bytes = payload_bytes
-        # Allocated once, reused every tick. At the Bulk tier's 10 Hz x 480 KB
-        # a fresh buffer per publish is ~4.6 MB/s of allocator churn inside the
+        # Incompressible payload (#57): os.urandom() so the bridge cannot
+        # zlib-compress a 480 KB Bulk message down to a single ~488 B packet.
+        # bytes(payload_bytes) was all-zeros and compressed away, so the bench
+        # sent single-packet Bulk and never exercised fragmentation/reassembly
+        # or the resend machinery -- the field sends ~480+ fragments per image.
+        # Allocated once, reused every tick: at the Bulk tier's 10 Hz x 480 KB a
+        # fresh buffer per publish is ~4.6 MB/s of allocator churn inside the
         # publisher we are using to measure the link -- the harness would be
-        # perturbing its own measurement. Safe to share: bytes is immutable and
-        # the message is serialized on publish.
-        self._payload_buf = bytes(payload_bytes)
+        # perturbing its own measurement. Safe to share: os.urandom() returns
+        # immutable bytes and the message is serialized on publish.
+        self._payload_buf = os.urandom(payload_bytes)
         self._count = 0
         if msg_type == 'std_msgs/String':
             self._pub = self.create_publisher(String, topic, 10)
