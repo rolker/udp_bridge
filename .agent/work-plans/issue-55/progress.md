@@ -84,3 +84,24 @@ a blocker.
 - [ ] Diagnostic test will identify exact fix location in connection.cpp or statistics.cpp (TBD after test).
 - [ ] Audit whether receive-side `ReceivedSize::size` (uint16_t) has a symmetric gap; fix here or file follow-up.
 - [ ] After fix, bench run to observe whether rate limiter engages for Bulk traffic for the first time.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-22 17:11 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Plan**: `.agent/work-plans/issue-55/plan.md` at `a89b594`
+**PR**: PR-less (reviewed in-worktree on `feature/issue-55`)
+**Verdict**: approve-with-suggestions
+
+Independent review (fresh-context sub-agent; plan authored by a Sonnet run —
+not an in-context author self-review). Verified against source: `PacketSizeData::size`
+is `u_int16_t` (statistics.h:47), `ReceivedSize::size` is `uint16_t` (connection.h:238),
+`add_udp_bridge_gtest` macro exists (CMakeLists.txt:126), and the three consequence
+cross-check tests all exist. `can_send` already takes `uint32_t` / `bytes_in_window`
+returns `uint64_t`, so widening the stats field is low-risk.
+
+### Findings
+- [ ] (suggestion) Broaden the diagnostic test to also assert at the `UDPBridge::send<MessageType>` entry — evidence shows Bulk is *entirely absent* (not truncated), and both `Connection::send` overloads already call `.add()`, so a unit test at that level can pass while an upstream path divergence remains the real bug — `plan.md:40-46`
+- [ ] (suggestion) Doc reference is inaccurate: `.agents/README.md` lines 99-102 describe Topics & Services, and DataRates field semantics are not documented anywhere in that file — re-locate the real operator-facing description (`DataRates.msg` / `doc/admission_control_design.md`) or add one — `plan.md:118`
+- [ ] (suggestion) State that the diagnostic must distinguish "not recorded" vs. "truncated" and prioritize the early-return/path-divergence candidate over the uint16_t width hypothesis — each fragment ≤ max_packet_size=65500 < 65535 fits, so truncation alone cannot explain the ~350x undercount — `plan.md:47-59`
