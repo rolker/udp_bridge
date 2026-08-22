@@ -390,6 +390,43 @@ def launch_recv_q_trace(port: int, output_csv: Path,
     )
 
 
+# Port for the co-tenant management flow (issue #52). Distinct from the
+# bridges' 4200/4300 so recv_q_trace keeps watching the operator bridge.
+COTENANT_PORT = 4400
+
+
+def launch_cotenant_receiver(output_csv: Path) -> _Child:
+    """Co-tenant receiver, operator side (issue #52)."""
+    script = Path(__file__).parent / 'cotenant.py'
+    return _spawn(
+        [sys.executable, str(script), '--mode', 'recv',
+         '--port', str(COTENANT_PORT), '--output', str(output_csv)],
+        env=os.environ.copy(),
+        name='cotenant-recv',
+        stderr=subprocess.PIPE,
+    )
+
+
+def launch_cotenant_sender(host: str, duration_s: float) -> _Child:
+    """Co-tenant sender, boat side (issue #52).
+
+    Stands in for an interactive session sharing the impaired path -- the
+    traffic that must survive whatever the bridge is doing, and the whole
+    reason `maximum_bytes_per_second` exists. Runs in the boat namespace
+    so it crosses the same netem qdiscs as the bridge's own traffic.
+    """
+    script = Path(__file__).parent / 'cotenant.py'
+    return _spawn(
+        [sys.executable, str(script), '--mode', 'send',
+         '--host', host, '--port', str(COTENANT_PORT),
+         '--duration-s', str(duration_s)],
+        env=os.environ.copy(),
+        name='cotenant-send',
+        stderr=subprocess.PIPE,
+        netns=BOAT_NS,
+    )
+
+
 def launch_bag_record(domain: int, topics: list[str], bag_dir: Path) -> _Child:
     """Run `ros2 bag record` on the operator domain into bag_dir."""
     env = _env_for(domain)
@@ -524,7 +561,9 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     bag = launch_bag_record(OPERATOR_DOMAIN, BAG_TOPICS, bag_dir)
     recvq_csv = outdir / 'recv_q_operator.csv'
     recvq = launch_recv_q_trace(4200, recvq_csv, interval_s=0.5)
-    time.sleep(2)  # let recorder + tracer settle
+    cotenant_csv = outdir / 'cotenant.csv'
+    cotenant_rx = launch_cotenant_receiver(cotenant_csv)
+    time.sleep(2)  # let recorder + tracer + co-tenant receiver settle
 
     # We need pub/sub to outlive the walk by a couple of seconds so the
     # final in_range_clean recovery phase has steady-state data.
@@ -538,6 +577,9 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
         tier: launch_pub(BOAT_DOMAIN, tier, pub_duration, netns=BOAT_NS)
         for tier in TIER_DESTINATIONS
     }
+    # Co-tenant runs for the whole walk: the question is whether the
+    # bridge leaves it room in EVERY phase, not on average.
+    cotenant_tx = launch_cotenant_sender(PATHS[0][1], pub_duration)
 
     walk_start = time.time()
     phase_log: list = []
@@ -550,6 +592,8 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
 
     # Stop the tracers gracefully so files flush before cleanup.
     recvq.stop(timeout=3.0)
+    cotenant_tx.stop(timeout=3.0)
+    cotenant_rx.stop(timeout=3.0)
     # `ros2 bag record` only flushes the metadata on SIGINT; SIGTERM
     # to the wrapper truncates the bag. Send SIGINT to the whole
     # process group instead of the SIGTERM path that _Child.stop uses.
@@ -572,6 +616,7 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
         'bag_dir': bag_dir,
         'phase_log': phase_log_path,
         'recvq_operator': recvq_csv,
+        'cotenant': cotenant_csv,
         'bridge_stderr_operator': operator_stderr,
         'bridge_stderr_boat': boat_stderr,
         'pub_counts': {tier: _parse_count(pubs[tier]) for tier in TIER_DESTINATIONS},
@@ -839,6 +884,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f'BENCH_BAG_DIR={result["bag_dir"]}')
             print(f'BENCH_PHASE_LOG={result["phase_log"]}')
             print(f'BENCH_RECVQ_OPERATOR={result["recvq_operator"]}')
+            print(f'BENCH_COTENANT={result["cotenant"]}')
             print(f'BENCH_BRIDGE_STDERR_OPERATOR={result["bridge_stderr_operator"]}')
             print(f'BENCH_BRIDGE_STDERR_BOAT={result["bridge_stderr_boat"]}')
             for tier, count in result['pub_counts'].items():

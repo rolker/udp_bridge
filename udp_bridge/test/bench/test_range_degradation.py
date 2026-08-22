@@ -44,6 +44,11 @@ import pytest
 
 THIS_DIR = Path(__file__).parent
 
+# Mirrors cotenant.py's DEFAULT_RATE_HZ — the expected-packet count per
+# phase is derived from cadence x duration, not from a sender-side tally,
+# so a starved sender cannot flatter the delivery ratio.
+COTENANT_RATE_HZ = 20.0
+
 # Match THRESHOLDS section of `test/bench/README.md`. These are
 # initial values; the README's "Refinement plan" section governs how
 # each one is re-derived as field bags accumulate.
@@ -55,6 +60,13 @@ THRESHOLDS = {
     'R_stats_pct': 0.50,         # bridge_info+topic_statistics rate floor
     'Y_cross_path_pct': 0.10,    # always-on path received-rate drop tolerance
     'G_critical_gap_s': 6.0,     # max Critical inter-arrival gap over-horizon
+    # Co-tenant management flow (issue #52): the fraction of the phase's
+    # own link-survivable rate a co-tenant must still achieve. A phase
+    # applying L loss can at best deliver (1 - L); requiring K of that
+    # leaves generous room for queueing while still failing loudly if the
+    # bridge is taking the link. 0.5 means "a co-tenant gets at least half
+    # of what the physical path would give it on its own".
+    'K_cotenant_delivery_pct': 0.50,
 }
 
 # Topic-list confinement: which connections each forwarded topic is allowed
@@ -111,6 +123,7 @@ class RunArtifacts:
     bag_dir: Path
     phase_log: Path
     recvq_csv: Path
+    cotenant_csv: Path
     bridge_stderr_operator: Path
     bridge_stderr_boat: Path
     stdout: str
@@ -144,6 +157,7 @@ def artifacts() -> RunArtifacts:
             f'stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
         )
     required = ['BENCH_BAG_DIR', 'BENCH_PHASE_LOG', 'BENCH_RECVQ_OPERATOR',
+                'BENCH_COTENANT',
                 'BENCH_BRIDGE_STDERR_OPERATOR', 'BENCH_BRIDGE_STDERR_BOAT']
     missing = [k for k in required if k not in markers]
     if missing:
@@ -153,6 +167,7 @@ def artifacts() -> RunArtifacts:
         bag_dir=Path(markers['BENCH_BAG_DIR']),
         phase_log=Path(markers['BENCH_PHASE_LOG']),
         recvq_csv=Path(markers['BENCH_RECVQ_OPERATOR']),
+        cotenant_csv=Path(markers['BENCH_COTENANT']),
         bridge_stderr_operator=Path(markers['BENCH_BRIDGE_STDERR_OPERATOR']),
         bridge_stderr_boat=Path(markers['BENCH_BRIDGE_STDERR_BOAT']),
         stdout=proc.stdout,
@@ -454,16 +469,17 @@ PHASE_LOSS_RATE = _phase_loss_rates()
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        'Known defect, rolker/udp_bridge#52: resend traffic reaches 3.1x the '
-        'message traffic at the critical phase (26.4 vs 8.5 kB/s on a 62.5 '
-        'kB/s link) because the #43 admission floor and the #44 resend budget '
-        'are both fractions of the CONFIGURED cap rather than of observed '
-        'throughput -- at critical the bridge believes it has 2291 kB/s and '
-        'authorizes 573 kB/s of resends on a 62.5 kB/s path. This invariant '
-        'only ever passed because impairment was a no-op before the '
-        'two-namespace fix. strict=True so it turns back into a failure the '
-        'moment #52 is addressed -- do NOT convert this to a loosened '
-        'F_resend_multiplier.'
+        'rolker/udp_bridge#52 first pass fixed the dominant cause but left a '
+        'residual. Rescaling the AIMD step/floor and the resend budget off '
+        'measured goodput cut resend traffic 24-29x -- lossy 13.94 -> 0.59 '
+        'kB/s, critical 26.36 -> 0.90 kB/s -- and the worst phase now passes '
+        'with margin (critical resend/msg 3.108 -> 0.144 against a 0.200 '
+        'ceiling). Two low-loss phases remain just over: fringe 0.018 vs '
+        '0.010, lossy 0.077 vs 0.060. Duplicates are ~34% of the remaining '
+        'resend traffic at lossy, which points at spurious re-requests '
+        '(debounce/reorder interaction) rather than the cap-scaling defect '
+        '#52 documents. strict=True so this turns into a failure the moment '
+        'the residual is closed -- do NOT loosen F_resend_multiplier.'
     ),
 )
 def test_invariant_resend_amplification(artifacts):
@@ -494,6 +510,87 @@ def test_invariant_resend_amplification(artifacts):
     if evaluated == 0:
         pytest.skip('No lossy phases had non-zero success_bps to evaluate.')
     assert not violators, '\n'.join(violators)
+
+
+# -----------------------------------------------------------------------
+# Invariant 4b: a co-tenant management flow survives every phase (#52).
+# -----------------------------------------------------------------------
+
+def _cotenant_delivery_per_phase(artifacts) -> dict:
+    """(delivered, expected, p95_latency_s) per phase for the co-tenant flow.
+
+    `expected` is derived from the send cadence and the phase's duration
+    rather than from a sender-side count, so a sender that itself got
+    starved cannot flatter the ratio.
+    """
+    import csv as _csv
+    rows = []
+    with artifacts.cotenant_csv.open() as f:
+        for r in _csv.DictReader(f):
+            try:
+                rows.append((float(r['sent_unix']), float(r['recv_unix'])))
+            except (ValueError, KeyError):
+                continue
+
+    phase_log = _load_phase_log(artifacts.phase_log)
+    windows = _phase_windows(phase_log)
+    walk_start = phase_log['walk_start_unix']
+
+    out: dict = {}
+    for phase_name, t_start, t_end in windows:
+        a, b = walk_start + t_start, walk_start + t_end
+        in_win = [(sent, recv) for sent, recv in rows if a <= sent < b]
+        expected = max(1.0, (b - a) * COTENANT_RATE_HZ)
+        lat = sorted(recv - sent for sent, recv in in_win)
+        p95 = lat[int(0.95 * (len(lat) - 1))] if lat else float('inf')
+        cur = out.setdefault(phase_name, {'delivered': 0, 'expected': 0.0,
+                                          'p95_latency_s': 0.0})
+        cur['delivered'] += len(in_win)
+        cur['expected'] += expected
+        cur['p95_latency_s'] = max(cur['p95_latency_s'], p95)
+    return out
+
+
+def test_invariant_cotenant_management_flow_survives(artifacts):
+    """A small co-tenant flow on the impaired path keeps flowing in every
+    phase the path itself can carry traffic in.
+
+    This is the operational claim behind `maximum_bytes_per_second`, made
+    testable. The cap was added after a udp_bridge saturating a link
+    locked an operator out of a remote machine. An absolute ceiling only
+    restrains the bridge while the link is healthy: the 2026-08-22 run
+    measured a 4 MB/s cap against a 62.5 kB/s path -- 64x above real
+    capacity -- and the bridge still took 61% of the link. A degraded link
+    is a saturated link, which is exactly the condition a lockout happens
+    in. What protects the operator is headroom against measured
+    throughput (`link_headroom_fraction`, issue #52), and this invariant
+    is what checks the bridge honours it.
+
+    `over_horizon` is excluded: the path applies 100% loss, so nothing
+    survives it and the bridge is not the reason.
+    """
+    per_phase = _cotenant_delivery_per_phase(artifacts)
+    k = THRESHOLDS['K_cotenant_delivery_pct']
+    violators = []
+    evaluated = 0
+    for phase, d in per_phase.items():
+        loss = PHASE_LOSS_RATE.get(phase)
+        if loss is None or loss == 1.0:
+            continue
+        evaluated += 1
+        ratio = d['delivered'] / d['expected'] if d['expected'] else 0.0
+        floor = (1.0 - loss) * k
+        if ratio < floor:
+            violators.append(
+                f'{phase}: co-tenant delivered {ratio:.2f} of expected, '
+                f'below {floor:.2f} ((1 - loss {loss:.3f}) x K={k}); '
+                f'p95 one-way latency {d["p95_latency_s"]:.3f} s')
+    assert evaluated > 0, (
+        'No evaluable phases — the co-tenant trace is empty, which is a '
+        'harness failure rather than a healthy link.')
+    assert not violators, (
+        'The bridge starved a co-tenant on the shared path:\n'
+        + '\n'.join(violators))
 
 
 # -----------------------------------------------------------------------
