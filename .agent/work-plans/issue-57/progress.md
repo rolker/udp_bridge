@@ -121,3 +121,28 @@ in config, (3) re-run tests + re-derive thresholds with stated reasoning,
 ### Open questions
 - [ ] What is the observed `average_fragment_count` on the first post-fix run? Needed to confirm `T_fragment_floor = 400` is not too tight or too loose.
 - [ ] Does F (resend multiplier = 2×) survive the new fragmentation regime? At 0.5% loss across ~505 fragments, ~92% of messages need ≥ 1 resend; may exceed 2× and require re-derivation.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-22 21:40 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Plan**: `.agent/work-plans/issue-57/plan.md` at `a55692d`
+**PR**: PR-less (`--issue 57`, local worktree)
+**Verdict**: approve-with-suggestions
+
+Plan is well-targeted and technically grounded — verified every dependency
+exists: `average_fragment_count` is a real field (`TopicStatistics.msg:11`),
+`_wifi_rates_per_phase`/`read_topic_statistics_arrays` supply the reads, and
+`recvq_wedge_ceiling_bytes` exists. Deferring threshold finalization to a
+required experimental run is correct. One must-fix gap (the strict-xfail resend
+test) must be folded in before implementation; the rest are completeness
+refinements.
+
+### Findings
+- [ ] (must-fix) Plan is silent on `test_invariant_resend_amplification` being `@pytest.mark.xfail(strict=True)` — new fragmentation regime may flip it to XPASS (→ CI failure), and re-deriving F upward would mask the #52 residual the marker forbids loosening — `test_range_degradation.py:480-495`, `plan.md:46-52`
+- [ ] (must-fix) Stale-string cleanup undercounts locations: `~58 MB/s` is in README.md:141 AND test_subscriber_death.py:13; `~120%` is in README.md:60 AND run_scenario.py:670 — enumerate all in Files-to-Change — `plan.md:57-59,71,94`
+- [ ] (suggestion) `three_path.yaml:24-27,51-53` comment says the high packet size "is #57's concern, not this change" — becomes wrong once #57 changes it; replace it, don't just append — `plan.md:29-30`
+- [ ] (suggestion) Real saturating Bulk newly exercises X/R/Y/K/N invariants (only ever validated at ~0.5 kB/s) — add them to the explicit post-run re-examination set — `plan.md:46-52`
+- [ ] (suggestion) `test_invariant_bulk_wire_rate` reads connection-aggregate (`_wifi_rates_per_phase`), not per-topic Bulk; rename or source per-topic from topic_statistics — `plan.md:38-41`
+- [ ] (suggestion) `T_fragment_floor` 0.85 rationale ("header compression") is wrong for incompressible payload — fragments trend ≥480, not fewer; floor of 400 is safe regardless — `plan.md:33-36`
