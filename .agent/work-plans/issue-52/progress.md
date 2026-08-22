@@ -154,3 +154,42 @@ Note: an Integrated Review (PR #56 / Copilot) already exists with unaddressed fi
 - [x] (suggestion) co-tenant bench merges both visits of repeated phases (delivered/expected +=) and never asserts p95 latency — `udp_bridge/test/bench/test_range_degradation.py:546-551,587`
 - [x] (suggestion) headroom target on the congested branch can ratchet down within sustained congestion (bounded by floor) — `udp_bridge/src/connection.cpp:214-229` (deferred: the ratchet is real, but the fix — holding the congested cap at the headroom target instead of letting the multiplicative decrease push below it — changes the convergence of a live AIMD control loop. Existing unit tests pass unchanged, so the effect is only observable in the emergent bench behavior (co-tenant starvation margin, resend amplification), and the range_degradation bench that validates it is not runnable in this environment (`unshare -Urn`: Operation not permitted). Holding higher makes the bridge take up to its full designed share, which reduces the co-tenant invariant's margin — precisely what cannot be verified here. Bounded by the floor in the meantime; deferred to a dedicated change that can be bench-validated. Tracked in the Implementation entry below.)
 - [x] (suggestion) plan drift: plan item 7 mandates un-xfailing test_invariant_resend_amplification, kept xfail(strict) for the documented residual; "Stacking" open question obsolete post-rebase — `udp_bridge/.agent/work-plans/issue-52/plan.md:96-99,171`
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-22 18:31 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-52 at `1517514`
+**Addressed**: `Local Review (Pre-Push)`, 2026-08-22 18:10 +00:00, branch feature/issue-52 @ `f84bde1` (the latest review entry; it re-verified and revised the earlier Integrated Review, PR #56 @ `96d9d86`)
+**Commits**: `f8028e4` `22d6322` `28dd8bc` `8760b74` `f83d8d7` `07c8146` `5a0ce67` `5046468` `1517514`
+
+Addressed all 10 open findings of the source review entry: 3 must-fix + 6
+suggestions fixed, 1 suggestion consciously deferred with reason (below).
+One logical fix per commit; code fixes carry their own regression tests.
+
+### Actions
+- [x] (must-fix) example config integer `8192` → `8192.0` so the shipped `example_params.yaml` loads against the `double`-declared param — `udp_bridge/config/example_params.yaml:61` (`f8028e4`)
+- [x] (must-fix) negative admission floor now falls back to the default instead of clamping to 0 (which disabled the lockout floor); matches the `connection.h` contract; +`NegativeFloorFallsBackToDefault` test — `udp_bridge/src/connection.cpp` (`22d6322`)
+- [x] (must-fix) doc/comment staleness cluster synced to the goodput basis — `doc/resend_budget_design.md`, `include/udp_bridge/connection.h` (both sites), `include/udp_bridge/resend_constants.h`, `test/bench/README.md` (five→six invariants, `BENCH_COTENANT` marker, co-tenant K rows in the Values table) (`28dd8bc`)
+- [x] (suggestion) documented WHY congestion detection uses raw received (ratio cancels resend/duplicate inflation; goodput-swap would false-trigger) + `CongestionDetectionUsesRawReceivedNotGoodput` test — `udp_bridge/src/connection.cpp:195-197` (`8760b74`)
+- [x] (suggestion) resend-budget test now seeds goodput ≠ rate limit; +`TracksGoodputNotCap` guards against a regression to the cap-relative basis — `udp_bridge/test/test_resend_budget.cpp` (`f83d8d7`)
+- [x] (suggestion) resend budget basis clamped to the configured rate limit (a crafted-high remote goodput can no longer inflate the burst) + `BasisCappedByConfiguredLimit` test — `udp_bridge/src/connection.cpp:706` (`07c8146`)
+- [x] (suggestion) non-finite (NaN/Inf) remote feedback now counts as congestion (plain halving), instead of reading as clean and defeating the AIMD decrease; headroom target skipped when feedback is unusable; +`NanFeedbackTreatedAsCongestion` test — `udp_bridge/src/connection.cpp:195-229` (`5a0ce67`)
+- [x] (suggestion) co-tenant bench evaluates each phase window independently (no longer merges repeated visits) and now asserts a p95 one-way latency ceiling (`K_cotenant_p95_latency_s` = 5.0 s, documented, initial/refinable) alongside the delivery ratio — `udp_bridge/test/bench/test_range_degradation.py` (`5046468`)
+- [x] (suggestion) plan reconciled with the delivered branch: item 7 records the `xfail(strict=True)` was RETAINED for the #54 low-loss residual (F_resend_multiplier not loosened), and the "Stacking" open question marked resolved (rebased onto `jazzy`) — `udp_bridge/.agent/work-plans/issue-52/plan.md` (`1517514`)
+- [x] (suggestion — deferred) headroom target can ratchet below its own target under sustained congestion (bounded by floor) — `udp_bridge/src/connection.cpp:214-229` (deferred: the ratchet is real, but the fix changes the convergence of a live AIMD control loop; its only observable effect is emergent bench behavior — co-tenant starvation margin, resend amplification — and the `range_degradation` bench that would validate it is not runnable in this environment (`unshare -Urn`: Operation not permitted). Holding the cap at its designed share makes the bridge greedier, reducing the co-tenant invariant's margin, which cannot be verified here. Bounded by the floor meanwhile; deferred to a dedicated, bench-validated change.)
+
+### Verification
+- Built `udp_bridge` (`-DUDP_BRIDGE_BUILD_TESTING=ON`) — only pre-existing `-Wpedantic` flexible-array warnings.
+- `test_admission_control`: **14 tests, 0 failures** (+3 new: negative-floor, raw-received detection, NaN feedback).
+- `test_resend_budget`: **9 tests, 0 failures** (+2 new: tracks-goodput, basis-capped).
+- Full package suite ran green; the opt-in `range_degradation` invariants **skip** here (no `unshare -Urn`), as designed — the co-tenant p95 change and the deferred item #9 both need that bench for end-to-end confirmation.
+- pre-commit hooks ran on every commit (no `--no-verify`); bench Python is clean under ament_flake8 rules (≤99 cols, no E/F/W).
+
+### Next step
+Lifecycle: **Implementation → review-code** (re-review the fixes cold). The
+re-review should, if it can run the `range_degradation` bench in a
+namespace-capable environment: (a) confirm the new co-tenant p95 assertion
+passes with margin at the chosen 5.0 s ceiling, and (b) take up deferred
+finding #9 (headroom ratchet) with proper before/after bench numbers.
