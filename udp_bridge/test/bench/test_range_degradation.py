@@ -451,6 +451,21 @@ def _phase_loss_rates() -> dict[str, float]:
 PHASE_LOSS_RATE = _phase_loss_rates()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        'Known defect, rolker/udp_bridge#52: resend traffic reaches 3.1x the '
+        'message traffic at the critical phase (26.4 vs 8.5 kB/s on a 62.5 '
+        'kB/s link) because the #43 admission floor and the #44 resend budget '
+        'are both fractions of the CONFIGURED cap rather than of observed '
+        'throughput -- at critical the bridge believes it has 2291 kB/s and '
+        'authorizes 573 kB/s of resends on a 62.5 kB/s path. This invariant '
+        'only ever passed because impairment was a no-op before the '
+        'two-namespace fix. strict=True so it turns back into a failure the '
+        'moment #52 is addressed -- do NOT convert this to a loosened '
+        'F_resend_multiplier.'
+    ),
+)
 def test_invariant_resend_amplification(artifacts):
     """On the recovery leg, the ratio
     `resend.success_bytes_per_second / message.success_bytes_per_second`
