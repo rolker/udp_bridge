@@ -6,10 +6,10 @@
     # Name used when communicating with remotes. Should be unique in the network.
     # Defaults to the ROS 2 node name if not set.
     name: "shoreside_bridge"
-    
+
     # UDP port number used to listen for incoming data.
     port: 4200
-    
+
     # Maximum packet size to use when sending data (issue #58).
     #
     # Sized for a tunnelled link, not for the IPv4/UDP maximum. WireGuard
@@ -34,21 +34,21 @@
 
     remotes:
       robot_a: # Label for the remote (used in remotes_list)
-        # Name of the remote node as known by the remote itself. 
+        # Name of the remote node as known by the remote itself.
         # Defaults to the label (robot_a) if omitted.
-        name: "robot_a_bridge" 
-        
+        name: "robot_a_bridge"
+
         # List of named connections to this remote.
         connections_list: ["telemetry"]
-        
+
         connections:
           telemetry:
             # Host IP or hostname of the remote.
-            host: "192.168.1.101" 
-            
+            host: "192.168.1.101"
+
             # Port the remote is listening on.
             port: 4200
-            
+
             # Optional: Host/Port for the return connection (if different from detected source)
             # return_host: "192.168.1.100"
             # return_port: 4200
@@ -66,18 +66,18 @@
 
             # List of topics to forward over this connection.
             topics_list: ["/robot_a/odometry", "/robot_a/battery"]
-            
+
             topics:
               /robot_a/odometry:
                 # Source topic on this machine.
-                source: "/odometry" 
+                source: "/odometry"
                 # Destination topic on the remote machine.
                 destination: "/shoreside/robot_a/odometry"
                 # Target period (seconds) to limit update rate. 0.0 = forward all.
-                period: 0.0 
+                period: 0.0
                 # Queue size for the subscriber.
                 queue_size: 10
-              
+
               /robot_a/battery:
                 source: "/battery_state"
                 destination: "/shoreside/robot_a/battery_state"

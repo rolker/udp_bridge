@@ -38,11 +38,11 @@ class RemoteNode;
 
 /// The top level class containing all the functionality of the udp_bridge_node.
 /// Once the constructor has read initial parameters and created the network socket,
-/// the \ref spin method then sets up the services and reads the initial remote 
-/// connections and topics from the parameter server before going into a loop to read 
+/// the \ref spin method then sets up the services and reads the initial remote
+/// connections and topics from the parameter server before going into a loop to read
 /// incoming UDP packets and decode them.
 ///
-/// Meanwhile, the \ref callback method handles sending ROS messages from locally 
+/// Meanwhile, the \ref callback method handles sending ROS messages from locally
 /// subscribed topics to remote nodes.
 ///
 /// Additional timer callbacks are used to locally publish and send to remotes
@@ -68,9 +68,9 @@ public:
 
   /// Listens in a loop for incoming UDP packets and decodes them.
   /// The decode(std::vector<uint8_t> const &message, const SourceInfo& source_info) is
-  /// called when a packet is received. 
+  /// called when a packet is received.
   void spin_once();
-    
+
 private:
   /// Sets the node name as seen by other udp_bridge nodes
   /// Warns if truncated to size specified in packet header.
@@ -86,7 +86,7 @@ private:
   /// @param message packet data as vector of bytes
   /// @param source_info info about the packet sender
   ///
-  /// The main packet sorting method. More specific packet decoding routines get 
+  /// The main packet sorting method. More specific packet decoding routines get
   /// selected based on Packet::type.
   void decode(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
@@ -104,7 +104,7 @@ private:
     serializer.deserialize_message(&serialized_message, &deserialized_message);
     return deserialized_message;
   }
-    
+
   /// Decodes data from a remote subscription received over the UDP link.
   /// @param message bytes representing a serialized MessageInternal message
   /// @param source_info info about the packet sender
@@ -123,7 +123,7 @@ private:
   /// dead-but-matched subscriber; first-arrival rmw discovery) stalls only
   /// the worker, never the socket-drain thread.
   void publishItem(PublishItem&& item);
-    
+
   /// Decodes topic info from remote.
   void decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
