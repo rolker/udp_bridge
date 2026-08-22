@@ -65,7 +65,7 @@
             # the control tier and the BridgeInfo feedback loop alive. Was a
             # fraction of the rate limit under #43, which floored six times
             # above capacity on a degraded link.
-            admission_floor_bytes_per_second: 8192
+            admission_floor_bytes_per_second: 8192.0
 
             # Fraction of measured goodput deliberately left unused, so a
             # co-tenant on the same path (an SSH session, operator management
