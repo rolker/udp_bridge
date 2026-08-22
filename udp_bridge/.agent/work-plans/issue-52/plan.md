@@ -85,8 +85,15 @@ second job as the system's model of link capacity.
 5. **Subtract duplicates from the delivery signal.** `received_bytes_per_second`
    counts resends and duplicates, so it overstates goodput exactly when
    amplification is worst. `duplicate_bytes_per_second` is already reported per
-   connection; use `received - duplicate` as the goodput estimate for both the
-   congestion test and step 3.
+   connection; use `received - duplicate` as the goodput estimate.
+   *(As delivered: goodput drives the DECREASE TARGET and the resend budget
+   (step 3/step 4), but NOT the congestion test. Detection deliberately keeps
+   the raw received-vs-sent ratio — both sides include resends, so the
+   inflation cancels; substituting goodput on the left while `sent` still
+   counts our resends would make a healthy link that merely duplicates/reorders
+   read as congested and throttle itself for no loss. Round-1 `review-code`
+   rebutted the goodput-swap for detection on exactly these grounds; pinned by
+   `CongestionDetectionUsesRawReceivedNotGoodput`.)*
 6. **New bench invariant — management-flow survivability.** A low-rate
    co-tenant flow on the veth, sized like an interactive SSH session, asserted
    to keep flowing with bounded added latency through every phase of the
