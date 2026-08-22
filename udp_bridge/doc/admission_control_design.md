@@ -36,29 +36,42 @@ static cap:
   directly measures forward-path delivery — the chronic 08-04 failure was
   boat→op WiFi at 95% loss *while the return path stayed healthy*
   (17:31 EDT), which an inbound-only signal cannot see.
+- **Goodput, not received bytes** (issue #52): the signal is the remote's
+  `received_bytes_per_second` **minus** its `duplicate_bytes_per_second`.
+  The raw received figure counts resends and duplicates, so it flatters
+  the link exactly when amplification is worst.
 - **Decrease**: when reported delivery < (1 − `kAdmissionLossThreshold`,
   i.e. 90%) of sent, or when this connection's own feedback is stale
-  (nothing received for `kAckStarvationThreshold`), the effective cap is
-  multiplied by `kAdmissionDecreaseFactor` (0.5), floored at
-  `admission_floor_fraction` (default 0.1) of the configured limit — the
+  (nothing received for `kAckStarvationThreshold`), the effective cap
+  drops to the **lower** of a `kAdmissionDecreaseFactor` (0.5)
+  multiplicative step and the **headroom target**
+  `(1 − link_headroom_fraction) × goodput` (default headroom 0.2),
+  floored at `admission_floor_bytes_per_second` (default 8192) — the
   floor keeps control/telemetry topics and the feedback loop itself
-  flowing.
+  flowing, and is clamped at use to the configured limit so it can never
+  raise a cap.
+
+  The headroom target applies **only** on this branch. Measured goodput
+  is bounded above by offered load, so it is a *lower bound* on capacity
+  and never an estimate of it; clamping to it on the clean branch too
+  would ratchet a healthy, lightly-loaded link down to nothing. Stale
+  feedback carries no usable goodput reading — that is what stale means
+  — so it falls back to the multiplicative step alone.
 - **Increase**: on clean feedback, recover by
-  `kAdmissionAdditiveStepFraction` (0.1) of the configured limit per
-  sample, ceilinged at the configured limit (~9 s from floor to full at
-  1 Hz BridgeInfo).
+  `kAdmissionAdditiveStepFraction` (0.1) of the **current effective cap**,
+  with an absolute minimum of
+  `kAdmissionAdditiveStepMinimumBytesPerSecond` (2048) so escaping the
+  floor is not asymptotically slow. Ceilinged at the configured limit.
 - **Idle links** (sent rate 0) cannot be congested and recover normally;
   the `last_receive_time == 0.0` never-received sentinel is *not* stale
   feedback — new connections start at the full cap.
 
 ## Interactions
 
-- **Resend budget (#44) bases on the effective cap**: the budget is
-  `resend_budget_fraction × effective_rate_limit`, not the configured
-  limit — when admission backs off, resends shrink proportionally, else a
-  25%-of-configured budget could consume the *entire* reduced admission
-  and starve fresh data. With no AIMD activity the two caps are equal, so
-  #44 behavior is unchanged (its tests still pass unmodified).
+- **Resend budget (#44) bases on measured goodput** (changed by #52): the
+  budget is `resend_budget_fraction × goodput`. It used to be a fraction
+  of the effective cap, which inherited every scaling error in that cap —
+  see `doc/resend_budget_design.md`.
 - **`setRateLimit()` follows or clamps, never resets**: with no
   accumulated backoff (effective at the old limit, including a
   freshly-constructed connection) the effective cap follows the new
@@ -72,6 +85,53 @@ static cap:
   priority is [#19](https://github.com/rolker/udp_bridge/issues/19);
   per-topic delivery classes are the
   [#36](https://github.com/rolker/udp_bridge/issues/36) umbrella.
+
+## Why the original scaling failed (issue #52)
+
+Every quantity above was originally a fraction of `data_rate_limit_` —
+the configured `maximum_bytes_per_second`. That is a declaration of
+intent, not a measurement, and under range degradation it is the least
+reliable number in the system. The 2026-08-22 bench run (the #18 harness,
+once [PR #27](https://github.com/rolker/udp_bridge/pull/27) made its
+`tc netem` impairment actually apply) measured, per trajectory phase, on
+a connection configured at 4 MB/s:
+
+| phase | real link | effective cap | msg | resend | resend/msg |
+|---|---|---|---|---|---|
+| in_range_clean | 3750 kB/s | 3346 | 7.7 | 0.3 | 0.04 |
+| lossy | 375 | 2480 | 8.5 | 13.9 | 1.64 |
+| critical | 62.5 | **2291** | 8.5 | 26.4 | **3.11** |
+
+The controller never converged. Its additive step was
+`0.1 × 4 MB/s = 400 kB/s` — six times the entire `critical` link — so one
+clean feedback sample undid three halvings and the cap oscillated around
+2291 kB/s, never even reaching its own 400 kB/s floor. The bridge
+retransmitted three times more than it ever originally sent, took 61% of
+a 62.5 kB/s path with 22% of that being useful payload, and reported
+`dropped = 0` and `failed = 0` throughout.
+
+The lesson generalises beyond this file: **a controller whose step sizes
+are scaled by a configured constant cannot converge on a physical
+quantity that constant does not describe.**
+
+## Headroom, and what the rate limit is actually for
+
+`maximum_bytes_per_second` was added after a udp_bridge saturating a link
+locked an operator out of a remote machine with no other way in. The
+measurements above show a ceiling in absolute bytes does not provide that
+protection where it counts: the cap was 64× above real capacity at
+`critical` and the bridge still saturated the path. A degraded link is a
+saturated link, and that is exactly the condition a lockout happens in.
+
+Hence `link_headroom_fraction`: the controller targets a fraction of what
+the link is *measured* to deliver, so a co-tenant — an SSH session, the
+operator's own management traffic — keeps a share on a 62.5 kB/s path as
+well as on a 30 Mbit one. The bench asserts this directly; see the
+management-flow survivability invariant in `test/bench/`.
+
+The rate limit is **not** obsolete. It remains a hard ceiling and the
+cost control on metered cell links. What it is no longer asked to be is
+the system's model of link capacity.
 
 ## Scope boundaries and signal caveats (stated honestly)
 
