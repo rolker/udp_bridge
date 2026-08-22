@@ -241,6 +241,31 @@ TEST_F(ResendBudget, TracksGoodputNotCap)
     << "Resend budget tracked the configured cap, not goodput (#52).";
 }
 
+TEST_F(ResendBudget, BasisCappedByConfiguredLimit)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+
+  // A remote reporting goodput far above the connection's own configured
+  // rate limit must not inflate the authorized resend burst: the basis is
+  // clamped to data_rate_limit_ (#52), so the budget stays at the
+  // cap-derived kFullBudget rather than 0.25 * bogus goodput.
+  constexpr float kInflatedGoodput = 10.0f * kRateLimitBytesPerSec;
+  std::vector<uint64_t> missing;
+  auto conn = make_seeded_connection(t0, &missing, kInflatedGoodput);
+  conn->update_last_receive_time(t0.seconds(), 100, false);  // no backoff
+
+  conn->resend_packets(missing, send_sock_.get(), t0);
+
+  auto rates = conn->data_sent_rate(t0, udp_bridge::PacketSendCategory::resend);
+
+  EXPECT_LE(rates.success_bytes_per_second, kFullBudget)
+    << "A crafted-high goodput report inflated the resend budget — the "
+       "basis must be clamped to the configured rate limit (#52).";
+  EXPECT_GE(rates.success_bytes_per_second, 0.9 * kFullBudget)
+    << "Budget far below the clamped ceiling — over-throttling.";
+}
+
 TEST_F(ResendBudget, OneBackoffStep)
 {
   rclcpp::Clock clock(RCL_STEADY_TIME);

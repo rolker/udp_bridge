@@ -716,7 +716,16 @@ void Connection::resend_packets(const std::vector<uint64_t> &missing_packets, in
     // Before the first feedback sample goodput is 0.0; the probe
     // guarantee below still admits one packet per window, so a brand-new
     // connection can bootstrap.
-    basis = static_cast<uint32_t>(goodput_bytes_per_second_);
+    //
+    // Sanity ceiling: goodput is a remote-reported figure, so clamp it to
+    // the connection's own configured rate limit before sizing the budget
+    // (#52). A crafted or glitched remote reporting an absurd delivery
+    // rate must not be able to authorize a resend burst larger than the
+    // operator-declared send budget for the link. (can_send in send()
+    // bounds the total further, but the resend budget should not itself
+    // be inflatable by the peer.)
+    basis = static_cast<uint32_t>(
+      std::min(goodput_bytes_per_second_, static_cast<float>(data_rate_limit_)));
     fraction = resend_budget_fraction_;
   }
   uint32_t backoff_shift = 0;
