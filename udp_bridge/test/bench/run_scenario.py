@@ -848,10 +848,19 @@ def main(argv: list[str] | None = None) -> None:
             # Pass condition for the orchestrator alone is "the run
             # completed and produced artifacts". Invariants are
             # evaluated by test_range_degradation.py.
+            # `all`, not `any`: range_degradation is documented and
+            # configured as a full three-tier run, so a Bulk or Telemetry
+            # process that died leaves the invariant tests reasoning about a
+            # tier that never flowed. Report which tier was empty rather than
+            # exiting 1 silently.
+            empty = [t for t, c in result['sub_counts'].items() if c <= 0]
+            if empty:
+                print(f'BENCH_ERROR_EMPTY_TIERS={",".join(sorted(empty))}',
+                      file=sys.stderr)
             ok = (
                 result['bag_dir'].exists()
                 and result['phase_log'].exists()
-                and any(c > 0 for c in result['sub_counts'].values())
+                and not empty
             )
             # Preserve artifacts regardless of pass/fail — the
             # downstream test needs them.
