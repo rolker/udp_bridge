@@ -67,6 +67,13 @@ THRESHOLDS = {
     # bridge is taking the link. 0.5 means "a co-tenant gets at least half
     # of what the physical path would give it on its own".
     'K_cotenant_delivery_pct': 0.50,
+    # Co-tenant p95 one-way latency ceiling per phase (seconds, issue
+    # #52). A flow that is queued but still trickling out can satisfy the
+    # delivery ratio while being useless for interactive management
+    # traffic — this catches that. Loud on real starvation, generous on
+    # ordinary queueing; an initial value to be refined as field/bench
+    # co-tenant traces accumulate (see README "Refinement plan").
+    'K_cotenant_p95_latency_s': 5.0,
 }
 
 # Topic-list confinement: which connections each forwarded topic is allowed
@@ -516,12 +523,18 @@ def test_invariant_resend_amplification(artifacts):
 # Invariant 4b: a co-tenant management flow survives every phase (#52).
 # -----------------------------------------------------------------------
 
-def _cotenant_delivery_per_phase(artifacts) -> dict:
-    """(delivered, expected, p95_latency_s) per phase for the co-tenant flow.
+def _cotenant_delivery_per_window(artifacts) -> list:
+    """Per-phase-WINDOW (delivered, expected, p95_latency_s) for the
+    co-tenant flow.
 
-    `expected` is derived from the send cadence and the phase's duration
-    rather than from a sender-side count, so a sender that itself got
-    starved cannot flatter the ratio.
+    Each phase window is returned independently rather than merged by
+    phase name. The trajectory visits several phases twice (e.g.
+    `critical` on the outbound leg and again on the return), and merging
+    both visits would let a healthy recovery leg dilute starvation on the
+    outbound leg — the test could then claim to check every phase while a
+    real outbound lockout passed. `expected` is derived from the send
+    cadence and the window duration rather than from a sender-side count,
+    so a sender that itself got starved cannot flatter the ratio.
     """
     import csv as _csv
     rows = []
@@ -536,18 +549,20 @@ def _cotenant_delivery_per_phase(artifacts) -> dict:
     windows = _phase_windows(phase_log)
     walk_start = phase_log['walk_start_unix']
 
-    out: dict = {}
-    for phase_name, t_start, t_end in windows:
+    out: list = []
+    for occurrence, (phase_name, t_start, t_end) in enumerate(windows):
         a, b = walk_start + t_start, walk_start + t_end
         in_win = [(sent, recv) for sent, recv in rows if a <= sent < b]
         expected = max(1.0, (b - a) * COTENANT_RATE_HZ)
         lat = sorted(recv - sent for sent, recv in in_win)
         p95 = lat[int(0.95 * (len(lat) - 1))] if lat else float('inf')
-        cur = out.setdefault(phase_name, {'delivered': 0, 'expected': 0.0,
-                                          'p95_latency_s': 0.0})
-        cur['delivered'] += len(in_win)
-        cur['expected'] += expected
-        cur['p95_latency_s'] = max(cur['p95_latency_s'], p95)
+        out.append({
+            'phase': phase_name,
+            'occurrence': occurrence,
+            'delivered': len(in_win),
+            'expected': expected,
+            'p95_latency_s': p95,
+        })
     return out
 
 
@@ -568,23 +583,37 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
 
     `over_horizon` is excluded: the path applies 100% loss, so nothing
     survives it and the bridge is not the reason.
+
+    Every phase window is evaluated independently (repeated phases are not
+    merged), on two properties: delivery ratio and p95 one-way latency. A
+    flow that is queued but still trickling out can pass the delivery
+    ratio while being useless for interactive management traffic, so the
+    latency ceiling is asserted too, not merely reported.
     """
-    per_phase = _cotenant_delivery_per_phase(artifacts)
+    per_window = _cotenant_delivery_per_window(artifacts)
     k = THRESHOLDS['K_cotenant_delivery_pct']
+    p95_ceiling = THRESHOLDS['K_cotenant_p95_latency_s']
     violators = []
     evaluated = 0
-    for phase, d in per_phase.items():
-        loss = PHASE_LOSS_RATE.get(phase)
+    for w in per_window:
+        loss = PHASE_LOSS_RATE.get(w['phase'])
         if loss is None or loss == 1.0:
             continue
         evaluated += 1
-        ratio = d['delivered'] / d['expected'] if d['expected'] else 0.0
+        ratio = w['delivered'] / w['expected'] if w['expected'] else 0.0
         floor = (1.0 - loss) * k
+        label = f'{w["phase"]}#{w["occurrence"]}'
         if ratio < floor:
             violators.append(
-                f'{phase}: co-tenant delivered {ratio:.2f} of expected, '
+                f'{label}: co-tenant delivered {ratio:.2f} of expected, '
                 f'below {floor:.2f} ((1 - loss {loss:.3f}) x K={k}); '
-                f'p95 one-way latency {d["p95_latency_s"]:.3f} s')
+                f'p95 one-way latency {w["p95_latency_s"]:.3f} s')
+        elif w['p95_latency_s'] > p95_ceiling:
+            violators.append(
+                f'{label}: co-tenant p95 one-way latency '
+                f'{w["p95_latency_s"]:.3f} s exceeds {p95_ceiling:.1f} s '
+                f'(delivered {ratio:.2f} of expected — queued but too slow '
+                f'to be useful for interactive management traffic)')
     assert evaluated > 0, (
         'No evaluable phases — the co-tenant trace is empty, which is a '
         'harness failure rather than a healthy link.')
