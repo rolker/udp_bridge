@@ -191,17 +191,35 @@ def test_invariant_recv_q_no_sustained_climb(artifacts):
     """Recv-Q on the operator UDP socket must not monotonically increase
     for more than N seconds in any single phase, including the
     over-horizon → recovery edge."""
+    # Rows with an empty `recv_q_bytes` mean the tracer had not (or never)
+    # found the operator's UDP socket -- they carry no queue information.
+    # They must NOT be folded in as q=0: a synthetic zero both invents a
+    # healthy reading and breaks any real climb run in two, so a tracer that
+    # never bound the socket would make this invariant pass vacuously. Count
+    # them instead, and fail (not skip) when the trace has rows but none are
+    # usable -- that is a harness failure, and a harness whose job is catching
+    # silent failures must not have one of its own. Mirrors the guard in
+    # test_subscriber_death.py::_recvq_post_stall.
     rows = []
+    total_rows = 0
     with artifacts.recvq_csv.open() as f:
         for r in csv.DictReader(f):
+            total_rows += 1
             try:
+                if not r['recv_q_bytes']:
+                    continue
                 t = float(r['t_seconds_since_start'])
-                q = int(r['recv_q_bytes']) if r['recv_q_bytes'] else 0
+                q = int(r['recv_q_bytes'])
                 rows.append((t, q))
             except (ValueError, KeyError):
                 continue
-    if not rows:
+    if total_rows == 0:
         pytest.skip('No Recv-Q samples recorded; nothing to assert.')
+    assert rows, (
+        f'Recv-Q trace has {total_rows} rows but none carry a recv_q_bytes '
+        'value -- recv_q_trace.py never found the operator UDP socket. '
+        'This is a harness failure, not a healthy queue.'
+    )
 
     n_limit = THRESHOLDS['N_recv_q_climb_s']
     climb_start_t: float | None = None
