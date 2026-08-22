@@ -316,7 +316,39 @@ private:
   // are read-only afterward — no synchronization needed.
   int socket_;
   uint16_t port_ {4200};
-  int max_packet_size_ {65500};
+
+  // Default sized for the links this bridge actually runs over, not for
+  // the IPv4/UDP maximum (issue #58). Everything here is tunnelled:
+  // WireGuard over Starlink or cellular. The cell tunnel runs MTU 1280,
+  // leaving 1280 - 20 (IPv4) - 8 (UDP) = 1252 bytes of usable payload;
+  // 1200 fits with headroom for any additional encapsulation, and is the
+  // same conservative figure QUIC uses for the same reason.
+  //
+  // The previous 65500 default was not merely oversized, it was
+  // counterproductive: the kernel IP-fragments such a datagram into ~45
+  // pieces, and IP fragments are NOT individually recoverable, so
+  // udp_bridge's own resend machinery cannot repair one. Losing any single
+  // IP fragment discards the whole datagram — on a lossy radio link, most
+  // of them. Letting the bridge fragment at 1200 is strictly better than
+  // letting IP fragment at 65500. See the MTU black-hole diagnosis in
+  // unh_echoboats_project11 (bizzyboat_deployment_log.md) and the sizing
+  // decision in that repo's issue #389.
+  //
+  // Raise this only for a path whose end-to-end MTU has been verified.
+  //
+  // The static_assert is the enforcement: a comment alone would not survive
+  // someone raising the constant back toward the UDP maximum.
+  static constexpr int kTunnelMtuBytes = 1280;   // cellular WireGuard path
+  static constexpr int kIpUdpHeaderBytes = 28;   // 20 (IPv4) + 8 (UDP)
+  static constexpr int kDefaultMaxPacketSize = 1200;
+  static_assert(
+    kDefaultMaxPacketSize <= kTunnelMtuBytes - kIpUdpHeaderBytes,
+    "Default maximum_packet_size must fit inside the cellular WireGuard "
+    "tunnel's MTU without IP fragmentation (issue #58). IP fragments are not "
+    "individually recoverable by the resend machinery, so one lost fragment "
+    "discards the whole datagram. If a deployment has a verified larger "
+    "end-to-end MTU, raise it in that deployment's config -- not here.");
+  int max_packet_size_ {kDefaultMaxPacketSize};
 
   // Protocol counters — incremented from multiple callback groups via
   // send<>(), so atomic is required. fetch_add(1) gives a unique value
