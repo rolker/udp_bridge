@@ -107,14 +107,16 @@ float Connection::resendBudgetFraction() const
 
 void Connection::setAdmissionFloorBytesPerSecond(float bytes_per_second)
 {
-  // Same clamp semantics as setResendBudgetFraction: degrade a bad
-  // value to the nearest sane bound; NaN falls back to the default.
+  // NaN and negative values fall back to the default (the contract in
+  // connection.h). A negative floor must NOT be silently clamped to 0:
+  // 0 disables the lockout floor entirely, removing the control-tier /
+  // feedback-loop protection the floor exists to guarantee — a
+  // misconfiguration should degrade to the safe default, not to "off".
   // No upper clamp here — the floor is bounded by the configured rate
   // limit where it is applied, so a connection whose limit is later
   // raised does not carry a silently truncated floor.
-  if(std::isnan(bytes_per_second))
+  if(std::isnan(bytes_per_second) || bytes_per_second < 0.0f)
     bytes_per_second = kDefaultAdmissionFloorBytesPerSecond;
-  bytes_per_second = std::max(0.0f, bytes_per_second);
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   admission_floor_bytes_per_second_ = bytes_per_second;
 }

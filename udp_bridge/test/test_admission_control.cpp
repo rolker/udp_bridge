@@ -21,6 +21,8 @@
 //                                 independent of the configured limit (#52).
 //   FloorNeverExceedsConfiguredLimit — a floor above a connection's own
 //                                 limit yields the limit, not a raise (#52).
+//   NegativeFloorFallsBackToDefault — a negative/NaN floor falls back to
+//                                 the default, never clamps to 0 (#52).
 //   CeilingClamp                — recovery never exceeds the configured
 //                                 limit.
 //   FeedbackStaleBackoff        — stale last_receive_time is congestion
@@ -45,6 +47,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -286,6 +289,25 @@ TEST_F(AdmissionControl, FloorNeverExceedsConfiguredLimit)
   EXPECT_EQ(conn->effectiveRateLimit(), small_limit)
     << "A floor above the connection's own limit must yield the limit — "
        "the floor is a lower bound on backoff, never a way to raise the cap.";
+}
+
+TEST_F(AdmissionControl, NegativeFloorFallsBackToDefault)
+{
+  // Contract (connection.h): negative and NaN floors fall back to the
+  // default. A negative value must NOT clamp to 0 — that would disable
+  // the lockout floor and remove the control/feedback protection.
+  auto conn = make_connection();
+  conn->setAdmissionFloorBytesPerSecond(-1.0f);
+  EXPECT_EQ(conn->admissionFloorBytesPerSecond(),
+            udp_bridge::kDefaultAdmissionFloorBytesPerSecond)
+    << "A negative admission floor must fall back to the default, not "
+       "clamp to 0 (which disables the floor).";
+
+  conn->setAdmissionFloorBytesPerSecond(
+    std::numeric_limits<float>::quiet_NaN());
+  EXPECT_EQ(conn->admissionFloorBytesPerSecond(),
+            udp_bridge::kDefaultAdmissionFloorBytesPerSecond)
+    << "A NaN admission floor must fall back to the default.";
 }
 
 TEST_F(AdmissionControl, CeilingClamp)
