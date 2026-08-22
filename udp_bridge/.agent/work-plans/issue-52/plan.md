@@ -93,10 +93,18 @@ second job as the system's model of link capacity.
    trajectory including `critical` and both `over_horizon` edges. This is the
    acceptance criterion for relaxing the cap operationally, and it is only
    testable because of PR #27's two-namespace fix.
-7. **Un-xfail `test_invariant_resend_amplification`** and remove the
-   `xfail(strict=True)` marker added in PR #27. `F_resend_multiplier` is not to
-   be loosened; if the invariant cannot pass on its own terms, that is a
-   finding, not a threshold to retune.
+7. **`test_invariant_resend_amplification`.** *(As delivered: the
+   `xfail(strict=True)` marker was RETAINED, not removed.)* The plan
+   assumed the goodput rescaling would let this invariant pass outright.
+   It fixed the dominant cause — resend traffic down 24-29x and the worst
+   phase (`critical`) now passes with margin (resend/msg 3.108 → 0.144
+   against the 0.200 ceiling) — but two low-loss phases remain just over
+   (fringe 0.018 vs 0.010, lossy 0.077 vs 0.060). ~34% of the residual is
+   duplicates, which points at spurious re-requests (debounce/reorder
+   interaction), a different mechanism from the cap-scaling defect #52
+   documents; it is split to #54. `F_resend_multiplier` was NOT loosened
+   (the plan's principle holds), and `strict=True` keeps the marker so the
+   invariant flips to a failure the moment the residual is closed.
 8. **Update both design notes** to describe measured-throughput scaling and to
    record why configured-cap scaling failed, with the bench numbers.
 
@@ -168,8 +176,9 @@ second job as the system's model of link capacity.
 
 ## Open Questions
 
-- **Stacking.** This branch is stacked on `feature/issue-18` (PR #27), which is
-  unmerged. If #27 merges first, rebase onto `jazzy` before opening the PR.
+- **Stacking.** *(Resolved.)* PR #27 (`feature/issue-18`) merged first, so
+  this branch was rebased onto `jazzy` — it is no longer stacked. Its merge
+  commit is in this branch's history and `jazzy` is an ancestor of HEAD.
 - **Boat/operator config values** — whether the shipped defaults suit the real
   links, or the boat wants explicit floor/headroom values, is a question for
   the water, not for this PR.
