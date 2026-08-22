@@ -27,6 +27,12 @@ class BenchPublisher(Node):
     def __init__(self, topic: str, msg_type: str, rate_hz: float, payload_bytes: int):
         super().__init__('bench_pub')
         self._payload_bytes = payload_bytes
+        # Allocated once, reused every tick. At the Bulk tier's 10 Hz x 480 KB
+        # a fresh buffer per publish is ~4.6 MB/s of allocator churn inside the
+        # publisher we are using to measure the link -- the harness would be
+        # perturbing its own measurement. Safe to share: bytes is immutable and
+        # the message is serialized on publish.
+        self._payload_buf = bytes(payload_bytes)
         self._count = 0
         if msg_type == 'std_msgs/String':
             self._pub = self.create_publisher(String, topic, 10)
@@ -63,7 +69,7 @@ class BenchPublisher(Node):
         m.width = self._payload_bytes
         m.encoding = 'mono8'
         m.step = self._payload_bytes
-        m.data = bytes(self._payload_bytes)
+        m.data = self._payload_buf
         return m
 
 
