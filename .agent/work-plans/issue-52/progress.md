@@ -293,11 +293,11 @@ re-verified against the working tree rather than trusted by label — 4 of the 9
 "current" threads are in fact already fixed.
 
 ### Findings
-- [ ] (must-fix, Copilot) **A negative received/duplicate pair passes validation and slams the cap to the floor** — `src/connection.cpp:225-231`. `feedback_unusable` rejects non-finite values and `duplicate > received`, but not negative rates: with `received = -100, duplicate = -200`, `duplicate > received` is **false** (-200 > -100), so the sample is accepted. **Copilot's stated consequence is wrong** — it claims goodput inflates above received; the downstream `std::clamp(raw, 0, max(0, received))` catches that and yields 0 (verified numerically). The real harm is different and worse: the sample is never marked unusable, so `congested` is true (a negative received is below any threshold), the headroom target becomes `0.8 x 0 = 0`, and `effective = max(floor, min(halving, 0))` = **the floor, in a single sample**. That is precisely the pathology the received- and duplicate-channel guards were added to prevent, re-entered a third way — and reachable by any peer over an unauthenticated transport (#53). Fix: add `remote_received_bps < 0.0f || remote_duplicate_bps < 0.0f` to `feedback_unusable`; negative rates are nonsensical and should fall back to the plain halving.
-- [ ] (valid, Copilot) **Stale basis in the starvation-floor comment** — `include/udp_bridge/resend_constants.h:110` still reads "~1.6% of the rate limit at the default fraction"; the basis moved to measured goodput. Notable as a **partially-fixed cluster**: the Round-2 `Local Review` cited `resend_constants.h:83-99` and the fix addressed exactly those lines, leaving line 110 stale. Same failure mode as the `.agents/README.md` drop earlier in this PR — a cluster fixed to the letter of its line citation rather than its intent.
-- [ ] (valid, Copilot) **`link_headroom_fraction` has no test at a non-default or boundary value** — `src/connection.cpp:139`. No test calls `setLinkHeadroomFraction` at all (grepped), so the clamp to `[0.0, 0.99]`, the NaN fallback, and the effect of a non-default headroom on the congested-branch target are unexercised. `DecreaseTargetsHeadroomOfGoodput` only covers the default.
-- [ ] (valid, Copilot) **Plan contradicts the delivered congestion-detection behaviour** — `.agent/work-plans/issue-52/plan.md:89` still says to use `received - duplicate` "for **both the congestion test** and step 3". The implementation deliberately uses the raw received rate for detection, and Round-1 `review-code` explicitly rebutted the goodput-swap as one that would false-trigger. The plan must record the delivered decision.
-- [ ] (valid, Copilot) **PR description test count is wrong** — the body still claims `range_degradation`: "8 pass, 1 xfail". The scenario now has 10 tests (6 single-path + 4 multi-link) and the recorded run is **9 pass + 1 xfail**. Host error, flagged twice now and still uncorrected.
+- [x] (must-fix, Copilot) **A negative received/duplicate pair passes validation and slams the cap to the floor** — `src/connection.cpp:225-231`. `feedback_unusable` rejects non-finite values and `duplicate > received`, but not negative rates: with `received = -100, duplicate = -200`, `duplicate > received` is **false** (-200 > -100), so the sample is accepted. **Copilot's stated consequence is wrong** — it claims goodput inflates above received; the downstream `std::clamp(raw, 0, max(0, received))` catches that and yields 0 (verified numerically). The real harm is different and worse: the sample is never marked unusable, so `congested` is true (a negative received is below any threshold), the headroom target becomes `0.8 x 0 = 0`, and `effective = max(floor, min(halving, 0))` = **the floor, in a single sample**. That is precisely the pathology the received- and duplicate-channel guards were added to prevent, re-entered a third way — and reachable by any peer over an unauthenticated transport (#53). Fix: add `remote_received_bps < 0.0f || remote_duplicate_bps < 0.0f` to `feedback_unusable`; negative rates are nonsensical and should fall back to the plain halving.
+- [x] (valid, Copilot) **Stale basis in the starvation-floor comment** — `include/udp_bridge/resend_constants.h:110` still reads "~1.6% of the rate limit at the default fraction"; the basis moved to measured goodput. Notable as a **partially-fixed cluster**: the Round-2 `Local Review` cited `resend_constants.h:83-99` and the fix addressed exactly those lines, leaving line 110 stale. Same failure mode as the `.agents/README.md` drop earlier in this PR — a cluster fixed to the letter of its line citation rather than its intent.
+- [x] (valid, Copilot) **`link_headroom_fraction` has no test at a non-default or boundary value** — `src/connection.cpp:139`. No test calls `setLinkHeadroomFraction` at all (grepped), so the clamp to `[0.0, 0.99]`, the NaN fallback, and the effect of a non-default headroom on the congested-branch target are unexercised. `DecreaseTargetsHeadroomOfGoodput` only covers the default.
+- [x] (valid, Copilot) **Plan contradicts the delivered congestion-detection behaviour** — `.agent/work-plans/issue-52/plan.md:89` still says to use `received - duplicate` "for **both the congestion test** and step 3". The implementation deliberately uses the raw received rate for detection, and Round-1 `review-code` explicitly rebutted the goodput-swap as one that would false-trigger. The plan must record the delivered decision.
+- [x] (valid, Copilot) **PR description test count is wrong** — the body still claims `range_degradation`: "8 pass, 1 xfail". The scenario now has 10 tests (6 single-path + 4 multi-link) and the recorded run is **9 pass + 1 xfail**. Host error, flagged twice now and still uncorrected. (deferred: not a code defect and not actionable in this sub-agent shell — the PR #56 body is host-owned and `gh` is unauthenticated here (no push/credentials per the handoff contract). Verified against the tree: 10 tests = 6 single-path (incl. the 1 `xfail` `test_invariant_resend_amplification`) + 4 `test_multilink_*`, so the run is **9 pass + 1 xfail**. Host action: edit PR #56's description "8 pass, 1 xfail" → "9 pass, 1 xfail".)
 
 ### False positives
 - (Copilot) `doc/resend_budget_design.md:44` "Fraction of the cap" section still cap-relative — **already fixed**; that section no longer exists (grepped, no match).
@@ -306,3 +306,40 @@ re-verified against the working tree rather than trusted by label — 4 of the 9
 - (Copilot) `test_resend_budget.cpp:123` fixture sets goodput == rate limit so no test detects a regression to the cap basis — the fixture equality is **deliberate** (it preserves the pre-#52 arithmetic for the other cases), and the underlying concern is **addressed** by the dedicated `TracksGoodputNotCap` test added at line 212, which seeds goodput != cap specifically to catch that regression.
 - (Copilot, OUTDATED) plan.md xfail item, `.agents/README.md:92` parameter table — both fixed in the Round-2 fix pass.
 - (Copilot, OUTDATED) congestion predicate should use goodput — **deliberately rejected**, not missed. `sent_bps` aggregates all categories including resends, so the raw received/sent ratio is a true link-delivery measure and duplicate inflation cancels on both sides; swapping in goodput would declare congestion on a lossless link with heavy resending, and the error is self-reinforcing. Pinned by `CongestionDetectionUsesRawReceivedNotGoodput`.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-22 20:51 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-52 at `484fd74` (PR #56)
+**Addressed**: `Integrated Review`, 2026-08-22 16:29 -04:00, PR #56 @ `3056a49` (the latest review entry)
+**Commits**: `396bc74` `4ac4646` `403a433` `484fd74`
+
+Addressed all 5 open findings of the source review entry: 1 must-fix + 4
+valid suggestions. 4 fixed (one logical fix per commit; the code fix carries
+its own regression test), 1 consciously deferred with reason (a host-owned
+PR-body correction not actionable in this shell).
+
+### Actions
+- [x] (must-fix) negative delivery feedback now rejected as unusable: `feedback_unusable` also rejects `remote_received_bps < 0` / `remote_duplicate_bps < 0`, so a negative pair (which slips past finite + duplicate>received yet reads as congested with a 0 headroom target) falls back to the plain halving instead of slamming the cap to the floor; +`NegativeRatesTreatedAsCongestion` — `udp_bridge/src/connection.cpp:225-231`, `udp_bridge/test/test_admission_control.cpp` (`396bc74`)
+- [x] (valid) starvation-floor comment corrected from "~1.6% of the rate limit" to "~1.6% of measured goodput" (the Round-2 fix updated the cited 83-99 lines but left line 110 on the old basis) — `udp_bridge/include/udp_bridge/resend_constants.h:110` (`4ac4646`)
+- [x] (valid) `link_headroom_fraction` now exercised at non-default and boundary values: `HeadroomFractionAffectsDecreaseTarget` (0.5 moves the congested-branch target off the default) + `HeadroomFractionClampedToContract` (1.0/>1 → 0.99, negative → 0, NaN → default) — `udp_bridge/test/test_admission_control.cpp` (`403a433`)
+- [x] (valid) plan reconciled with the delivered congestion-detection basis: step 5 now records that goodput drives only the decrease target and resend budget, while detection deliberately keeps the raw received-vs-sent ratio (Round-1 `review-code` rebuttal, pinned by `CongestionDetectionUsesRawReceivedNotGoodput`) — `udp_bridge/.agent/work-plans/issue-52/plan.md:85-97` (`484fd74`)
+- [x] (valid — deferred) PR #56 description test count "8 pass, 1 xfail" is wrong — `range_degradation` has 10 tests (6 single-path incl. 1 `xfail` + 4 `test_multilink_*`), so the run is **9 pass + 1 xfail** (deferred: not a code defect; the PR body is host-owned and `gh` is unauthenticated in this sub-agent shell — no push/credentials per the handoff contract. Host action: edit PR #56's body "8 pass, 1 xfail" → "9 pass, 1 xfail").
+
+### Verification
+- Rebuilt `udp_bridge` (`-DUDP_BRIDGE_BUILD_TESTING=ON`) — only pre-existing `-Wpedantic` flexible-array warnings.
+- `test_admission_control`: **20 tests, 0 failures** (+3 new: negative-rates, headroom-affects-target, headroom-clamp).
+- `test_resend_budget`: **9 tests, 0 failures** (comment-only change to `resend_constants.h`).
+- pre-commit hooks ran on every commit (no `--no-verify`). The opt-in `range_degradation` bench still cannot run here (`unshare -Urn` unavailable), unchanged from prior rounds.
+
+### Next step
+Lifecycle: **Implementation → review-code** (re-review the fixes cold). Dispatch a
+fresh-context sub-agent:
+
+    .agent/scripts/dispatch_subagent.sh --mode in-process --issue 52 --skill review-code
+
+The re-review should confirm the negative-feedback guard holds and the new
+headroom tests genuinely pin the clamp/NaN/non-default-target behavior. The
+one deferred item is a host-side PR-body edit, not code.
