@@ -257,3 +257,19 @@ part 1 could not do, and the threshold work that depends on it.
 
 ### Next step
 Lifecycle: **Implementation → review-code** (pre-push). Nothing pushed; no PR.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-22 23:28 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-57 at `db937b2`
+**Mode**: pre-push
+**Depth**: Deep (reason: test_range_degradation.py +277/-6 ≥200 lines; project plan.md override-trigger)
+**Must-fix**: 1 | **Suggestions**: 1
+**Round**: 1 | **Ship**: continue — one mechanical README metric/denominator fix, then shippable; no correctness/design concern
+
+### Findings
+- [ ] (must-fix) README invariant #11 / W_wire_pct row / refinement item 6 describe `send.success_bytes_per_second` × the 4 MB/s WiFi budget, but code asserts offered (success+dropped) × 4.8 MB/s BULK_NOMINAL_BPS — `udp_bridge/test/bench/README.md:129,191,224` (code at `test_range_degradation.py:947`)
+- [ ] (suggestion) Dead constant `WIFI_BUDGET_BPS = 4_000_000.0`, never referenced — `udp_bridge/test/bench/test_range_degradation.py:61`
