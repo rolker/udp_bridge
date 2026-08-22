@@ -60,11 +60,17 @@ THRESHOLDS = {
     # the field wedge backed up ~361 KB toward the ~426 KB SO_RCVBUF. 100 KB
     # cleanly separates a healthy drain from a wedging one, above any normal
     # transient.
-    # TODO(#57 part 2): re-derive from the host bench run. This ceiling was set
-    # against single-packet Bulk (~5 kB/s); #57 now streams real fragmented
-    # Bulk (~4.8 MB/s), so a healthy drain edge may sit higher and the ceiling
-    # may need to move. Do NOT re-derive from container data -- range/death
-    # scenarios need unshare -Urn, unavailable here.
+    # RE-DERIVED (host run, 2026-08-22, #57 part 2) -- kept at 100 KB.
+    # The concern was that this ceiling was set against single-packet Bulk
+    # (~5 kB/s), so a healthy drain edge under #57's real fragmented Bulk
+    # (~4.8 MB/s) might sit higher. It does not: with the Bulk consumer frozen
+    # for 8 s under that load, the post-stall operator Recv-Q peaked at
+    # 14,976 B -- 6.7x under the ceiling, and still far under both the ~361 KB
+    # field wedge and the ~426 KB SO_RCVBUF the value was derived from. The
+    # drain keeps up even when the tier is genuinely saturating the link, so
+    # the healthy/wedging separation this ceiling draws is unchanged.
+    # (This is also the first non-trivial drain edge the harness has produced;
+    # see README "Refinement plan" item 1 on N_recv_q_climb_s.)
     'recvq_wedge_ceiling_bytes': 100_000,
     # Surviving tiers must keep delivering after the stall at >= this fraction
     # of their pre-stall rate. Observed ~1.0 (no head-of-line impact); 0.5

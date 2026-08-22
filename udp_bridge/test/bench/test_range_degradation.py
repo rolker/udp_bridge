@@ -837,10 +837,17 @@ def test_invariant_stats_publish_rates(artifacts):
 # harness to that unrepresentative regime.
 # -----------------------------------------------------------------------
 
-def _bulk_stats_per_phase(artifacts) -> dict[str, dict[str, float]]:
+def _bulk_stats_per_phase(artifacts) -> tuple[dict[str, dict[str, float]],
+                                              int]:
     """Per-phase Bulk (`/boat/bulk/image`) averages from the boat send-side
     `topic_statistics`: `average_fragment_count` and
     `send.success_bytes_per_second`, aggregated by phase name across repeats.
+
+    Returns `(per_phase, total_messages)`. The second value distinguishes
+    "no topic_statistics were captured at all" -- nothing to assert on, a
+    legitimate skip -- from "they were captured but yielded no usable Bulk
+    sample", which is a stats-capture collapse the callers must fail on. Same
+    fail-not-skip convention as the Recv-Q guard above.
     """
     bag_reader = _import_bag_reader()
     arrays = bag_reader.read_topic_statistics_arrays(
@@ -886,7 +893,31 @@ def _bulk_stats_per_phase(artifacts) -> dict[str, dict[str, float]]:
             'offered_bps': sum(d['offered']) / len(d['offered']),
             'samples': len(d['frag']),
         }
-    return out
+    return out, len(arrays)
+
+
+def _require_clean_phase_stats(per_phase: dict, total_msgs: int) -> dict:
+    """The `in_range_clean` Bulk stats both #57 invariants assert on.
+
+    Skips only when no `topic_statistics` were captured at all -- there is
+    genuinely nothing to assert. Once messages exist, the absence of a usable
+    Bulk sample is a stats-capture collapse (the topic vanished, every sample
+    landed in the empty-connection bucket, or the phase window missed them),
+    so it FAILS. Skipping there would let the #57 regression guard evaporate
+    silently, which is the exact failure mode this harness exists to catch --
+    same convention as the Recv-Q guard in `test_invariant_no_recv_q_wedge`.
+    """
+    if total_msgs == 0:
+        pytest.skip(
+            'No topic_statistics messages recorded; nothing to assert.')
+    stats = per_phase.get('in_range_clean')
+    assert stats is not None and stats['samples'] > 0, (
+        f'{total_msgs} topic_statistics messages were recorded, but none '
+        f'carry a usable {BULK_TOPIC} sample on a real connection bucket in '
+        f'an in_range_clean phase (phases seen: '
+        f'{sorted(per_phase) or "none"}). That is a stats-capture failure, '
+        'not a healthy bridge -- the #57 Bulk invariants cannot be evaluated.')
+    return stats
 
 
 def test_invariant_fragmentation_exercised(artifacts):
@@ -901,11 +932,8 @@ def test_invariant_fragmentation_exercised(artifacts):
     in-range phase (the most fully-delivered window). The pre-#57
     single-packet bug would drive this to ~1 and fail here.
     """
-    per_phase = _bulk_stats_per_phase(artifacts)
-    stats = per_phase.get('in_range_clean')
-    if stats is None or stats['samples'] == 0:
-        pytest.skip(
-            'No Bulk topic_statistics samples in an in_range_clean phase.')
+    per_phase, total_msgs = _bulk_stats_per_phase(artifacts)
+    stats = _require_clean_phase_stats(per_phase, total_msgs)
     floor = THRESHOLDS['T_fragment_floor']
     avg_frag = stats['avg_fragment_count']
     assert avg_frag >= floor, (
@@ -936,11 +964,8 @@ def test_invariant_bulk_wire_rate(artifacts):
     Sourced per-topic from topic_statistics, and only from a real connection
     bucket (see `_bulk_stats_per_phase`).
     """
-    per_phase = _bulk_stats_per_phase(artifacts)
-    stats = per_phase.get('in_range_clean')
-    if stats is None or stats['samples'] == 0:
-        pytest.skip(
-            'No Bulk topic_statistics samples in an in_range_clean phase.')
+    per_phase, total_msgs = _bulk_stats_per_phase(artifacts)
+    stats = _require_clean_phase_stats(per_phase, total_msgs)
     floor = THRESHOLDS['W_wire_pct'] * BULK_NOMINAL_BPS
     offered_bps = stats['offered_bps']
     assert offered_bps >= floor, (
