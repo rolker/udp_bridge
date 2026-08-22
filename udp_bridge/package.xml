@@ -25,6 +25,19 @@
   <test_depend>iproute2</test_depend>
   <test_depend>util-linux</test_depend>
 
+  <!-- Opt-in bench scenarios (issue #18, UDP_BRIDGE_BENCH_SCENARIOS=1) only.
+       run_scenario.py shells out to `ros2 bag record` (ros2bag), and
+       bag_reader.py reads the result through rosbag2_py, deserializing with
+       rclpy.serialization + rosidl_runtime_py.utilities.get_message. Jazzy
+       records mcap by default, so the mcap storage plugin is needed to read
+       back what we just recorded. Undeclared, these fail only on a clean
+       install, which is exactly where a test dependency has to be right. -->
+  <test_depend>ros2bag</test_depend>
+  <test_depend>rosbag2_py</test_depend>
+  <test_depend>rosbag2_transport</test_depend>
+  <test_depend>rosbag2_storage_mcap</test_depend>
+  <test_depend>rosidl_runtime_py</test_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
     <rosdoc2>rosdoc2.yaml</rosdoc2>
