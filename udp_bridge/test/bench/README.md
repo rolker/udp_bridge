@@ -5,6 +5,28 @@ of `udp_bridge` (resend amp, wedge, stats stall, rate-limit overshoot)
 off the boat. See [issue #18](https://github.com/rolker/udp_bridge/issues/18)
 for the design contract.
 
+## Topology
+
+Two network namespaces — **operator** (the orchestrator's own, from the
+`unshare -Urn` re-exec) and **boat** (a nested one, held open by a keeper
+process and addressed by PID via `nsenter -t <pid> -n`) — joined by three
+veth pairs standing in for WiFi, Cell, and Starlink.
+
+The namespace split is load-bearing, not tidiness. With both ends of a veth
+pair addressed in one namespace the kernel installs a `local` route for each
+address and delivers between them over `lo`: nothing egresses the veth, so
+the `netem` qdisc attached to it is never traversed and **every impairment is
+silently a no-op**. That was the state of this harness until 2026-08-22 —
+a 100%-loss qdisc dropped nothing and the device's TX counter stayed at zero.
+Anyone tempted to collapse this back to a single namespace should reproduce
+that first.
+
+`netem` shapes egress only, so each path's profile is applied to **both**
+ends: boat→operator carries the bulk/telemetry flow, operator→boat carries
+resend and subscribe requests, and a real radio link degrades both. Note the
+consequence when reading thresholds — `delay_ms` in the profiles is a one-way
+delay, so a round trip costs `2 × delay_ms`.
+
 ## Prerequisites
 
 Ubuntu 24.04+ kernels default `apparmor_restrict_unprivileged_userns`
@@ -54,9 +76,9 @@ trajectory (in_range_clean → fringe → lossy → critical → over_horizon
 A `ros2 bag record` captures `/operator_bridge/bridge_info` and
 `/operator_bridge/topic_statistics` (plus the operator-side mirrors
 of the boat-side equivalents); `recv_q_trace.py` writes a CSV of the
-operator UDP socket's Recv-Q over the run; per-bridge stderr is tee'd
-so the test can scan for ERROR-severity lines during the over-horizon
-window. The orchestrator emits marker lines so the test can find each
+operator UDP socket's Recv-Q over the run; per-bridge stderr is captured
+to a log file (not tee'd to the terminal) so the test can scan for
+ERROR-severity lines during the over-horizon window. The orchestrator emits marker lines so the test can find each
 artifact:
 
 ```
@@ -182,8 +204,11 @@ Each refinement lands as its own commit alongside the assertion change that cons
 
 ## Continuous integration
 
-There is no CI workflow in this repo that runs these tests. The protection is
-structural, so they're safe to run (or skip) anywhere:
+`.github/workflows/ci.yml` runs `colcon build` + `colcon test` for this
+package on every push and PR to `jazzy` (container `ros:jazzy-ros-core`,
+linter-labelled tests excluded pending
+[#40](https://github.com/rolker/udp_bridge/issues/40)). The bench tests are
+safe under it because the protection is structural:
 
 - The **smoke** test runs under `colcon test` and `@pytest.mark.skipif`-skips
   when `unshare -Urn` is unavailable (e.g. a hardened host or a CI runner
@@ -192,9 +217,8 @@ structural, so they're safe to run (or skip) anywhere:
   `UDP_BRIDGE_BENCH_SCENARIOS=1` (they take tens of seconds to minutes), and
   `subscriber_death` also skips without `rmw_zenoh_cpp`.
 
-So a future `ubuntu-latest` job that ran `colcon test` here would execute the
-smoke test where namespaces are permitted and skip it cleanly where they
-aren't; the opt-in scenarios stay off unless explicitly enabled. If unprivileged
-userns is disabled on the runner, set
-`kernel.apparmor_restrict_unprivileged_userns=0` (see Prerequisites) to enable
-the smoke path.
+So the CI job executes the smoke test where namespaces are permitted and skips
+it cleanly where they aren't; the opt-in scenarios stay off unless explicitly
+enabled, and CI never runs them. If unprivileged userns is disabled on the
+runner, set `kernel.apparmor_restrict_unprivileged_userns=0` (see
+Prerequisites) to enable the smoke path.

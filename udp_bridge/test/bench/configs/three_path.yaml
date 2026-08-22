@@ -1,9 +1,12 @@
 # Three-path topology config for the bench.
 #
-# Topology: single Linux user+net namespace, three veth pairs simulating
-# WiFi (high-bandwidth ranged), Cell (low-bandwidth always-on), and
-# Starlink (medium-bandwidth always-on). Operator-side ends on 10.0.X0.1,
-# boat-side ends on 10.0.X0.2.
+# Topology: two Linux network namespaces (operator + boat) inside one
+# unprivileged user namespace, joined by three veth pairs simulating WiFi
+# (high-bandwidth ranged), Cell (low-bandwidth always-on), and Starlink
+# (medium-bandwidth always-on). Operator-side ends on 10.0.X0.1, boat-side
+# ends on 10.0.X0.2. The namespace split is load-bearing: with both ends in
+# one namespace the kernel routes between them over `lo` and the netem
+# qdiscs are never traversed.
 #
 # Tier replication (pre-#19, via topics_list duplication on multiple
 # connections):

@@ -166,49 +166,124 @@ def _debug() -> bool:
     return os.environ.get(_DEBUG_ENV, '') not in ('', '0')
 
 
-def _run(cmd: list[str], check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+# PID of the keeper process holding the boat-side network namespace open.
+# The orchestrator's own netns (from the `unshare -Urn` re-exec) is the
+# OPERATOR side; the boat side is a nested namespace created at setup.
+#
+# Why two namespaces and not one: with both ends of a veth pair addressed in
+# a single namespace, the kernel installs a `local` route for each address and
+# delivers between them over `lo` -- the packets never egress the veth, so the
+# `tc netem` qdisc attached to it is never traversed and every impairment is
+# silently a no-op. Verified directly: a 100%-loss qdisc on a same-namespace
+# pair drops nothing and the device's TX counter stays at zero. Splitting the
+# ends across namespaces is what makes the shaping real. Do NOT "simplify"
+# this back into one namespace.
+_BOAT_NS_PID: int | None = None
+
+# Namespace selectors accepted by the launch/_run helpers. None (the default)
+# means "this process's namespace", i.e. the operator side.
+BOAT_NS = 'boat'
+
+
+def _ns_prefix(netns: str | None) -> list[str]:
+    """Command prefix that runs `cmd` inside `netns`."""
+    if netns is None:
+        return []
+    if netns != BOAT_NS:
+        raise ValueError(f'unknown namespace selector: {netns!r}')
+    if _BOAT_NS_PID is None:
+        raise RuntimeError('boat namespace not created; call setup_topology() first')
+    return ['nsenter', '-t', str(_BOAT_NS_PID), '-n']
+
+
+def _run(cmd: list[str], check: bool = True, netns: str | None = None,
+         **kwargs) -> subprocess.CompletedProcess:
+    cmd = _ns_prefix(netns) + cmd
     if _debug():
         print(f'[bench] $ {" ".join(cmd)}', file=sys.stderr)
     return subprocess.run(cmd, check=check, **kwargs)
 
 
+def setup_boat_namespace() -> None:
+    """Create the boat-side network namespace and hold it open.
+
+    `unshare -Urn` already gave this process CAP_NET_ADMIN/CAP_SYS_ADMIN in
+    its own user namespace, so a nested `unshare -n` needs no extra privilege.
+    A keeper process is the namespace handle -- we address it by PID via
+    `nsenter -t <pid> -n` rather than `ip netns add`, which would need a
+    writable /run/netns and therefore a private mount namespace too.
+    """
+    global _BOAT_NS_PID
+    if _BOAT_NS_PID is not None:
+        return
+    keeper = _spawn(
+        ['unshare', '-n', 'sleep', 'infinity'],
+        env=os.environ.copy(),
+        name='boat-netns-keeper',
+        stderr=subprocess.DEVNULL if not _debug() else None,
+    )
+    # Wait for the namespace to exist before anyone tries to enter it.
+    ns_link = Path('/proc') / str(keeper.proc.pid) / 'ns' / 'net'
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if ns_link.exists() and keeper.proc.poll() is None:
+            break
+        time.sleep(0.05)
+    else:
+        raise RuntimeError('boat namespace keeper did not come up')
+    if keeper.proc.poll() is not None:
+        raise RuntimeError('boat namespace keeper exited immediately')
+    _BOAT_NS_PID = keeper.proc.pid
+
+
 def setup_namespace() -> None:
-    """Bring `lo` up — required for DDS loopback discovery."""
+    """Bring `lo` up in both namespaces — required for DDS discovery."""
     _run(['ip', 'link', 'set', 'lo', 'up'])
+    _run(['ip', 'link', 'set', 'lo', 'up'], netns=BOAT_NS)
 
 
 def setup_veth_pair(name: str, op_ip: str, bb_ip: str) -> None:
-    """Create a veth pair, address both endpoints, bring them up."""
+    """Create a veth pair with one end in each namespace, address both ends."""
     op_dev = f'{name}_o'
     bb_dev = f'{name}_b'
     _run(['ip', 'link', 'add', op_dev, 'type', 'veth', 'peer', 'name', bb_dev])
+    # Move the boat end across before addressing it: an address configured
+    # here would be dropped by the namespace move.
+    _run(['ip', 'link', 'set', bb_dev, 'netns', str(_BOAT_NS_PID)])
     _run(['ip', 'addr', 'add', f'{op_ip}/24', 'dev', op_dev])
-    _run(['ip', 'addr', 'add', f'{bb_ip}/24', 'dev', bb_dev])
     _run(['ip', 'link', 'set', op_dev, 'up'])
-    _run(['ip', 'link', 'set', bb_dev, 'up'])
+    _run(['ip', 'addr', 'add', f'{bb_ip}/24', 'dev', bb_dev], netns=BOAT_NS)
+    _run(['ip', 'link', 'set', bb_dev, 'up'], netns=BOAT_NS)
 
 
 def apply_impairment(name: str, rate: str, loss: str,
                      delay_ms: int = 0, jitter_ms: int = 0) -> None:
-    """Set or replace the `netem` qdisc on the operator-end veth.
+    """Set or replace the `netem` qdisc on BOTH ends of a path.
 
-    Shaping one direction is sufficient for the failure modes we test;
-    each path has a single bottleneck in the real network too.
+    netem shapes egress only, so one qdisc impairs one direction. The
+    dominant bench flow is boat -> operator (the bulk/telemetry traffic),
+    while resend requests and subscribe requests run operator -> boat; a
+    radio link degrades both. Shaping each end's egress with the same
+    profile models that symmetrically.
+
+    Consequence worth remembering when reading thresholds: `delay_ms` is a
+    ONE-WAY delay, so a round trip now costs 2 x delay_ms.
     """
-    dev = f'{name}_o'
-    cmd = ['tc', 'qdisc', 'replace', 'dev', dev, 'root', 'netem']
-    if delay_ms > 0:
-        cmd.extend(['delay', f'{delay_ms}ms'])
-        if jitter_ms > 0:
-            cmd.append(f'{jitter_ms}ms')
-    if loss and loss not in ('0', '0%'):
-        cmd.extend(['loss', loss])
-    if rate:
-        cmd.extend(['rate', rate])
-    _run(cmd)
+    for dev, netns in ((f'{name}_o', None), (f'{name}_b', BOAT_NS)):
+        cmd = ['tc', 'qdisc', 'replace', 'dev', dev, 'root', 'netem']
+        if delay_ms > 0:
+            cmd.extend(['delay', f'{delay_ms}ms'])
+            if jitter_ms > 0:
+                cmd.append(f'{jitter_ms}ms')
+        if loss and loss not in ('0', '0%'):
+            cmd.extend(['loss', loss])
+        if rate:
+            cmd.extend(['rate', rate])
+        _run(cmd, netns=netns)
 
 
 def setup_topology() -> None:
+    setup_boat_namespace()
     setup_namespace()
     for name, op_ip, bb_ip in PATHS:
         setup_veth_pair(name, op_ip, bb_ip)
@@ -223,10 +298,14 @@ def _env_for(domain: int) -> dict[str, str]:
 
 
 def _spawn(cmd: list[str], env: dict, name: str,
-           stderr=None) -> _Child:
+           stderr=None, netns: str | None = None) -> _Child:
     """Popen helper that detaches the child into its own session/pgid
     so `os.killpg` can take down the whole subtree on cleanup.
+
+    `netns` selects the network namespace to run in; the `nsenter` wrapper
+    stays inside the new session, so the pgid still covers the whole subtree.
     """
+    cmd = _ns_prefix(netns) + cmd
     proc = subprocess.Popen(
         cmd, env=env, stderr=stderr, start_new_session=True, text=True,
     )
@@ -236,7 +315,8 @@ def _spawn(cmd: list[str], env: dict, name: str,
     return child
 
 
-def launch_bridge(node_name: str, params_file: Path, domain: int) -> _Child:
+def launch_bridge(node_name: str, params_file: Path, domain: int,
+                  netns: str | None = None) -> _Child:
     """Spawn a udp_bridge lifecycle node; transition to ACTIVATE."""
     env = _env_for(domain)
     stderr = None if _debug() else subprocess.DEVNULL
@@ -250,18 +330,23 @@ def launch_bridge(node_name: str, params_file: Path, domain: int) -> _Child:
         env=env,
         name=node_name,
         stderr=stderr,
+        netns=netns,
     )
     time.sleep(2)  # let the node register with DDS
     for transition in ('configure', 'activate'):
+        # The lifecycle client must speak to the node over the same
+        # namespace's loopback, so it runs in `netns` too.
         _run(
             ['ros2', 'lifecycle', 'set', f'/{node_name}', transition],
             env=env,
             stdout=subprocess.DEVNULL,
+            netns=netns,
         )
     return child
 
 
-def launch_pub(domain: int, tier: str, duration_s: float) -> _Child:
+def launch_pub(domain: int, tier: str, duration_s: float,
+               netns: str | None = None) -> _Child:
     env = _env_for(domain)
     script = Path(__file__).parent / 'pub.py'
     return _spawn(
@@ -270,6 +355,7 @@ def launch_pub(domain: int, tier: str, duration_s: float) -> _Child:
         env=env,
         name=f'pub-{tier}',
         stderr=subprocess.PIPE,
+        netns=netns,
     )
 
 
@@ -316,7 +402,7 @@ def launch_bag_record(domain: int, topics: list[str], bag_dir: Path) -> _Child:
 
 
 def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
-                         stderr_log: Path) -> _Child:
+                         stderr_log: Path, netns: str | None = None) -> _Child:
     """Like `launch_bridge` but captures the bridge's stderr to `stderr_log`.
 
     Phase 3 needs per-bridge stderr captured so we can check invariant
@@ -345,6 +431,7 @@ def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
         env=env,
         name=node_name,
         stderr=log_fp,
+        netns=netns,
     )
     log_fp.close()
     time.sleep(2)  # let the node register with DDS
@@ -353,6 +440,7 @@ def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
             ['ros2', 'lifecycle', 'set', f'/{node_name}', transition],
             env=env,
             stdout=subprocess.DEVNULL,
+            netns=netns,
         )
     return child
 
@@ -377,15 +465,19 @@ def zenoh_available() -> bool:
         return False
 
 
-def launch_zenoh_router() -> _Child:
+def launch_zenoh_router(netns: str | None = None) -> _Child:
     """Start the Zenoh router daemon. rmw_zenoh_cpp sessions need it for
-    discovery; all sessions in the namespace reach it on localhost:7447.
+    discovery; sessions reach it on their own namespace's localhost:7447.
+
+    Each network namespace needs its own router: the boat and operator
+    sides no longer share a loopback, so one router cannot serve both.
     """
     return _spawn(
         ['ros2', 'run', 'rmw_zenoh_cpp', 'rmw_zenohd'],
         env=os.environ.copy(),
-        name='zenohd',
+        name=f'zenohd-{netns or "operator"}',
         stderr=subprocess.DEVNULL if not _debug() else None,
+        netns=netns,
     )
 
 
@@ -423,7 +515,8 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
 
     operator_stderr = outdir / 'bridge_stderr_operator.log'
     boat_stderr = outdir / 'bridge_stderr_boat.log'
-    launch_bridge_logged('boat_bridge', config, BOAT_DOMAIN, boat_stderr)
+    launch_bridge_logged('boat_bridge', config, BOAT_DOMAIN, boat_stderr,
+                         netns=BOAT_NS)
     launch_bridge_logged('operator_bridge', config, OPERATOR_DOMAIN, operator_stderr)
     time.sleep(2)  # let the bridges handshake
 
@@ -442,7 +535,7 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     }
     time.sleep(0.5)
     pubs = {
-        tier: launch_pub(BOAT_DOMAIN, tier, pub_duration)
+        tier: launch_pub(BOAT_DOMAIN, tier, pub_duration, netns=BOAT_NS)
         for tier in TIER_DESTINATIONS
     }
 
@@ -505,7 +598,7 @@ def run_smoke(duration_s: float) -> dict:
     config = Path(__file__).parent / 'configs' / 'three_path.yaml'
     setup_topology()
 
-    launch_bridge('boat_bridge', config, BOAT_DOMAIN)
+    launch_bridge('boat_bridge', config, BOAT_DOMAIN, netns=BOAT_NS)
     launch_bridge('operator_bridge', config, OPERATOR_DOMAIN)
     time.sleep(2)  # let the bridges handshake
 
@@ -514,7 +607,7 @@ def run_smoke(duration_s: float) -> dict:
         'std_msgs/String', duration_s + 2,
     )
     time.sleep(0.5)  # let the subscriber's discovery catch up
-    pub = launch_pub(BOAT_DOMAIN, 'critical', duration_s)
+    pub = launch_pub(BOAT_DOMAIN, 'critical', duration_s, netns=BOAT_NS)
 
     pub.proc.wait(timeout=duration_s + 10)
     sub.proc.wait(timeout=duration_s + 15)
@@ -537,7 +630,7 @@ def run_full_mix(duration_s: float) -> dict:
     config = Path(__file__).parent / 'configs' / 'three_path.yaml'
     setup_topology()
 
-    launch_bridge('boat_bridge', config, BOAT_DOMAIN)
+    launch_bridge('boat_bridge', config, BOAT_DOMAIN, netns=BOAT_NS)
     launch_bridge('operator_bridge', config, OPERATOR_DOMAIN)
     time.sleep(2)  # let the bridges handshake
 
@@ -547,7 +640,7 @@ def run_full_mix(duration_s: float) -> dict:
     }
     time.sleep(0.5)  # let subscriber discovery catch up
     pubs = {
-        tier: launch_pub(BOAT_DOMAIN, tier, duration_s)
+        tier: launch_pub(BOAT_DOMAIN, tier, duration_s, netns=BOAT_NS)
         for tier in TIER_DESTINATIONS
     }
 
@@ -590,13 +683,17 @@ def run_subscriber_death(hold_s: float, outdir: Path) -> dict:
     config = Path(__file__).parent / 'configs' / 'three_path.yaml'
     setup_topology()
 
-    # Router first, before any session, so the bridges + pub/sub discover.
+    # Routers first, before any session, so the bridges + pub/sub discover.
+    # One per namespace: the boat and operator sides no longer share a
+    # loopback, so a single router cannot serve both.
     launch_zenoh_router()
-    time.sleep(3)  # let the router bind localhost:7447
+    launch_zenoh_router(netns=BOAT_NS)
+    time.sleep(3)  # let the routers bind their namespace's localhost:7447
 
     operator_stderr = outdir / 'bridge_stderr_operator.log'
     boat_stderr = outdir / 'bridge_stderr_boat.log'
-    launch_bridge_logged('boat_bridge', config, BOAT_DOMAIN, boat_stderr)
+    launch_bridge_logged('boat_bridge', config, BOAT_DOMAIN, boat_stderr,
+                         netns=BOAT_NS)
     launch_bridge_logged('operator_bridge', config, OPERATOR_DOMAIN, operator_stderr)
     time.sleep(2)  # let the bridges handshake
 
@@ -623,7 +720,7 @@ def run_subscriber_death(hold_s: float, outdir: Path) -> dict:
     }
     time.sleep(0.5)  # let subscriber discovery catch up
     pubs = {
-        tier: launch_pub(BOAT_DOMAIN, tier, run_s)
+        tier: launch_pub(BOAT_DOMAIN, tier, run_s, netns=BOAT_NS)
         for tier in TIER_DESTINATIONS
     }
 
