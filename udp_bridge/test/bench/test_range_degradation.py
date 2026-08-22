@@ -500,6 +500,17 @@ def _phase_loss_rates() -> dict[str, float]:
 PHASE_LOSS_RATE = _phase_loss_rates()
 
 
+# NOTE (#57): before #57 this ran in the zero-fragmentation regime -- Bulk
+# compressed to a single packet, so resend traffic was near-zero and this
+# xfail held trivially. With #57's incompressible payload + 1000-byte packets,
+# Bulk now fragments into ~480+ pieces at ~0.5% loss, so nearly every message
+# needs a resend and the resend/tx_ok ratio is exercised for real. That may
+# push a lossy phase's ratio the OTHER way and flip this strict xfail to XPASS
+# -- which, with strict=True, is a CI FAILURE. Do NOT pre-emptively remove the
+# marker or raise F_resend_multiplier to keep it xfailing: raising F would mask
+# the residual this marker exists to record. Whether the marker comes off is a
+# #54 question, decided from the host bench run's numbers -- see
+# .agent/work-plans/issue-57/plan.md, step 6.
 @pytest.mark.xfail(
     strict=True,
     reason=(
