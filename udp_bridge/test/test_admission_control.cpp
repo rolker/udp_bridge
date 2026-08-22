@@ -13,6 +13,9 @@
 //                                 not merely half of where it was (#52).
 //   DuplicatesExcludedFromGoodput — duplicate bytes are subtracted before
 //                                 the headroom target is computed (#52).
+//   CongestionDetectionUsesRawReceivedNotGoodput — the congested predicate
+//                                 compares raw received vs sent (both
+//                                 include resends), not goodput (#52).
 //   AdditiveRecoveryIsRelativeToEffectiveCap — a clean sample recovers a
 //                                 step relative to the CURRENT cap, never
 //                                 a fraction of the configured limit (#52).
@@ -206,6 +209,31 @@ TEST_F(AdmissionControl, DuplicatesExcludedFromGoodput)
   EXPECT_LT(churning->effectiveRateLimit(), clean->effectiveRateLimit())
     << "Duplicate bytes must be subtracted before the headroom target is "
        "computed — otherwise resend churn reads as healthy delivery.";
+}
+
+TEST_F(AdmissionControl, CongestionDetectionUsesRawReceivedNotGoodput)
+{
+  // A healthy link that delivers everything we sent but also reports a
+  // large duplicate rate (reordering / a resend that raced its original).
+  // Detection must compare RAW received against sent, so this reads as
+  // clean and the cap stays put. If detection used goodput (received −
+  // duplicates) while sent still included our resends, the ratio would
+  // read as congested and throttle a link that lost nothing (#52).
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);                   // sent ~80 kB/s
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  // received == sent (nothing lost), but 30 kB/s of it is duplicates, so
+  // goodput is only 50 kB/s — below the (1 - loss) x sent threshold.
+  conn->updateAdmissionControl(80000.0f, 30000.0f, t0);
+
+  EXPECT_EQ(conn->goodputBytesPerSecond(), 50000.0f);
+  EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
+    << "Congestion DETECTION must use raw received vs sent (both include "
+       "our resends, so the inflation cancels). A goodput-based predicate "
+       "would falsely throttle a lossless-but-duplicating link.";
 }
 
 TEST_F(AdmissionControl, AdditiveRecoveryIsRelativeToEffectiveCap)

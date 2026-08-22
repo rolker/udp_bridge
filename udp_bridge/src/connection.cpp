@@ -194,6 +194,17 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // not an exact loss measure — see the design note's caveats
   // (duplicate/resend inflation, differing smoothing windows,
   // propagation delay).
+  //
+  // DETECTION compares RAW received against sent, deliberately NOT
+  // goodput (#52). Both sides of the ratio are inflated by the same
+  // resends: sent_bps counts every byte we put on the wire (fresh +
+  // resend), and remote_received_bps counts every byte the remote saw
+  // (fresh + duplicate), so the inflation largely cancels in the ratio.
+  // Substituting goodput (received − duplicates) on the left while sent
+  // still includes our resends would make a healthy link that merely
+  // duplicates/reorders read as congested and throttle itself for no
+  // loss. Goodput is the right basis for the DECREASE TARGET below (how
+  // far to back off once congested), not for deciding WHETHER we are.
   const bool congested = sent_bps > 0.0f &&
     (feedback_stale ||
      remote_received_bps < (1.0f - kAdmissionLossThreshold) * sent_bps);
