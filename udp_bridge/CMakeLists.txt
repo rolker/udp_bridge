@@ -168,7 +168,39 @@ if(BUILD_TESTING)
   # gap-filler can be published first, instead of hard-dropping the late
   # arrival. Uses injected fake time (no real-time sleeps).
   add_udp_bridge_gtest(test_reorder_buffer test/test_reorder_buffer.cpp)
+
+  # Bench-harness smoke test (issue #18). Runs the orchestrator under
+  # an unprivileged user namespace; skips cleanly if unshare -Urn is
+  # unavailable on the host (see test/bench/README.md "Prerequisites").
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_bench_smoke
+    test/bench/test_smoke.py
+    TIMEOUT 180
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
+  # Bench-harness range-degradation scenario (issue #18). Skipped
+  # unless UDP_BRIDGE_BENCH_SCENARIOS=1 is set in the test
+  # environment; even when run it skips on hosts without `unshare
+  # -Urn`. Generous TIMEOUT because the run is ~9 × hold_s (default
+  # 10 s) plus setup/teardown.
+  ament_add_pytest_test(test_bench_range_degradation
+    test/bench/test_range_degradation.py
+    TIMEOUT 240
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
+  # Bench-harness stalled-subscriber (wedge) regression guard (issue #10
+  # / #18). Opt-in via UDP_BRIDGE_BENCH_SCENARIOS=1; also skips without
+  # `unshare -Urn` or rmw_zenoh_cpp (the scenario forces Zenoh). Asserts
+  # the operator drain stays healthy under a frozen consumer — see the
+  # test's module docstring for why this is a no-wedge guard rather than
+  # a red→green reproduction.
+  ament_add_pytest_test(test_bench_subscriber_death
+    test/bench/test_subscriber_death.py
+    TIMEOUT 180
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
 
 ament_package()
-

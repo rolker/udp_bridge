@@ -1,0 +1,108 @@
+# Three-path topology config for the bench.
+#
+# Topology: two Linux network namespaces (operator + boat) inside one
+# unprivileged user namespace, joined by three veth pairs simulating WiFi
+# (high-bandwidth ranged), Cell (low-bandwidth always-on), and Starlink
+# (medium-bandwidth always-on). Operator-side ends on 10.0.X0.1, boat-side
+# ends on 10.0.X0.2. The namespace split is load-bearing: with both ends in
+# one namespace the kernel routes between them over `lo` and the netem
+# qdiscs are never traversed.
+#
+# Tier replication (pre-#19, via topics_list duplication on multiple
+# connections):
+#   Critical    — WiFi + Cell + Starlink (1Hz, small payload)
+#   Telemetry   — WiFi + Starlink         (10Hz, medium payload)
+#   Bulk        — WiFi only               (saturating, large payload)
+#
+# Smoke scenario only exercises one Critical topic; the full mix is
+# loaded by Phase 2 of the bench-harness work.
+
+operator_bridge:
+  ros__parameters:
+    name: "operator"
+    port: 4200
+    maximum_packet_size: 65500
+    remotes_list: ["boat"]
+    remotes:
+      boat:
+        name: "boat"
+        connections_list: ["wifi", "cell", "starlink"]
+        connections:
+          wifi:
+            host: "10.0.10.2"
+            port: 4300
+            maximum_bytes_per_second: 4000000
+          cell:
+            host: "10.0.20.2"
+            port: 4300
+            maximum_bytes_per_second: 625000
+          starlink:
+            host: "10.0.30.2"
+            port: 4300
+            maximum_bytes_per_second: 1000000
+
+boat_bridge:
+  ros__parameters:
+    name: "boat"
+    port: 4300
+    maximum_packet_size: 65500
+    remotes_list: ["operator"]
+    remotes:
+      operator:
+        name: "operator"
+        connections_list: ["wifi", "cell", "starlink"]
+        connections:
+          wifi:
+            host: "10.0.10.1"
+            port: 4200
+            maximum_bytes_per_second: 4000000
+            topics_list:
+              - "/boat/critical/heartbeat"
+              - "/boat/telemetry/odom"
+              - "/boat/bulk/image"
+            topics:
+              /boat/critical/heartbeat:
+                source: "/boat/critical/heartbeat"
+                destination: "/operator/boat/critical/heartbeat"
+                period: 0.0
+                queue_size: 10
+              /boat/telemetry/odom:
+                source: "/boat/telemetry/odom"
+                destination: "/operator/boat/telemetry/odom"
+                period: 0.0
+                queue_size: 10
+              /boat/bulk/image:
+                source: "/boat/bulk/image"
+                destination: "/operator/boat/bulk/image"
+                period: 0.0
+                queue_size: 10
+          cell:
+            host: "10.0.20.1"
+            port: 4200
+            maximum_bytes_per_second: 625000
+            topics_list:
+              - "/boat/critical/heartbeat"
+            topics:
+              /boat/critical/heartbeat:
+                source: "/boat/critical/heartbeat"
+                destination: "/operator/boat/critical/heartbeat"
+                period: 0.0
+                queue_size: 10
+          starlink:
+            host: "10.0.30.1"
+            port: 4200
+            maximum_bytes_per_second: 1000000
+            topics_list:
+              - "/boat/critical/heartbeat"
+              - "/boat/telemetry/odom"
+            topics:
+              /boat/critical/heartbeat:
+                source: "/boat/critical/heartbeat"
+                destination: "/operator/boat/critical/heartbeat"
+                period: 0.0
+                queue_size: 10
+              /boat/telemetry/odom:
+                source: "/boat/telemetry/odom"
+                destination: "/operator/boat/telemetry/odom"
+                period: 0.0
+                queue_size: 10
