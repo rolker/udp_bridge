@@ -108,3 +108,16 @@ in config, (3) re-run tests + re-derive thresholds with stated reasoning,
 - [ ] Assert Acceptance criterion 2 (fragmentation + resend exercised) as a real harness assertion, not just a comment
 - [ ] Update the "~120% of WiFi rate budget" comment in `three_path.yaml` to reflect actual post-fix rate
 - [ ] Revisit #54 numbers once harness is representative; note updated values in PR description (separate issue if analysis warrants it)
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-22 00:00 +00:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-57/plan.md` at `a55692d`
+**Branch**: feature/issue-57 at `a55692d`
+**Phases**: single
+
+### Open questions
+- [ ] What is the observed `average_fragment_count` on the first post-fix run? Needed to confirm `T_fragment_floor = 400` is not too tight or too loose.
+- [ ] Does F (resend multiplier = 2×) survive the new fragmentation regime? At 0.5% loss across ~505 fragments, ~92% of messages need ≥ 1 resend; may exceed 2× and require re-derivation.
