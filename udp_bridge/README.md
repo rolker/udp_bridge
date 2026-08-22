@@ -78,6 +78,8 @@ ros2 run udp_bridge udp_bridge_node --ros-args --params-file src/udp_bridge/udp_
 -   `name`: (string) Name used when communicating with remotes. Should be unique. Defaults to the node's name.
 -   `port`: (integer) UDP port number used for listening for incoming data. Defaults to 4200.
 -   `maximum_packet_size`: (integer, 256–65500, default **1200**) Maximum packet size used when sending data. The default is sized for a tunnelled link rather than the IPv4/UDP maximum: WireGuard over cellular commonly runs MTU 1280, leaving 1252 bytes of usable UDP payload, and 1200 fits with headroom. Anything larger is IP-fragmented by the kernel before it reaches the link — and IP fragments are not individually recoverable, so udp_bridge's resend machinery cannot repair one: a single lost IP fragment discards the entire datagram. Let the bridge fragment instead. Raise this only for a path whose end-to-end MTU has been verified.
+
+    > **Behavior change (#58):** the unconfigured default dropped from `65500` to `1200`. This is strictly safer (avoids unrecoverable IP fragmentation) and affects only deployments that relied on the implicit default — every in-workspace deployment already sets this explicitly and is unaffected. Raise it back in your own config if you have a verified larger end-to-end MTU.
 -   `remotes_list`: (string array) List of labels for initial remote nodes.
 
 For each remote in `remotes_list`:
