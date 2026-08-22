@@ -57,10 +57,13 @@ machine does not false-fail. The full scenario (opt-in via
 
 `full-mix` actively generates the pinned three-tier mix
 (Critical 1 Hz × 64 B, Telemetry 10 Hz × ~720 B, Bulk 10 Hz × 480 KB)
-on a clean link. Bulk is sized at ~120% of the WiFi rate budget, so
-the bridge's rate limiter trims it even on a clean link — that's
-intentional (Phase 4 drop-by-tier invariant); Phase 2 only confirms
-each tier delivers something. To run:
+on a clean link. Bulk is sized at ~120% of the WiFi rate budget
+(10 Hz × 480 KB = 4.8 MB/s vs the 4 MB/s WiFi cap), so the bridge's
+rate limiter trims it even on a clean link — that's intentional
+(Phase 4 drop-by-tier invariant). Since #57 the payload is
+incompressible, so that ~120% is realized on the wire; before #57 the
+all-zeros payload compressed to a single packet and the limiter never
+engaged. Phase 2 only confirms each tier delivers something. To run:
 
 ```bash
 python3 udp_bridge/test/bench/run_scenario.py --scenario full-mix --duration-s 10

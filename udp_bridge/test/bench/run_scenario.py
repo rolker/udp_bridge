@@ -668,9 +668,12 @@ def run_full_mix(duration_s: float) -> dict:
 
     Spawns one publisher per tier on the boat side and one subscriber
     per destination topic on the operator side. Bulk is sized to ~120%
-    of the WiFi rate budget, so the bridge's rate limiter will trim it
-    even on a clean link — that's intentional (Phase 4 drop-by-tier
-    invariant), and Phase 2 just confirms each tier delivers something.
+    of the WiFi rate budget (10 Hz x 480 KB = 4.8 MB/s vs the 4 MB/s
+    cap), so the bridge's rate limiter will trim it even on a clean link
+    — that's intentional (Phase 4 drop-by-tier invariant), and Phase 2
+    just confirms each tier delivers something. Since #57 the payload is
+    incompressible so that ~120% is realized on the wire; before #57 it
+    compressed to a single packet and the limiter never engaged.
     """
     config = Path(__file__).parent / 'configs' / 'three_path.yaml'
     setup_topology()
