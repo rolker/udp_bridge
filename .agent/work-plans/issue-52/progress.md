@@ -257,3 +257,23 @@ The re-review should confirm the duplicate-channel guard + goodput clamp hold
 and, if it can run the `range_degradation` bench in a namespace-capable
 environment, take up deferred finding #5 (headroom ratchet) with before/after
 bench numbers.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-22 19:13 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-52 at `a677c42` (code at `f13fe59`)
+**Mode**: pre-push
+**Depth**: Deep (reason: rework of a live congestion/admission-control data plane; peer-controlled feedback input + concurrency + cross-cutting)
+**Must-fix**: 0 | **Suggestions**: 1
+**Round**: 3 | **Ship**: recommended — no must-fix; must-fix trend 3 → 2 → 0, all Round-2 fixes verified and pinned by passing tests
+
+Specialists: Static analysis — cppcheck (all findings on pre-existing untouched lines; none in changed admission/resend regions) + ament_flake8 (new `cotenant.py` clean; D-code docstring nits are style-only and not enforced — `.pre-commit-config.yaml` keeps black/flake8 off). Claude Adversarial — 2 passes (Lens A logic + Lens B systemic); both converged on "peer-input handling now sound and bounded", no new must-fix. Copilot — off (default). Local — skipped (`local_review.sh` is a workspace script, absent from this project repo).
+
+Verification: fresh build with `-DUDP_BRIDGE_BUILD_TESTING=ON` clean (only pre-existing `-Wpedantic`); `test_admission_control` 17/17 and `test_resend_budget` 9/9 pass locally. The `range_degradation` bench remains not runnable here (`unshare -Urn`: Operation not permitted, re-confirmed), so the deferred headroom-ratchet item and the co-tenant p95 assertion stay unverifiable end-to-end in this environment, as designed.
+
+### Findings
+- [ ] (suggestion) `link_headroom_fraction` documented range `0.0–1.0` disagrees with the setter clamp `[0.0, 0.99]` and the `connection.h` contract `[0, 1)`; a configured `1.0` is silently clamped to `0.99` — `udp_bridge/README.md:93` (align to `[0, 1)` or note the clamp)
+- [ ] (deferred, carried from Round 1) headroom target ratchets geometrically to the floor under sustained congestion rather than converging to `(1−h)·goodput` — `udp_bridge/src/connection.cpp:245-253` (fix changes convergence of a live AIMD loop; only observable via the bench, which is not runnable here — bounded by the floor meanwhile; deferred to a dedicated bench-validated change)
