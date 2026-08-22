@@ -272,4 +272,4 @@ Lifecycle: **Implementation → review-code** (pre-push). Nothing pushed; no PR.
 
 ### Findings
 - [x] (must-fix) README invariant #11 / W_wire_pct row / refinement item 6 describe `send.success_bytes_per_second` × the 4 MB/s WiFi budget, but code asserts offered (success+dropped) × 4.8 MB/s BULK_NOMINAL_BPS — `udp_bridge/test/bench/README.md:129,191,224` (code at `test_range_degradation.py:947`)
-- [ ] (suggestion) Dead constant `WIFI_BUDGET_BPS = 4_000_000.0`, never referenced — `udp_bridge/test/bench/test_range_degradation.py:61`
+- [x] (suggestion) Dead constant `WIFI_BUDGET_BPS = 4_000_000.0`, never referenced — `udp_bridge/test/bench/test_range_degradation.py:61`

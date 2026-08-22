@@ -53,12 +53,9 @@ THIS_DIR = Path(__file__).parent
 # so a starved sender cannot flatter the delivery ratio.
 COTENANT_RATE_HZ = 20.0
 
-# The Bulk tier topic and the WiFi connection's rate cap
-# (maximum_bytes_per_second on the wifi connection in
-# configs/three_path.yaml). Used by the #57 fragmentation and wire-rate
+# The Bulk tier topic. Used by the #57 fragmentation and wire-rate
 # acceptance invariants below.
 BULK_TOPIC = '/boat/bulk/image'
-WIFI_BUDGET_BPS = 4_000_000.0
 # Nominal Bulk offered rate: pub.py's bulk tier is 10 Hz x 480 KB of
 # incompressible payload (#57). The wire-rate invariant measures how much the
 # tier PRESENTS, so it is scaled against this, not against the link budget --
