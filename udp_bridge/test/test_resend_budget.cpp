@@ -148,8 +148,12 @@ protected:
 
   // Build a rate-limited connection seeded with kNumPackets sendable
   // packets, returning the missing-packet list that requests them all.
+  // `goodput` is the delivery figure the resend budget is measured
+  // against (#52); it defaults to the rate limit but callers pass a
+  // different value to prove the budget tracks goodput, not the cap.
   std::unique_ptr<udp_bridge::Connection> make_seeded_connection(
-    rclcpp::Time t0, std::vector<uint64_t>* missing)
+    rclcpp::Time t0, std::vector<uint64_t>* missing,
+    float goodput = kGoodputBytesPerSec)
   {
     auto conn = std::make_unique<udp_bridge::Connection>(
       "resend-budget-test", "127.0.0.1", listener_port_, "", 0);
@@ -159,7 +163,7 @@ protected:
     // congested and leaves the effective cap alone; it only records the
     // delivery figure. Callers that need a starvation scenario set
     // update_last_receive_time AFTER this.
-    conn->updateAdmissionControl(kGoodputBytesPerSec, 0.0f, t0);
+    conn->updateAdmissionControl(goodput, 0.0f, t0);
     missing->resize(kNumPackets);
     std::iota(missing->begin(), missing->end(), 1);
     for(auto n: *missing)
@@ -203,6 +207,38 @@ TEST_F(ResendBudget, BoundedUnderLoad)
   EXPECT_GT(rates.dropped_bytes_per_second, 0.0f)
     << "Over-budget resends were not recorded as dropped — shedding "
        "would be invisible in BridgeInfo resend stats.";
+}
+
+TEST_F(ResendBudget, TracksGoodputNotCap)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+
+  // Goodput materially below the configured rate limit. The budget must
+  // track goodput (0.25 * 40000 = 10000 B), NOT the cap (0.25 * 100000 =
+  // 25000 B = kFullBudget). Every other test in this file seeds
+  // goodput == rate limit, so none of them would notice a regression to
+  // the pre-#52 cap-relative basis; this one is the guard for it.
+  constexpr float kLowGoodput = 40000.0f;
+  std::vector<uint64_t> missing;
+  auto conn = make_seeded_connection(t0, &missing, kLowGoodput);
+  conn->update_last_receive_time(t0.seconds(), 100, false);  // no backoff
+
+  conn->resend_packets(missing, send_sock_.get(), t0);
+
+  auto rates = conn->data_sent_rate(t0, udp_bridge::PacketSendCategory::resend);
+
+  const double goodput_budget =
+    static_cast<double>(udp_bridge::kDefaultResendBudgetFraction) * kLowGoodput;
+  EXPECT_LE(rates.success_bytes_per_second, goodput_budget)
+    << "Resend budget must be sized against measured goodput, not the "
+       "configured cap.";
+  EXPECT_GE(rates.success_bytes_per_second, 0.9 * goodput_budget)
+    << "Budget far below the goodput-based bound — over-throttling.";
+  // The discriminator: a cap-relative budget (the #52 regression) would
+  // admit up to kFullBudget here. Prove we are well under it.
+  EXPECT_LT(rates.success_bytes_per_second, kFullBudget)
+    << "Resend budget tracked the configured cap, not goodput (#52).";
 }
 
 TEST_F(ResendBudget, OneBackoffStep)
