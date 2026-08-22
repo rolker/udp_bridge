@@ -212,8 +212,20 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // Treat it like stale feedback — count it as congestion and fall back
   // to the plain multiplicative decrease, since there is no trustworthy
   // goodput reading to target (#52).
+  //
+  // The DUPLICATE channel is validated the same way. A non-finite
+  // remote_duplicate_bps, or a duplicate rate exceeding received (the
+  // remote cannot have duplicated more than it received — a smoothing-
+  // window skew, or a hostile report), makes goodput = received −
+  // duplicate untrustworthy: it collapses to 0, and left in the headroom
+  // target below that slams the cap to the floor on a single sample —
+  // the very pathology the received-channel guard prevents, re-entered
+  // through the duplicate channel. Mark it unusable so it falls back to
+  // the plain halving instead (#52).
   const bool feedback_unusable =
-    feedback_stale || !std::isfinite(remote_received_bps);
+    feedback_stale || !std::isfinite(remote_received_bps) ||
+    !std::isfinite(remote_duplicate_bps) ||
+    remote_duplicate_bps > remote_received_bps;
   const bool congested = sent_bps > 0.0f &&
     (feedback_unusable ||
      remote_received_bps < (1.0f - kAdmissionLossThreshold) * sent_bps);
@@ -243,11 +255,11 @@ void Connection::updateAdmissionControl(float remote_received_bps,
     // an estimate of it — clamping to it on the clean branch too would
     // ratchet a healthy, lightly-loaded link down to nothing.
     //
-    // Unusable feedback (stale, or a non-finite delivery report) carries
-    // no trustworthy goodput reading, so it falls back to the
-    // multiplicative decrease alone rather than targeting a number we did
-    // not measure (a NaN report yields goodput 0, which would otherwise
-    // slam the cap to the floor on a single bad sample).
+    // Unusable feedback (stale, a non-finite report, or a duplicate rate
+    // above received) carries no trustworthy goodput reading, so it falls
+    // back to the multiplicative decrease alone rather than targeting a
+    // number we did not measure (such a report yields goodput 0, which
+    // would otherwise slam the cap to the floor on a single bad sample).
     if(!feedback_unusable)
       decreased = std::min(decreased, (1.0f - link_headroom_fraction_) * goodput);
     effective_rate_limit_ = std::max(floor, decreased);
