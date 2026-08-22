@@ -146,3 +146,45 @@ refinements.
 - [ ] (suggestion) Real saturating Bulk newly exercises X/R/Y/K/N invariants (only ever validated at ~0.5 kB/s) — add them to the explicit post-run re-examination set — `plan.md:46-52`
 - [ ] (suggestion) `test_invariant_bulk_wire_rate` reads connection-aggregate (`_wifi_rates_per_phase`), not per-topic Bulk; rename or source per-topic from topic_statistics — `plan.md:38-41`
 - [ ] (suggestion) `T_fragment_floor` 0.85 rationale ("header compression") is wrong for incompressible payload — fragments trend ≥480, not fewer; floor of 400 is safe regardless — `plan.md:33-36`
+
+## Implementation
+**Status**: complete (part 1 of 2)
+**When**: 2026-08-22 21:57 +00:00
+**By**: Claude Opus
+
+**Branch**: feature/issue-57
+**Scope**: code/config/doc changes only. **Part 2 (host bench run + threshold
+re-derivation) is owed** — see below. No `colcon build` was run (host owns the
+build tree for this worktree; ros2_agent_workspace#602). No scenario was run:
+`range_degradation`/`subscriber_death` need `unshare -Urn`, which this container
+cannot grant. **No existing THRESHOLDS value was changed.**
+
+### What changed (each atomic commit)
+- [x] **Incompressible Bulk payload** — `pub.py` `bytes()` → `os.urandom()`, buffer-reuse preserved (`8b8aaa2`)
+- [x] **maximum_packet_size 1000** — both stanzas in `three_path.yaml`, with the bizzyboat/izzyboat + worst-case-fragment-count rationale inline; old "#57's concern" comment **replaced** (`027522c`)
+- [x] **Fragmentation acceptance assertion** — `test_invariant_fragmentation_exercised` reads boat send-side `average_fragment_count` for `/boat/bulk/image`, asserts `>= T_fragment_floor` (400) in `in_range_clean` (`4d6a373`)
+- [x] **Wire-rate acceptance assertion** — `test_invariant_bulk_wire_rate` sourced **per-topic** from `topic_statistics` (`send.success_bytes_per_second`), not the WiFi connection aggregate; asserts `>= W_wire_pct × 4 MB/s` (`4d6a373`)
+
+### Plan Review findings folded in (all operator-approved)
+- [x] (must-fix) resend xfail `strict=True` XPASS-under-fragmentation risk documented in a comment on the marker + in plan.md; marker NOT removed, `F_resend_multiplier` NOT raised — a #54 decision after the run (`68175bc`, plan `bf963ca`)
+- [x] (must-fix) all **four** stale-string locations fixed: `~58 MB/s` in README.md + test_subscriber_death.py (`e06ed13`); `~120%` in README.md + run_scenario.py (`ced1353`)
+- [x] (suggestion) `three_path.yaml` "#57's concern" comment replaced, not appended (`027522c`)
+- [x] (suggestion) X/R/Y/K/N added to the post-run re-examination set (plan `bf963ca`, README `946d543`)
+- [x] (suggestion) `T_fragment_floor` rationale corrected — incompressible payload trends **≥ 480** fragments, not fewer; the "× 0.85 header compression" reasoning dropped; floor 400 stays (threshold comment `4d6a373`, plan `bf963ca`, README `946d543`)
+- [x] (suggestion) wire-rate test named/sourced for what it measures (per-topic Bulk) (`4d6a373`)
+- [x] README documents invariants 10 & 11 and adds `T_fragment_floor`/`W_wire_pct` rows + refinement item (`946d543`)
+
+### Verification actually performed
+- `python3 -m py_compile` on all four changed `.py` files — pass.
+- `yaml.safe_load` on `three_path.yaml`; both `maximum_packet_size` now `1000`, no `65500` remains.
+- `_bulk_stats_per_phase` bucketing/averaging logic exercised in isolation with a mock (repeated `in_range_clean` windows merge; other phases bucket separately; non-Bulk topics ignored) — pass.
+- **Not** verified: the invariants against a real run (needs `unshare -Urn` + build) — that is part 2.
+
+### Part 2 owed — thresholds flagged for re-derivation from the host bench run
+- `T_fragment_floor` (currently 400) — re-derive from observed `average_fragment_count`
+- `W_wire_pct` (currently 0.5) — re-derive from observed Bulk `send.success_bytes_per_second`
+- `F_resend_multiplier` (currently 2.0) — re-examine; do **not** raise; watch for the strict-xfail XPASS → CI-failure flip (a #54 decision)
+- `recvq_wedge_ceiling_bytes` (currently 100_000, test_subscriber_death.py) — re-derive; single-packet-era value, real fragmented Bulk may raise the healthy drain edge
+- Re-check (new regime touches them for the first time): **X** (recovery), **R** (stats rate), **Y** (cross-path), **K** (co-tenant), **N** (Recv-Q climb)
+
+All changed-threshold TODOs carry `TODO(#57 part 2)` markers in-tree.
