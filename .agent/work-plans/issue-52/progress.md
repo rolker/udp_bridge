@@ -211,9 +211,49 @@ Specialists: Static analysis — cppcheck + ament_flake8 ran; no actionable find
 Note: the prior round's 3 must-fixes (example-config double literal, negative-floor fallback, the doc staleness cluster) are all correctly fixed; the 5 new unit tests genuinely pin the new behavior; concurrency/lock-ordering/bootstrap are clean.
 
 ### Findings
-- [ ] (must-fix) non-finite/oversized peer-reported `remote_duplicate_bps` is not validated (`feedback_unusable` checks only `remote_received_bps`) → `goodput = max(0, finite − NaN) = 0` slams the admission cap to the floor in one sample; benign `duplicate > received` window mismatch does the same; re-opens the pathology the NaN guard claims to prevent, via the duplicate channel — `udp_bridge/src/connection.cpp:216,225,252` (cross-pass confirmed, Lens A + Lens B)
-- [ ] (must-fix) `.agents/README.md:92` verified-parameter table still advertises the removed `admission_floor_fraction`, omits `admission_floor_bytes_per_second` + `link_headroom_fraction`, and states the old cap basis for `resend_budget_fraction` — missing parameter-surface consequence (flagged by Copilot in Integrated Review; dropped from the Round-1 Local Review cluster, so never fixed) — `.agents/README.md:92`
-- [ ] (suggestion) `goodput_bytes_per_second_` stored peer-controlled and unbounded (negative duplicate inflates above received); no current exploit (downstream re-clamps) but a storage-site clamp would localize containment — `udp_bridge/src/connection.cpp:228`
-- [ ] (suggestion) `NanFeedbackTreatedAsCongestion` feeds NaN only into received (duplicate=0), so the NaN-duplicate / duplicate>received slam path is untested — `udp_bridge/test/test_admission_control.cpp:384`
-- [ ] (suggestion) headroom target ratchets the cap geometrically to the floor under sustained congestion rather than converging to `(1−h)·goodput` (already consciously deferred in progress.md; needs the bench, not runnable here) — `udp_bridge/src/connection.cpp:245-253`
-- [ ] (suggestion) `test_range_degradation.py` module docstring still says "five invariant tests below" / "six vs the five below"; there are now six single-path invariants (co-tenant #52), contradicting `test/bench/README.md` — `udp_bridge/test/bench/test_range_degradation.py` (module docstring)
+- [x] (must-fix) non-finite/oversized peer-reported `remote_duplicate_bps` is not validated (`feedback_unusable` checks only `remote_received_bps`) → `goodput = max(0, finite − NaN) = 0` slams the admission cap to the floor in one sample; benign `duplicate > received` window mismatch does the same; re-opens the pathology the NaN guard claims to prevent, via the duplicate channel — `udp_bridge/src/connection.cpp:216,225,252` (cross-pass confirmed, Lens A + Lens B)
+- [x] (must-fix) `.agents/README.md:92` verified-parameter table still advertises the removed `admission_floor_fraction`, omits `admission_floor_bytes_per_second` + `link_headroom_fraction`, and states the old cap basis for `resend_budget_fraction` — missing parameter-surface consequence (flagged by Copilot in Integrated Review; dropped from the Round-1 Local Review cluster, so never fixed) — `.agents/README.md:92`
+- [x] (suggestion) `goodput_bytes_per_second_` stored peer-controlled and unbounded (negative duplicate inflates above received); no current exploit (downstream re-clamps) but a storage-site clamp would localize containment — `udp_bridge/src/connection.cpp:228`
+- [x] (suggestion) `NanFeedbackTreatedAsCongestion` feeds NaN only into received (duplicate=0), so the NaN-duplicate / duplicate>received slam path is untested — `udp_bridge/test/test_admission_control.cpp:384`
+- [x] (suggestion) headroom target ratchets the cap geometrically to the floor under sustained congestion rather than converging to `(1−h)·goodput` (already consciously deferred in progress.md; needs the bench, not runnable here) — `udp_bridge/src/connection.cpp:245-253` (deferred: unchanged from Round 1 — the fix alters the convergence of a live AIMD loop and its only observable effect is emergent bench behavior (co-tenant starvation margin, resend amplification); the `range_degradation` bench that would validate it is not runnable here (`unshare -Urn`: Operation not permitted, re-confirmed this round). Bounded by the floor meanwhile; deferred to a dedicated, bench-validated change.)
+- [x] (suggestion) `test_range_degradation.py` module docstring still says "five invariant tests below" / "six vs the five below"; there are now six single-path invariants (co-tenant #52), contradicting `test/bench/README.md` — `udp_bridge/test/bench/test_range_degradation.py` (module docstring)
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-22 19:00 +00:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-52 at `f13fe59`
+**Addressed**: `Local Review (Pre-Push)`, 2026-08-22 18:50 +00:00, branch feature/issue-52 @ `ddb3420` (code at `1517514`) — the latest review entry (Round 2)
+**Commits**: `505f940` `9e6e886` `e0da287` `dbbe1a0` `f13fe59`
+
+Addressed all 6 open findings of the source review entry: 2 must-fix + 4
+suggestions. 5 fixed (one logical fix per commit; code fixes carry their own
+regression tests), 1 suggestion consciously deferred with reason (below,
+unchanged from Round 1 — it needs the bench, which is not runnable here).
+
+### Actions
+- [x] (must-fix) duplicate feedback channel now validated: `feedback_unusable` also rejects a non-finite `remote_duplicate_bps` and a `duplicate > received` window skew, so such a sample falls back to the plain multiplicative decrease instead of collapsing goodput to 0 and slamming the cap to the floor — `udp_bridge/src/connection.cpp:215-219` (`505f940`)
+- [x] (must-fix) `.agents/README.md` parameter table synced to the #52 goodput basis: removed `admission_floor_fraction`, added `admission_floor_bytes_per_second` (8192) + `link_headroom_fraction` (0.2), and corrected `resend_budget_fraction` to the goodput basis — `.agents/README.md:92` (`dbbe1a0`)
+- [x] (suggestion) stored goodput clamped to `[0, received]` so a peer-reported negative duplicate rate can no longer inflate it above what was received; non-finite input stores 0 — `udp_bridge/src/connection.cpp:225-234` (`9e6e886`)
+- [x] (suggestion) added `NanDuplicateFeedbackTreatedAsCongestion`, `DuplicateExceedingReceivedTreatedAsCongestion`, and `NegativeDuplicateDoesNotInflateGoodput` — the duplicate-channel slam/inflation paths the existing NaN test did not exercise — `udp_bridge/test/test_admission_control.cpp` (`e0da287`)
+- [x] (suggestion) bench module docstring corrected to six single-path invariants (co-tenant #52), matching `test/bench/README.md` — `udp_bridge/test/bench/test_range_degradation.py` (`f13fe59`)
+- [x] (suggestion — deferred) headroom target ratchets the cap geometrically to the floor under sustained congestion rather than converging to `(1−h)·goodput` — `udp_bridge/src/connection.cpp:245-253` (deferred: unchanged from Round 1. The fix alters the convergence of a live AIMD control loop, and its only observable effect is emergent bench behavior — co-tenant starvation margin, resend amplification. The `range_degradation` bench that would validate it is not runnable in this environment (`unshare -Urn`: Operation not permitted, re-confirmed this round). Holding the cap at its designed share makes the bridge greedier, reducing the co-tenant invariant's margin, which cannot be verified here. Bounded by the floor meanwhile; deferred to a dedicated, bench-validated change.)
+
+### Verification
+- Rebuilt `udp_bridge` (`-DUDP_BRIDGE_BUILD_TESTING=ON`) — only pre-existing `-Wpedantic` flexible-array warnings.
+- `test_admission_control`: **17 tests, 0 failures** (+3 new: NaN-duplicate, duplicate>received, negative-duplicate clamp).
+- `test_resend_budget`: **9 tests, 0 failures** (goodput-basis behavior unchanged by the storage clamp).
+- Bench module docstring: `py_compile` clean; no new flake8 findings on changed lines (the D-docstring nits are pre-existing and in flake8's default-ignore / repo pre-commit-disabled set).
+- pre-commit hooks ran on every commit (no `--no-verify`); the opt-in `range_degradation` bench still cannot run here (`unshare -Urn` unavailable), so deferred finding #5 remains unverifiable in this environment as designed.
+
+### Next step
+Lifecycle: **Implementation → review-code** (re-review the fixes cold). Dispatch a
+fresh-context sub-agent:
+
+    .agent/scripts/dispatch_subagent.sh --mode in-process --issue 52 --skill review-code
+
+The re-review should confirm the duplicate-channel guard + goodput clamp hold
+and, if it can run the `range_degradation` bench in a namespace-capable
+environment, take up deferred finding #5 (headroom ratchet) with before/after
+bench numbers.
