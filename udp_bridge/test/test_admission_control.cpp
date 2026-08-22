@@ -30,6 +30,9 @@
 //                                 limit.
 //   FeedbackStaleBackoff        — stale last_receive_time is congestion
 //                                 even when the reported delivery is high.
+//   NanFeedbackTreatedAsCongestion — a non-finite delivery report is
+//                                 unusable feedback: congestion + plain
+//                                 halving, never read as clean (#52).
 //   NeverReceivedSentinel       — last_receive_time 0.0 ("nothing yet")
 //                                 is NOT stale; an idle link recovers.
 //   EffectiveLimitAffectsCanSend— send() actually meters against the
@@ -376,6 +379,27 @@ TEST_F(AdmissionControl, FeedbackStaleBackoff)
        "must fall back to a plain multiplicative decrease — the headroom "
        "target needs a goodput reading, which is exactly what stale means "
        "we do not have (#52).";
+}
+
+TEST_F(AdmissionControl, NanFeedbackTreatedAsCongestion)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);                    // sent, feedback fresh
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  // A NaN delivery report must not read as a clean sample: NaN fails the
+  // < comparison, so left untreated it would silently defeat the AIMD
+  // decrease. It is unusable feedback — count it as congestion and fall
+  // back to a plain halving (no trustworthy goodput to target) (#52).
+  conn->updateAdmissionControl(std::numeric_limits<float>::quiet_NaN(),
+                               0.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
+    << "Non-finite remote feedback must count as congestion and apply the "
+       "multiplicative decrease, not be silently treated as clean (#52).";
 }
 
 TEST_F(AdmissionControl, NeverReceivedSentinel)

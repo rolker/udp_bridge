@@ -205,8 +205,17 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // duplicates/reorders read as congested and throttle itself for no
   // loss. Goodput is the right basis for the DECREASE TARGET below (how
   // far to back off once congested), not for deciding WHETHER we are.
+  //
+  // A non-finite delivery report (NaN/Inf) is unusable feedback, not a
+  // clean sample: NaN fails every comparison, so leaving it in the ratio
+  // would silently read as "not congested" and defeat the AIMD decrease.
+  // Treat it like stale feedback — count it as congestion and fall back
+  // to the plain multiplicative decrease, since there is no trustworthy
+  // goodput reading to target (#52).
+  const bool feedback_unusable =
+    feedback_stale || !std::isfinite(remote_received_bps);
   const bool congested = sent_bps > 0.0f &&
-    (feedback_stale ||
+    (feedback_unusable ||
      remote_received_bps < (1.0f - kAdmissionLossThreshold) * sent_bps);
 
   // Goodput: what the remote reports receiving, less what it reports as
@@ -234,10 +243,12 @@ void Connection::updateAdmissionControl(float remote_received_bps,
     // an estimate of it — clamping to it on the clean branch too would
     // ratchet a healthy, lightly-loaded link down to nothing.
     //
-    // Stale feedback carries no usable goodput reading (that is what
-    // stale means), so it falls back to the multiplicative decrease
-    // alone rather than targeting a number we did not measure.
-    if(!feedback_stale)
+    // Unusable feedback (stale, or a non-finite delivery report) carries
+    // no trustworthy goodput reading, so it falls back to the
+    // multiplicative decrease alone rather than targeting a number we did
+    // not measure (a NaN report yields goodput 0, which would otherwise
+    // slam the cap to the floor on a single bad sample).
+    if(!feedback_unusable)
       decreased = std::min(decreased, (1.0f - link_headroom_fraction_) * goodput);
     effective_rate_limit_ = std::max(floor, decreased);
   }
