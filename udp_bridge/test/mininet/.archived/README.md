@@ -31,7 +31,12 @@ files to Python) but is its own piece of work; not in scope for the
 issue #11 PR. Tracking a port if/when needed should happen in a follow-up
 issue rather than blocking #11 on it.
 
-## What works today (scripts in this directory)
+## What works today
+
+> **Moved.** `recv_q_trace.py` no longer lives in this directory — it is part
+> of the live bench harness at `../../bench/recv_q_trace.py`. The commands
+> below are kept for their explanation of the tool; run them from
+> `test/bench/` (or with that path) rather than from here.
 
 ### `recv_q_trace.py` — Recv-Q telemetry helper
 
@@ -43,7 +48,7 @@ up while the bridge process appears alive).
 
 ```bash
 # In another terminal: ros2 launch udp_bridge udp_bridge_launch.py
-./recv_q_trace.py --port 4200 --interval 0.5 --output /tmp/recv_q.csv
+../../bench/recv_q_trace.py --port 4200 --interval 0.5 --output /tmp/recv_q.csv
 ```
 
 CSV columns: `t_seconds_since_start`, `recv_q_bytes`, `send_q_bytes`,

@@ -92,7 +92,9 @@ Critical-only subset; the full mix is opt-in via a new `--scenario full-mix`.
 Phase walker drives WiFi `tc` through the 6-phase trajectory. Capture
 `bridge_info` + `recv_q_trace` bag during the run into a fresh
 `tempfile.mkdtemp(prefix='udp_bridge_bench_')` (respects `$TMPDIR`; override
-via `UDP_BRIDGE_BENCH_OUTDIR`). Cleanup on pass; preserve on fail.
+via the `--outdir` flag — the planned `UDP_BRIDGE_BENCH_OUTDIR` env var was
+not implemented, and `BENCH_OUTDIR=` in the output is a marker line the tests
+parse, not an input). Cleanup on pass; preserve on fail.
 `udp_bridge/test/bench/test_range_degradation.py` — opt-in via `UDP_BRIDGE_BENCH_SCENARIOS=1`,
 asserts the 5 single-path invariants. Bag parsed via the in-tree
 `bag_reader.py` from Phase 1 (no cross-repo dep).
