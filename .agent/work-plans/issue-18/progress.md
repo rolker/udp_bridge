@@ -188,3 +188,63 @@ Both may be true. Needs a decision before this PR merges: recommended path is
 `xfail(strict=True)` on that one invariant with a pointer to a new udp_bridge
 issue, so the signal is recorded rather than suppressed and flips to a failure
 when fixed. **Not done unilaterally — awaiting Roland.**
+
+## Implementation
+**Status**: complete — #52 filed, invariant xfailed, opt-in suite clean
+**When**: 2026-08-22 10:54 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Branch**: feature/issue-18 (PR #27)
+
+Closes out the open decision from the previous entry.
+
+### Root cause established (was left as two competing hypotheses)
+Pulled the per-phase `BridgeInfo` out of the preserved artifacts. **The
+earlier sequence-burn hypothesis is wrong** — `message.dropped_bytes_per_second`
+and `message.failed_bytes_per_second` are 0.0 in every phase, so the rate
+limiter never sheds and never burns a sequence number. Actual mechanism:
+
+| phase | link | AIMD cap | msg | resend | dup | resend/msg |
+|---|---|---|---|---|---|---|
+| in_range_clean | 3750 | 3346 | 7.7 | 0.3 | 0.0 | 0.04 |
+| fringe | 1250 | 2600 | 8.5 | 0.4 | 0.0 | 0.05 |
+| lossy | 375 | 2480 | 8.5 | 13.9 | 0.3 | 1.64 |
+| critical | 62.5 | 2291 | 8.5 | 26.4 | 3.5 | 3.11 |
+| over_horizon | (100% loss) | 860 | 8.5 | 3.2 | 0.2 | 0.38 |
+
+(kB/s; `link` = applied netem rate, `AIMD cap` = reported `effective_rate_limit`)
+
+- Admission never converges on the real link — 2291 kB/s reported against a
+  62.5 kB/s path, and `kDefaultAdmissionFloorFraction = 0.1` floors it at 10%
+  of the **configured** cap (400 kB/s), still 6× the real link.
+- The #44 resend budget is 25% of that, authorizing 573 kB/s of resends on a
+  62.5 kB/s path — 9× the link. It behaves as specified and is irrelevant.
+- Real amplification: 3× more bytes retransmitted than originally sent, ~31×
+  the loss-implied expectation; duplicates 41% of the message rate, matching
+  #9's 126% rx_duplicate signature.
+- The bridge's own telemetry reports zero dropped and zero failed throughout —
+  a diagnostic blind spot matching the 2026-08-03 "all red, no obvious cause".
+
+Confound named in the issue: symmetric shaping makes `delay_ms` one-way, so
+`critical` RTT is 200–260 ms against `kResendBackoffBase` of 0.200 s. But
+`lossy` at 80–110 ms RTT still shows 1.64, so it is not the driver.
+
+### Actions
+- Filed **[udp_bridge#52](https://github.com/rolker/udp_bridge/issues/52)**
+  "Resend amplification under real link degradation: admission floor and
+  resend budget scale off the configured cap, not observed throughput"
+  (label `bug`) with the table, mechanism, repro command, and four
+  not-yet-decided directions. Cross-referenced #9, #43, #44, #45.
+- `test_invariant_resend_amplification` marked `xfail(strict=True)` against
+  #52, with an explicit "do NOT loosen F_resend_multiplier" note in the
+  reason string. strict so it becomes a failure again when #52 lands.
+
+### Verification
+- Opt-in `range_degradation`: **8 pass, 1 xfail, 0 failures** (3 min 5 s).
+- `colcon test-result`: 162 tests, 0 errors, **0 failures**, 1 skipped.
+- flake8 + `pre-commit run --from-ref origin/jazzy --to-ref HEAD` clean.
+
+### PR #27 status
+Rebase clean, CI green, all 11 round-1 and all 7 round-2 review threads
+addressed, opt-in suite green-with-one-recorded-xfail. Ready for human
+content review. Not merged — awaiting Roland.
