@@ -10,6 +10,7 @@ Usage:
     run_scenario.py --scenario smoke      [--duration-s 10] [--outdir DIR]
     run_scenario.py --scenario full-mix   [--duration-s 10] [--outdir DIR]
     run_scenario.py --scenario range_degradation [--hold-s 10] [--outdir DIR]
+    run_scenario.py --scenario subscriber_death  [--outdir DIR]
 
 Smoke runs the bench in a clean-link configuration and verifies one
 Critical-tier topic flows boat → bridge → operator → subscriber. The
@@ -21,7 +22,11 @@ a sail-out-and-return trajectory, captures a `bridge_info` /
 lines (`BENCH_BAG_DIR=`, `BENCH_PHASE_LOG=`, `BENCH_RECVQ_OPERATOR=`,
 `BENCH_BRIDGE_STDERR_OPERATOR=`, …) that
 `test_range_degradation.py` consumes to evaluate the single-path
-invariants.
+invariants. The `subscriber_death` scenario freezes (SIGSTOP) the Bulk
+operator subscriber mid-stream and traces the operator's Recv-Q plus
+survivor-topic delivery; it is a no-wedge regression guard (see
+`test_subscriber_death.py` and README.md for why it does not reproduce
+the issue #10 wedge at bench scale).
 
 Environment:
     UDP_BRIDGE_BENCH_DEBUG=1  — keep child stderr visible.
@@ -312,17 +317,23 @@ def launch_bag_record(domain: int, topics: list[str], bag_dir: Path) -> _Child:
 
 def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
                          stderr_log: Path) -> _Child:
-    """Like `launch_bridge` but tees the bridge's stderr to `stderr_log`.
+    """Like `launch_bridge` but captures the bridge's stderr to `stderr_log`.
 
     Phase 3 needs per-bridge stderr captured so we can check invariant
     2 (no ERROR-severity log during the over-horizon window). We can't
     redirect to a file inside the Popen because we still need the
     lifecycle transitions to be issued; the cleanest approach is to
-    open the log file in append mode and pass it as `stderr=`. Debug
-    mode (UDP_BRIDGE_BENCH_DEBUG=1) additionally tees to the terminal
-    via `tee` so the user sees the live output.
+    open the log file in append mode and pass it as `stderr=`.
+
+    Note this always redirects: unlike `launch_bridge`, there is no
+    UDP_BRIDGE_BENCH_DEBUG passthrough to the terminal here, because the
+    invariant checks need the stderr in a file. Read the log if you are
+    debugging a scenario that uses this launcher.
     """
     env = _env_for(domain)
+    # Opened here and closed as soon as the child is spawned: Popen dups the
+    # fd into the child, so the parent's handle is dead weight afterwards.
+    # Scenarios launch several bridges per run, and the process is long-lived.
     log_fp = open(stderr_log, 'ab')
     child = _spawn(
         [
@@ -335,6 +346,7 @@ def launch_bridge_logged(node_name: str, params_file: Path, domain: int,
         name=node_name,
         stderr=log_fp,
     )
+    log_fp.close()
     time.sleep(2)  # let the node register with DDS
     for transition in ('configure', 'activate'):
         _run(
