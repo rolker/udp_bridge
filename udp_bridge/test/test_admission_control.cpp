@@ -402,6 +402,70 @@ TEST_F(AdmissionControl, NanFeedbackTreatedAsCongestion)
        "multiplicative decrease, not be silently treated as clean (#52).";
 }
 
+TEST_F(AdmissionControl, NanDuplicateFeedbackTreatedAsCongestion)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);                    // sent, feedback fresh
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  // received reads clean (== sent), but the DUPLICATE channel is NaN.
+  // goodput = received − NaN collapses to 0; if that slipped through as a
+  // usable sample the headroom target would slam the cap to the floor on
+  // this one report. The duplicate channel must be validated like received:
+  // count it as congestion and apply the plain halving (#52).
+  conn->updateAdmissionControl(80000.0f,
+                               std::numeric_limits<float>::quiet_NaN(), t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
+    << "A non-finite duplicate report must count as congestion and apply "
+       "the multiplicative decrease, not slam the cap to the floor (#52).";
+}
+
+TEST_F(AdmissionControl, DuplicateExceedingReceivedTreatedAsCongestion)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  // A duplicate rate above received is impossible physically (you cannot
+  // duplicate more than you received) — a smoothing-window skew, or a
+  // hostile report. goodput = received − duplicate goes negative and
+  // clamps to 0; treated as a usable sample the headroom target would
+  // slam the cap to the floor. It is unusable feedback: plain halving.
+  conn->updateAdmissionControl(40000.0f, 60000.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
+    << "A duplicate rate exceeding received must count as congestion and "
+       "apply the multiplicative decrease, not slam the cap to the floor "
+       "(#52).";
+}
+
+TEST_F(AdmissionControl, NegativeDuplicateDoesNotInflateGoodput)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  // A peer reporting a negative duplicate rate would inflate
+  // received − duplicate above received (40000 − (−30000) = 70000). The
+  // stored goodput must be clamped to what was actually received so the
+  // resend-budget basis downstream cannot be sized against a fabricated
+  // number (#52).
+  conn->updateAdmissionControl(40000.0f, -30000.0f, t0);
+
+  EXPECT_EQ(conn->goodputBytesPerSecond(), 40000.0f)
+    << "Stored goodput must clamp to received; a negative duplicate rate "
+       "must not inflate it above what the remote reported receiving (#52).";
+}
+
 TEST_F(AdmissionControl, NeverReceivedSentinel)
 {
   rclcpp::Clock clock(RCL_STEADY_TIME);
