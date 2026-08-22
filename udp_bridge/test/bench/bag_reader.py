@@ -1,14 +1,17 @@
 """In-tree ros2 bag reader for the bench harness.
 
-Two surfaces:
-  - SQLite shims (`list_topics`, `count_messages`, `find_bag_db`) used
-    by the Phase 1 smoke for cheap structural checks. These only work
-    on sqlite3-storage bags.
-  - rosbag2_py-backed iterators (`iter_messages`, `read_bridge_infos`,
-    `read_topic_statistics_arrays`) used by `test_range_degradation.py`
-    for the Phase 3 single-path invariants. These work with whichever
-    storage backend the bag uses (mcap by default in Jazzy, sqlite3 if
-    the recorder was told to use it).
+rosbag2_py-backed iterators (`iter_messages`, `read_bridge_infos`,
+`read_topic_statistics_arrays`) used by `test_range_degradation.py` for
+the Phase 3 single-path invariants. These work with whichever storage
+backend the bag uses (mcap by default in Jazzy, sqlite3 if the recorder
+was told to use it).
+
+An earlier revision also carried direct-SQLite shims (`list_topics`,
+`count_messages`, `find_bag_db`) documented as serving the Phase 1
+smoke. Nothing ever called them, and being sqlite3-only they were wrong
+against Jazzy's mcap default anyway, so they were removed rather than
+left as a maintenance trap. Use the rosbag2_py readers below, which are
+storage-agnostic.
 
 The Phase 3 readers deserialize via `rclpy.serialization.deserialize_message`
 + `rosidl_runtime_py.utilities.get_message`, so the message types come
@@ -19,38 +22,8 @@ reads here.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Iterator, Tuple
-
-
-def list_topics(db_path: Path) -> list[str]:
-    """Return the topic names present in a ros2 bag SQLite store."""
-    with sqlite3.connect(str(db_path)) as conn:
-        rows = conn.execute('SELECT name FROM topics').fetchall()
-    return [r[0] for r in rows]
-
-
-def count_messages(db_path: Path, topic: str) -> int:
-    """Count messages on `topic` in a ros2 bag SQLite store."""
-    with sqlite3.connect(str(db_path)) as conn:
-        row = conn.execute(
-            'SELECT COUNT(*) FROM messages m JOIN topics t ON m.topic_id = t.id WHERE t.name = ?',
-            (topic,),
-        ).fetchone()
-    return int(row[0]) if row else 0
-
-
-def find_bag_db(bag_dir: Path) -> Path:
-    """Return the .db3 file inside a ros2 bag directory."""
-    candidates = list(bag_dir.glob('*.db3'))
-    if not candidates:
-        raise FileNotFoundError(f'No .db3 in {bag_dir}')
-    if len(candidates) > 1:
-        # Multi-file bag — return the first; callers that need all should
-        # iterate themselves.
-        return sorted(candidates)[0]
-    return candidates[0]
 
 
 def _detect_storage_id(bag_dir: Path) -> str:
@@ -75,9 +48,10 @@ def iter_messages(bag_dir: Path, topic_filter: list[str] | None = None
     underlying rosbag2 SequentialReader supports a storage_filter so this
     is more efficient than client-side filtering.
     """
-    # rosbag2_py and rclpy imports are deferred so the SQLite shims at
-    # the top of this module remain importable without a ROS 2 env
-    # sourced (the smoke unit-tests them on bare Python).
+    # rosbag2_py and rclpy imports are deferred so this module stays
+    # importable without a ROS 2 env sourced -- pytest collects the bench
+    # tests before any scenario runs, and `_detect_storage_id` is pure
+    # pathlib. Only the readers below actually need rosbag2.
     import rosbag2_py
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
