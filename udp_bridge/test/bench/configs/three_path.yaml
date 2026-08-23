@@ -21,10 +21,12 @@ operator_bridge:
   ros__parameters:
     name: "operator"
     port: 4200
-    # Explicit override, not the node default (which is 1200 as of #58). The
-    # bench deliberately sets this high; whether that value is representative
-    # of a real link is the bench harness's own concern (#57), not this change.
-    maximum_packet_size: 65500
+    # 1000 matches the bizzyboat/izzyboat field config -- the boats this bench
+    # exists for -- not the node's shipped default (1200 as of #58). 1000 is
+    # also the smallest deployed value, so it is the worst case for fragment
+    # count: a 480 KB Bulk image splits into ~480+ fragments here, deriving the
+    # resend/reassembly invariants against the hardest real configuration (#57).
+    maximum_packet_size: 1000
     remotes_list: ["boat"]
     remotes:
       boat:
@@ -48,9 +50,9 @@ boat_bridge:
   ros__parameters:
     name: "boat"
     port: 4300
-    # Explicit override, not the node default (which is 1200 as of #58). See
-    # the operator_bridge note above: the bench's high value is #57's concern.
-    maximum_packet_size: 65500
+    # 1000 -- field-representative (bizzyboat/izzyboat), the worst case for
+    # fragment count. See the operator_bridge note above (#57).
+    maximum_packet_size: 1000
     remotes_list: ["operator"]
     remotes:
       operator:

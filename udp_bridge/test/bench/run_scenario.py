@@ -80,6 +80,24 @@ TIER_DESTINATIONS = {
     'bulk': ('sensor_msgs/Image', '/operator/boat/bulk/image'),
 }
 
+# Tiers whose messages must actually ARRIVE for a range_degradation run to be
+# considered valid. Critical and Telemetry are small enough to fit in a single
+# packet, so the link delivering none of them across the whole walk means the
+# scenario broke. Bulk is deliberately excluded: post-#57 it is ~508 fragments
+# per message with all-or-nothing reassembly, so full shedding is an ordinary
+# outcome rather than a harness failure -- see the guard in main() for the
+# arithmetic. Every tier, Bulk included, must still PUBLISH.
+DELIVERY_REQUIRED_TIERS = ('critical', 'telemetry')
+
+# Budget for the pre-walk readiness gate (#57). Bulk needs a few seconds of
+# discovery plus its first fragmented image before it contributes to the
+# wire; observed ready in well under 10 s on the dev host. The generous
+# ceiling exists so a slow or loaded machine waits rather than silently
+# measuring a baseline the run never established -- exceeding it is a
+# harness failure, not something to sleep through. Added to publisher
+# lifetime so the gate never eats into the walk's data.
+READY_TIMEOUT_S = 30.0
+
 # Sail-out-and-return trajectory applied to the WiFi path only (cell
 # and Starlink hold their CLEAN_PROFILE baselines). The phase names
 # are written into the phase log so `test_range_degradation.py` can
@@ -375,6 +393,29 @@ def launch_sub(domain: int, topic: str, msg_type: str, duration_s: float,
     )
 
 
+def wait_ready(timeout_s: float, domain: int = OPERATOR_DOMAIN) -> None:
+    """Block until the boat bridge is carrying the full three-tier mix.
+
+    Raises RuntimeError on timeout rather than proceeding: a run whose Bulk
+    tier never reached the wire cannot produce a meaningful pre-event
+    baseline, and silently measuring one is how this harness previously
+    turned a deterministic defect into a coin flip (#57). See wait_ready.py.
+    """
+    script = Path(__file__).parent / 'wait_ready.py'
+    proc = subprocess.run(
+        [sys.executable, str(script), '--timeout-s', str(timeout_s)],
+        env=_env_for(domain),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            'Bench readiness gate failed -- the three-tier mix never reached '
+            f'the wire within {timeout_s:.0f}s.\n{proc.stderr.strip()}')
+    if _debug():
+        print(proc.stdout.strip(), file=sys.stderr)
+
+
 def launch_recv_q_trace(port: int, output_csv: Path,
                         interval_s: float = 0.5) -> _Child:
     """Run recv_q_trace.py against a UDP port; writes CSV until SIGTERM."""
@@ -566,8 +607,9 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     time.sleep(2)  # let recorder + tracer + co-tenant receiver settle
 
     # We need pub/sub to outlive the walk by a couple of seconds so the
-    # final in_range_clean recovery phase has steady-state data.
-    pub_duration = hold_s * len(PHASE_TRAJECTORY) + 4
+    # final in_range_clean recovery phase has steady-state data -- plus the
+    # readiness gate below, which spends real time before the walk starts.
+    pub_duration = hold_s * len(PHASE_TRAJECTORY) + 4 + READY_TIMEOUT_S
     subs = {
         tier: launch_sub(OPERATOR_DOMAIN, topic, msg_type, pub_duration + 2)
         for tier, (msg_type, topic) in TIER_DESTINATIONS.items()
@@ -581,14 +623,32 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     # bridge leaves it room in EVERY phase, not on average.
     cotenant_tx = launch_cotenant_sender(PATHS[0][1], pub_duration)
 
+    # Don't start the walk until Bulk is genuinely on the wire (#57). The
+    # first in_range_clean window is the recovery invariant's PRE-EVENT
+    # BASELINE; starting the walk while Bulk is still in discovery makes that
+    # baseline ~2 kB/s of Critical+Telemetry instead of the real ~2 MB/s, and
+    # the invariant then measures recovery against a baseline that never
+    # happened. See wait_ready.py for the measured evidence.
+    wait_ready(timeout_s=READY_TIMEOUT_S)
+
     walk_start = time.time()
     phase_log: list = []
     walk_wifi(hold_s, phase_log)
     walk_end = time.time()
 
+    # Let publishers and subscribers finish and flush their counts. A hung
+    # child is tolerated here rather than raised: the counts we did get still
+    # feed the validity guard below, which reports a missing tier through
+    # BENCH_ERROR_* with the detail of what was missing. Letting
+    # TimeoutExpired escape instead would replace that diagnostic with a bare
+    # traceback. Cleanup is unaffected -- children are reaped by the atexit
+    # and signal handlers regardless. Mirrors run_subscriber_death below.
     for tier in TIER_DESTINATIONS:
-        pubs[tier].proc.wait(timeout=pub_duration + 10)
-        subs[tier].proc.wait(timeout=pub_duration + 15)
+        for child, budget in ((pubs[tier], 10), (subs[tier], 15)):
+            try:
+                child.proc.wait(timeout=pub_duration + budget)
+            except subprocess.TimeoutExpired:
+                print(f'BENCH_WARN_CHILD_HUNG={child.name}', file=sys.stderr)
 
     # Stop the tracers gracefully so files flush before cleanup.
     recvq.stop(timeout=3.0)
@@ -668,9 +728,12 @@ def run_full_mix(duration_s: float) -> dict:
 
     Spawns one publisher per tier on the boat side and one subscriber
     per destination topic on the operator side. Bulk is sized to ~120%
-    of the WiFi rate budget, so the bridge's rate limiter will trim it
-    even on a clean link — that's intentional (Phase 4 drop-by-tier
-    invariant), and Phase 2 just confirms each tier delivers something.
+    of the WiFi rate budget (10 Hz x 480 KB = 4.8 MB/s vs the 4 MB/s
+    cap), so the bridge's rate limiter will trim it even on a clean link
+    — that's intentional (Phase 4 drop-by-tier invariant), and Phase 2
+    just confirms each tier delivers something. Since #57 the payload is
+    incompressible so that ~120% is realized on the wire; before #57 it
+    compressed to a single packet and the limiter never engaged.
     """
     config = Path(__file__).parent / 'configs' / 'three_path.yaml'
     setup_topology()
@@ -894,15 +957,41 @@ def main(argv: list[str] | None = None) -> None:
             # Pass condition for the orchestrator alone is "the run
             # completed and produced artifacts". Invariants are
             # evaluated by test_range_degradation.py.
-            # `all`, not `any`: range_degradation is documented and
-            # configured as a full three-tier run, so a Bulk or Telemetry
-            # process that died leaves the invariant tests reasoning about a
-            # tier that never flowed. Report which tier was empty rather than
-            # exiting 1 silently.
-            empty = [t for t, c in result['sub_counts'].items() if c <= 0]
+            # range_degradation is documented and configured as a full
+            # three-tier run, so a tier process that died leaves the invariant
+            # tests reasoning about traffic that never existed. What makes a
+            # tier "never flowed" is that it never PUBLISHED -- checked below
+            # for every tier.
+            #
+            # Delivery is a separate question, and only some tiers owe it
+            # (#57). Bulk is ~508 fragments per message and reassembly is
+            # all-or-nothing, so at ~0.5% fragment loss a message survives
+            # ~0.995^508 ~= 8% of the time, and the impaired phases deliver
+            # essentially none. Zero *delivered* Bulk is therefore an ordinary
+            # outcome of the honest #57 payload, not a broken scenario -- and
+            # the #57 invariants measure send-side OFFERED traffic precisely
+            # because of that. Before #57 the payload compressed to a single
+            # 488-byte packet that always survived, which is why requiring
+            # delivery from every tier went unnoticed for so long. Requiring
+            # it now would abort a valid run roughly half the time.
+            silent = [t for t, c in result['pub_counts'].items() if c <= 0]
+            undelivered = [t for t, c in result['sub_counts'].items()
+                           if c <= 0 and t in DELIVERY_REQUIRED_TIERS]
+            empty = sorted(set(silent) | set(undelivered))
             if empty:
-                print(f'BENCH_ERROR_EMPTY_TIERS={",".join(sorted(empty))}',
+                print(f'BENCH_ERROR_EMPTY_TIERS={",".join(empty)}',
                       file=sys.stderr)
+                if silent:
+                    print('BENCH_ERROR_DETAIL=never published: '
+                          f'{",".join(sorted(silent))}', file=sys.stderr)
+                if undelivered:
+                    print('BENCH_ERROR_DETAIL=published but nothing arrived: '
+                          f'{",".join(sorted(undelivered))}', file=sys.stderr)
+            bulk_sub = result['sub_counts'].get('bulk')
+            if bulk_sub == 0:
+                print('BENCH_NOTE_BULK_FULLY_SHED=1 (no Bulk message '
+                      'survived reassembly; expected under the #57 payload -- '
+                      'the Bulk invariants assert offered, not delivered)')
             ok = (
                 result['bag_dir'].exists()
                 and result['phase_log'].exists()

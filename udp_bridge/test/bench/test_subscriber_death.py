@@ -10,7 +10,7 @@ kernel Recv-Q backs up.
 IMPORTANT — what this test does and does NOT establish (measured 2026-05-25):
 The wedge could **not** be reproduced at bench scale on this harness, across
 FastDDS, CycloneDDS, AND rmw_zenoh_cpp, with either a clean-killed or a frozen
-consumer, even at ~58 MB/s of Bulk into the republish path. In every case the
+consumer, with Bulk streaming into the republish path. In every case the
 operator Recv-Q (and Send-Q) stayed flat at 0 and the surviving tiers were
 unaffected. The mechanism: at bench scale `publish()` does not block the drain
 thread — under Zenoh in particular the publish is an async hand-off to the
@@ -19,6 +19,14 @@ needs conditions this harness can't hit at bench scale (far higher sustained
 volume to exhaust Zenoh's internal buffers, the real fragmented costmap topic,
 over-horizon/router dynamics) — or a root cause other than the back-pressure
 hypothesis the issue records.
+
+Correction (#57): that 2026-05-25 run used the pre-#57 all-zeros Bulk payload,
+which compressed to a single ~488 B packet, so the harness pushed only ~5 kB/s
+of single-packet traffic — NOT the ~58 MB/s this note originally claimed. The
+no-wedge finding was therefore reached in an unrepresentative,
+zero-fragmentation regime. #57 makes this scenario stream real incompressible,
+fragmented Bulk (~4.8 MB/s, ~480+ fragments per image), so the finding must be
+re-validated on the host bench run before it can be trusted.
 
 So this is a **no-wedge regression guard**, not a red→green demo: it asserts
 the healthy behavior (Recv-Q stays bounded, surviving tiers keep delivering)
@@ -52,6 +60,17 @@ THRESHOLDS = {
     # the field wedge backed up ~361 KB toward the ~426 KB SO_RCVBUF. 100 KB
     # cleanly separates a healthy drain from a wedging one, above any normal
     # transient.
+    # RE-DERIVED (host run, 2026-08-22, #57 part 2) -- kept at 100 KB.
+    # The concern was that this ceiling was set against single-packet Bulk
+    # (~5 kB/s), so a healthy drain edge under #57's real fragmented Bulk
+    # (~4.8 MB/s) might sit higher. It does not: with the Bulk consumer frozen
+    # for 8 s under that load, the post-stall operator Recv-Q peaked at
+    # 14,976 B -- 6.7x under the ceiling, and still far under both the ~361 KB
+    # field wedge and the ~426 KB SO_RCVBUF the value was derived from. The
+    # drain keeps up even when the tier is genuinely saturating the link, so
+    # the healthy/wedging separation this ceiling draws is unchanged.
+    # (This is also the first non-trivial drain edge the harness has produced;
+    # see README "Refinement plan" item 1 on N_recv_q_climb_s.)
     'recvq_wedge_ceiling_bytes': 100_000,
     # Surviving tiers must keep delivering after the stall at >= this fraction
     # of their pre-stall rate. Observed ~1.0 (no head-of-line impact); 0.5

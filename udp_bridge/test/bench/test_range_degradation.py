@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 THIS_DIR = Path(__file__).parent
@@ -52,6 +53,15 @@ THIS_DIR = Path(__file__).parent
 # phase is derived from cadence x duration, not from a sender-side tally,
 # so a starved sender cannot flatter the delivery ratio.
 COTENANT_RATE_HZ = 20.0
+
+# The Bulk tier topic. Used by the #57 fragmentation and wire-rate
+# acceptance invariants below.
+BULK_TOPIC = '/boat/bulk/image'
+# Nominal Bulk offered rate: pub.py's bulk tier is 10 Hz x 480 KB of
+# incompressible payload (#57). The wire-rate invariant measures how much the
+# tier PRESENTS, so it is scaled against this, not against the link budget --
+# the limiter is entitled to shed the difference.
+BULK_NOMINAL_BPS = 4_800_000.0
 
 # Match THRESHOLDS section of `test/bench/README.md`. These are
 # initial values; the README's "Refinement plan" section governs how
@@ -70,6 +80,11 @@ THRESHOLDS = {
     # leaves generous room for queueing while still failing loudly if the
     # bridge is taking the link. 0.5 means "a co-tenant gets at least half
     # of what the physical path would give it on its own".
+    # OBSERVED (host run, 2026-08-22): worst window 0.89 (critical#3), all
+    # others >= 0.98. Left at 0.50 -- the margin is real headroom against
+    # publisher jitter and queueing, and tightening it would convert ordinary
+    # variance into failures without detecting anything the current value
+    # misses.
     'K_cotenant_delivery_pct': 0.50,
     # Co-tenant p95 one-way latency ceiling per phase (seconds, issue
     # #52). A flow that is queued but still trickling out can satisfy the
@@ -77,7 +92,56 @@ THRESHOLDS = {
     # traffic — this catches that. Loud on real starvation, generous on
     # ordinary queueing; an initial value to be refined as field/bench
     # co-tenant traces accumulate (see README "Refinement plan").
+    # OBSERVED (host run, 2026-08-22): steady-state max 0.054 s -- two orders
+    # of magnitude under this ceiling. An earlier run measured 15.768 s in a
+    # DOWNSHIFT window; that is the queue-drain transient bounded separately
+    # below (#61) and it is intermittent, so a single clean run does not
+    # retire it.
     'K_cotenant_p95_latency_s': 5.0,
+    # Margin on the per-window queue-drain bound for a window whose link rate
+    # DROPPED versus the previous one (#61). A capacity cliff leaves the
+    # bottleneck's standing queue draining at the NEW rate, a delay the
+    # bridge's rate control cannot recall -- see the invariant's docstring.
+    #
+    # The bound is DERIVED PER WINDOW from that window's link rate, not fixed:
+    # netem's `limit 1000` packets x 1000 B maximum_packet_size / rate. A
+    # single number would have to be the slowest phase's (62.5 kB/s -> 16.0 s)
+    # and would then be ~20x looser than the physics for the fringe downshift
+    # (1.25 MB/s -> 0.8 s), leaving the fast windows effectively unguarded on
+    # latency. This margin covers the tail of the sampling window; the ceiling
+    # never goes below the steady-state bound, so a downshift is never judged
+    # more harshly than a steady window.
+    'K_cotenant_transient_drain_margin': 1.25,
+    # Bulk fragmentation floor (#57). A 480 KB incompressible Image over a
+    # 1000-byte maximum_packet_size fragments into floor(480000/1000)=480
+    # pieces at minimum; per-fragment bridge headers cut the effective payload
+    # per packet, so the real count trends ABOVE 480, not below -- an
+    # incompressible payload gets no header-compression discount. 400 sits
+    # safely under that with margin for partial-window sampling.
+    # OBSERVED (host run, 2026-08-22): average_fragment_count = 508 in
+    # in_range_clean, matching the predicted ~505 (480000 B / ~950 B effective
+    # payload once FragmentHeader + SequencedPacketHeader are deducted from the
+    # 1000-byte packet). 400 keeps ~21% margin below the observation, which is
+    # the right side to err on: this invariant exists to catch a collapse back
+    # to ~1 fragment, not to pin the exact count.
+    'T_fragment_floor': 400,
+    # Bulk offered-volume floor as a fraction of BULK_NOMINAL_BPS (#57).
+    # Scaled against what the tier PRESENTS (success + dropped), not against
+    # the link budget -- the limiter is entitled to shed the difference, so
+    # asserting delivered volume would be asserting that admission control
+    # fails to work. See test_invariant_bulk_wire_rate.
+    #
+    # OBSERVED (host run, 2026-08-22): 5.08 MB/s offered in in_range_clean =
+    # 1.06x the 4.8 MB/s nominal. The 6% overshoot is fragment-header
+    # overhead, and it cross-checks the fragment count: 508 fragments x
+    # ~1000 B on the wire carries a 480 KB payload, ~5% more bytes than the
+    # payload alone.
+    #
+    # Left at 0.5 rather than tightened toward the observation. The failure
+    # this guards is the pre-#57 collapse to a ~0.5 kB/s trickle -- four
+    # orders of magnitude below the floor -- so a tight bound would buy no
+    # detection while making the invariant brittle to publisher scheduling.
+    'W_wire_pct': 0.5,
 }
 
 # Topic-list confinement: which connections each forwarded topic is allowed
@@ -94,8 +158,28 @@ ALLOWED_TOPIC_CONNECTIONS = {
 # behavior on the lossy/critical legs and to produce a stable in-range
 # baseline at each end.
 SCENARIO_HOLD_S = 10.0
-# Subprocess timeout — generous for setup/teardown overhead.
-SCENARIO_TIMEOUT_S = SCENARIO_HOLD_S * 9 + 60.0
+def _import_run_scenario_ready_timeout() -> float:
+    """`run_scenario.READY_TIMEOUT_S`, read rather than duplicated.
+
+    The orchestrator adds this budget to publisher lifetime, so the outer
+    subprocess cap has to include it. Reading the value keeps the two in
+    lockstep — the same lockstep discipline as `_phase_loss_rates` and
+    `_phase_trajectory_rates_bps` below.
+    """
+    sys.path.insert(0, str(THIS_DIR))
+    import run_scenario  # type: ignore
+    return float(run_scenario.READY_TIMEOUT_S)
+
+
+# Subprocess timeout — generous for setup/teardown overhead, and it must
+# also cover the pre-walk readiness gate (#57), whose budget the orchestrator
+# adds to publisher lifetime. Without that term a slow gate would push the run
+# past this outer cap and kill it mid-teardown, so pytest would report a bare
+# TimeoutExpired instead of the BENCH_ERROR_* diagnostics the harness emits to
+# say what actually went wrong -- the harness losing its own error reporting
+# at exactly the moment it has something to report.
+SCENARIO_TIMEOUT_S = (SCENARIO_HOLD_S * 9 + 60.0
+                      + _import_run_scenario_ready_timeout())
 
 
 def _userns_available() -> bool:
@@ -421,6 +505,27 @@ def _split_in_range_phases(artifacts) -> tuple[dict, dict] | None:
 # Invariant 3: Rate recovers to X% of baseline within T seconds.
 # -----------------------------------------------------------------------
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        'Known defect, rolker/udp_bridge#60: after over_horizon the Bulk tier '
+        'is shut out COMPLETELY, not merely slowed. Measured over the final '
+        'in_range window (10 samples, gated run 2026-08-22): Bulk offered '
+        '5,077,800 B/s and succeeded at exactly 0, while the same window '
+        'pre-event ran 1,139,732 success against 3,359,233 offered. The '
+        '~2,050 B/s the connection does carry is entirely Critical (165) + '
+        'Telemetry (1,879) -- small packets that fit under a cap a 480 KB '
+        'fragmented message cannot. Mechanism: the AIMD cap leaves the floor '
+        'at ~8.2 kB/s and recovers by max(2048, 0.1 x effective) per ~1 Hz '
+        'sample -- ~6 samples flat then ~48 geometric, about 54 s to regain a '
+        '~2 MB/s baseline, against T_recovery_s=30. Invisible before #57 '
+        'because the compressible Bulk payload made the baseline ~8 kB/s of '
+        'single packets, reachable in two samples. Consequence of '
+        "#52's (correct) switch to an effective-cap-relative additive step. "
+        'strict=True so this turns back into a failure when #60 lands -- do '
+        'NOT lower X_recovery_pct or widen T_recovery_s to clear it.'
+    ),
+)
 def test_invariant_recovery_completeness(artifacts):
     """After the over-horizon → in_range edge, the WiFi connection's
     `message.success_bytes_per_second` must reach X% of the pre-event
@@ -477,6 +582,99 @@ def _phase_loss_rates() -> dict[str, float]:
 PHASE_LOSS_RATE = _phase_loss_rates()
 
 
+def _phase_trajectory_rates_bps() -> list:
+    """Per-window link rate (bytes/s) in trajectory order, from
+    run_scenario.PHASE_TRAJECTORY — so a trajectory edit stays in lockstep.
+    """
+    sys.path.insert(0, str(THIS_DIR))
+    import run_scenario  # type: ignore
+    out = []
+    for name, profile in run_scenario.PHASE_TRAJECTORY:
+        r = str(profile['rate']).strip().lower()
+        if r.endswith('mbit'):
+            bps = float(r[:-4]) * 1_000_000 / 8
+        elif r.endswith('kbit'):
+            bps = float(r[:-4]) * 1_000 / 8
+        else:
+            bps = float(r) / 8
+        out.append((name, bps))
+    return out
+
+
+PHASE_TRAJECTORY_RATES = _phase_trajectory_rates_bps()
+
+def _bench_maximum_packet_size() -> int:
+    """`maximum_packet_size` from configs/three_path.yaml.
+
+    Read, not copied. The #61 drain ceiling is queue_depth / link_rate, and
+    queue depth is packets x packet size -- so a config change with a stale
+    constant here skews the bound silently: too loose masks a latency
+    regression, too tight invents failures. Same lockstep discipline as
+    `_phase_loss_rates` and `_phase_trajectory_rates_bps`.
+
+    Both bridge stanzas must agree, because one number cannot describe two
+    queue depths. Disagreement raises rather than picking a winner.
+    """
+    config = THIS_DIR / 'configs' / 'three_path.yaml'
+    with config.open() as f:
+        doc = yaml.safe_load(f)
+    sizes = {
+        node: params['ros__parameters']['maximum_packet_size']
+        for node, params in doc.items()
+        if isinstance(params, dict) and 'ros__parameters' in params
+        and 'maximum_packet_size' in params['ros__parameters']
+    }
+    if not sizes:
+        raise RuntimeError(
+            f'No maximum_packet_size found in {config}; the #61 transient '
+            'drain ceiling cannot be derived.')
+    if len(set(sizes.values())) != 1:
+        raise RuntimeError(
+            f'Bridge stanzas disagree on maximum_packet_size ({sizes}); a '
+            'single queue-depth constant cannot describe both. Reconcile '
+            f'{config} or make the drain ceiling per-connection.')
+    return int(next(iter(sizes.values())))
+
+
+# Bottleneck queue depth the transient co-tenant bound is derived from (#61):
+# netem's default `limit` in packets, times the bridge's maximum_packet_size.
+# The packet size is read from configs/three_path.yaml so the two cannot
+# drift; the queue limit is netem's own default, a property of tc rather than
+# of this harness, so it is stated here.
+NETEM_QUEUE_LIMIT_PACKETS = 1000
+NETEM_QUEUE_PACKET_BYTES = _bench_maximum_packet_size()
+
+
+def _transient_latency_ceiling_s(link_bps: float | None) -> float:
+    """p95 latency ceiling for a window whose link rate just dropped (#61).
+
+    The standing queue was filled at the OLD rate and drains at the NEW one,
+    so the worst-case added delay is queue_depth / new_rate. Never returns
+    less than the steady-state ceiling: a downshift window must not be judged
+    more harshly than a steady one. Falls back to the steady ceiling when the
+    window's rate is unknown, which keeps an unmapped window guarded rather
+    than silently exempt.
+    """
+    steady = THRESHOLDS['K_cotenant_p95_latency_s']
+    if not link_bps:
+        return steady
+    drain_s = (NETEM_QUEUE_LIMIT_PACKETS * NETEM_QUEUE_PACKET_BYTES
+               / link_bps)
+    return max(steady,
+               drain_s * THRESHOLDS['K_cotenant_transient_drain_margin'])
+
+
+# NOTE (#57): before #57 this ran in the zero-fragmentation regime -- Bulk
+# compressed to a single packet, so resend traffic was near-zero and this
+# xfail held trivially. With #57's incompressible payload + 1000-byte packets,
+# Bulk now fragments into ~480+ pieces at ~0.5% loss, so nearly every message
+# needs a resend and the resend/tx_ok ratio is exercised for real. That may
+# push a lossy phase's ratio the OTHER way and flip this strict xfail to XPASS
+# -- which, with strict=True, is a CI FAILURE. Do NOT pre-emptively remove the
+# marker or raise F_resend_multiplier to keep it xfailing: raising F would mask
+# the residual this marker exists to record. Whether the marker comes off is a
+# #54 question, decided from the host bench run's numbers -- see
+# .agent/work-plans/issue-57/plan.md, step 6.
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -553,6 +751,8 @@ def _cotenant_delivery_per_window(artifacts) -> list:
     windows = _phase_windows(phase_log)
     walk_start = phase_log['walk_start_unix']
 
+    rates = PHASE_TRAJECTORY_RATES
+
     out: list = []
     for occurrence, (phase_name, t_start, t_end) in enumerate(windows):
         a, b = walk_start + t_start, walk_start + t_end
@@ -560,12 +760,19 @@ def _cotenant_delivery_per_window(artifacts) -> list:
         expected = max(1.0, (b - a) * COTENANT_RATE_HZ)
         lat = sorted(recv - sent for sent, recv in in_win)
         p95 = lat[int(0.95 * (len(lat) - 1))] if lat else float('inf')
+        # A window whose link rate dropped versus the previous one inherits a
+        # standing queue sized for the OLD rate; see #61.
+        downshift = (occurrence < len(rates) and occurrence > 0
+                     and rates[occurrence][1] < rates[occurrence - 1][1])
         out.append({
             'phase': phase_name,
             'occurrence': occurrence,
             'delivered': len(in_win),
             'expected': expected,
             'p95_latency_s': p95,
+            'downshift': downshift,
+            'link_bps': (rates[occurrence][1]
+                         if occurrence < len(rates) else None),
         })
     return out
 
@@ -584,6 +791,25 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
     in. What protects the operator is headroom against measured
     throughput (`link_headroom_fraction`, issue #52), and this invariant
     is what checks the bridge honours it.
+
+    **Two bounds, two phenomena (#61).** Windows are judged against
+    `K_cotenant_p95_latency_s` (5 s) in steady state, but against
+    a per-window queue-drain bound when the window's link rate dropped versus
+    the previous one — `_transient_latency_ceiling_s`, derived from that
+    window's own rate rather than fixed at the slowest phase's, so a fast
+    downshift (fringe, 1.25 MB/s → 0.8 s) stays guarded on latency instead of
+    inheriting the 16 s bound the slowest phase needs. The 2026-08-22 run
+    measured a 15.8 s p95
+    entering `critical` while delivery stayed at 0.52 — the flow was connected
+    and unusable. That is the bottleneck's standing queue draining at the new
+    rate (netem `limit 1000` x 1000 B / 62_500 B/s = 16.0 s, matching the
+    observation to 1.5%), not the bridge taking bandwidth: rate headroom
+    cannot recall bytes already committed to a FIFO. Tracked as #61, whose
+    likely mitigation is AQM at the bottleneck rather than a bridge change.
+
+    Collapsing the two under one number would either hide real starvation
+    behind a loose bound, or fail permanently on a phenomenon this invariant
+    does not govern.
 
     `over_horizon` is excluded: the path applies 100% loss, so nothing
     survives it and the bridge is not the reason.
@@ -612,12 +838,25 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
                 f'{label}: co-tenant delivered {ratio:.2f} of expected, '
                 f'below {floor:.2f} ((1 - loss {loss:.3f}) x K={k}); '
                 f'p95 one-way latency {w["p95_latency_s"]:.3f} s')
-        elif w['p95_latency_s'] > p95_ceiling:
-            violators.append(
-                f'{label}: co-tenant p95 one-way latency '
-                f'{w["p95_latency_s"]:.3f} s exceeds {p95_ceiling:.1f} s '
-                f'(delivered {ratio:.2f} of expected — queued but too slow '
-                f'to be useful for interactive management traffic)')
+        else:
+            # Steady-state windows get the interactive-usability bound. A
+            # window whose link rate just DROPPED is judged against the
+            # queue-drain bound instead: the standing queue was sized for the
+            # old rate and drains at the new one, which no amount of
+            # send-rate headroom can recall (#61). Reported separately so the
+            # two phenomena are never conflated -- and still asserted, so a
+            # deeper queue or a genuine starvation regression fails here.
+            ceiling = (_transient_latency_ceiling_s(w['link_bps'])
+                       if w['downshift'] else p95_ceiling)
+            kind = ('queue-drain transient after a capacity downshift, #61'
+                    if w['downshift'] else 'steady state')
+            if w['p95_latency_s'] > ceiling:
+                violators.append(
+                    f'{label}: co-tenant p95 one-way latency '
+                    f'{w["p95_latency_s"]:.3f} s exceeds {ceiling:.1f} s '
+                    f'[{kind}] (delivered {ratio:.2f} of expected — queued '
+                    f'but too slow to be useful for interactive management '
+                    f'traffic)')
     assert evaluated > 0, (
         'No evaluable phases — the co-tenant trace is empty, which is a '
         'harness failure rather than a healthy link.')
@@ -681,6 +920,157 @@ def test_invariant_stats_publish_rates(artifacts):
     if evaluated == 0:
         pytest.skip('No baseline pub rate established for any stats topic.')
     assert not violators, '\n'.join(violators)
+
+
+# -----------------------------------------------------------------------
+# Invariants 10 & 11 (#57): the Bulk tier actually fragments, and delivers
+# at a field-representative wire rate.
+#
+# Both read the boat send-side per-topic statistics (mirrored on the
+# operator as /operator_bridge/remotes/boat/topic_statistics), filtered to
+# the Bulk topic. Before #57 the Bulk payload compressed to a single packet,
+# so average_fragment_count was ~1 and the wire rate was a ~0.5 kB/s
+# trickle; these two invariants fail loudly if a regression returns the
+# harness to that unrepresentative regime.
+# -----------------------------------------------------------------------
+
+def _bulk_stats_per_phase(artifacts) -> tuple[dict[str, dict[str, float]],
+                                              int]:
+    """Per-phase Bulk (`/boat/bulk/image`) averages from the boat send-side
+    `topic_statistics`: `average_fragment_count` and
+    `send.success_bytes_per_second`, aggregated by phase name across repeats.
+
+    Returns `(per_phase, total_messages)`. The second value distinguishes
+    "no topic_statistics were captured at all" -- nothing to assert on, a
+    legitimate skip -- from "they were captured but yielded no usable Bulk
+    sample", which is a stats-capture collapse the callers must fail on. Same
+    fail-not-skip convention as the Recv-Q guard above.
+    """
+    bag_reader = _import_bag_reader()
+    arrays = bag_reader.read_topic_statistics_arrays(
+        artifacts.bag_dir, '/operator_bridge/remotes/boat/topic_statistics')
+    phase_log = _load_phase_log(artifacts.phase_log)
+    windows = _phase_windows(phase_log)
+    walk_start_ns = int(phase_log['walk_start_unix'] * 1e9)
+
+    acc: dict[str, dict[str, list]] = {}
+    for t, msg in arrays:
+        phase = next(
+            (name for name, s, e in windows
+             if walk_start_ns + int(s * 1e9) <= t
+             < walk_start_ns + int(e * 1e9)),
+            None)
+        if phase is None:
+            continue
+        for ts_stat in msg.topics:
+            if ts_stat.source_topic != BULK_TOPIC:
+                continue
+            # Skip the empty-connection bucket. MessageStatistics::get()
+            # buckets by (remote, connection), and UDPBridge::callback records
+            # a pre-send data point keyed ("", "") — message_size only, before
+            # destinations are known, so its fragment_count is 0 and its send
+            # rates are unset (udp_bridge.cpp:773-777). Averaging it with the
+            # real ("operator", "wifi") bucket halves both metrics: the first
+            # #57 run read avg_fragment_count 254 where the real value was
+            # ~508, and a Bulk send rate of 467 kB/s where it was ~934.
+            if not ts_stat.connection_id:
+                continue
+            d = acc.setdefault(phase, {'frag': [], 'send': [], 'offered': []})
+            d['frag'].append(ts_stat.average_fragment_count)
+            d['send'].append(ts_stat.send.success_bytes_per_second)
+            d['offered'].append(ts_stat.send.success_bytes_per_second
+                                + ts_stat.send.dropped_bytes_per_second)
+    out: dict[str, dict[str, float]] = {}
+    for phase, d in acc.items():
+        if not d['frag']:
+            continue
+        out[phase] = {
+            'avg_fragment_count': sum(d['frag']) / len(d['frag']),
+            'send_success_bps': sum(d['send']) / len(d['send']),
+            'offered_bps': sum(d['offered']) / len(d['offered']),
+            'samples': len(d['frag']),
+        }
+    return out, len(arrays)
+
+
+def _require_clean_phase_stats(per_phase: dict, total_msgs: int) -> dict:
+    """The `in_range_clean` Bulk stats both #57 invariants assert on.
+
+    Skips only when no `topic_statistics` were captured at all -- there is
+    genuinely nothing to assert. Once messages exist, the absence of a usable
+    Bulk sample is a stats-capture collapse (the topic vanished, every sample
+    landed in the empty-connection bucket, or the phase window missed them),
+    so it FAILS. Skipping there would let the #57 regression guard evaporate
+    silently, which is the exact failure mode this harness exists to catch --
+    same convention as the Recv-Q guard in `test_invariant_no_recv_q_wedge`.
+    """
+    if total_msgs == 0:
+        pytest.skip(
+            'No topic_statistics messages recorded; nothing to assert.')
+    stats = per_phase.get('in_range_clean')
+    assert stats is not None and stats['samples'] > 0, (
+        f'{total_msgs} topic_statistics messages were recorded, but none '
+        f'carry a usable {BULK_TOPIC} sample on a real connection bucket in '
+        f'an in_range_clean phase (phases seen: '
+        f'{sorted(per_phase) or "none"}). That is a stats-capture failure, '
+        'not a healthy bridge -- the #57 Bulk invariants cannot be evaluated.')
+    return stats
+
+
+def test_invariant_fragmentation_exercised(artifacts):
+    """The Bulk tier must actually fragment (#57 Acceptance criterion 2).
+
+    With an incompressible 480 KB payload and a 1000-byte
+    maximum_packet_size, each `/boat/bulk/image` message splits into
+    floor(480000/1000)=480 fragments at minimum -- per-fragment bridge
+    headers push the real count above that, not below (an incompressible
+    payload gets no compression discount). Asserts the boat send-side
+    `average_fragment_count` for Bulk stays >= T_fragment_floor in the clean
+    in-range phase (the most fully-delivered window). The pre-#57
+    single-packet bug would drive this to ~1 and fail here.
+    """
+    per_phase, total_msgs = _bulk_stats_per_phase(artifacts)
+    stats = _require_clean_phase_stats(per_phase, total_msgs)
+    floor = THRESHOLDS['T_fragment_floor']
+    avg_frag = stats['avg_fragment_count']
+    assert avg_frag >= floor, (
+        f'Bulk average_fragment_count {avg_frag:.1f} in in_range_clean is '
+        f'below T_fragment_floor {floor} -- the harness is not exercising '
+        f'fragmentation (expected >= 480: 480000 B / 1000 B packets, headers '
+        f'push it higher). {stats["samples"]} samples.')
+
+
+def test_invariant_bulk_wire_rate(artifacts):
+    """Bulk delivers at a field-representative wire rate (#57 Acceptance
+    criterion 1).
+
+    With the incompressible payload Bulk is offered at ~4.8 MB/s
+    (10 Hz x 480 KB, ~120% of the 4 MB/s WiFi budget).
+
+    Asserts on **offered** volume (`send.success + send.dropped`), not on
+    success alone. The first #57 run made the distinction concrete: Bulk
+    succeeded at ~0.9 MB/s while being dropped at ~2.9 MB/s, because the rate
+    limiter is *supposed* to shed an over-budget tier. Asserting success would
+    therefore be asserting that the limiter fails to do its job, and the
+    threshold would have to be lowered every time admission control got
+    better. What this invariant exists to catch is the pre-#57 regime, where a
+    compressible payload made Bulk a ~0.5 kB/s trickle -- that is a question
+    about how much traffic the tier *presents*, which is what offered
+    measures.
+
+    Sourced per-topic from topic_statistics, and only from a real connection
+    bucket (see `_bulk_stats_per_phase`).
+    """
+    per_phase, total_msgs = _bulk_stats_per_phase(artifacts)
+    stats = _require_clean_phase_stats(per_phase, total_msgs)
+    floor = THRESHOLDS['W_wire_pct'] * BULK_NOMINAL_BPS
+    offered_bps = stats['offered_bps']
+    assert offered_bps >= floor, (
+        f'Bulk offered rate {offered_bps:.0f} B/s (success+dropped) in '
+        f'in_range_clean is below {floor:.0f} B/s '
+        f'(W_wire_pct={THRESHOLDS["W_wire_pct"]} x {BULK_NOMINAL_BPS:.0f} B/s '
+        f'nominal 10 Hz x 480 KB) -- the Bulk tier is not presenting a '
+        f'field-representative load. {stats["samples"]} samples.')
 
 
 # =======================================================================
