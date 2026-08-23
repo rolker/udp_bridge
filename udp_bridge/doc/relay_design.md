@@ -147,6 +147,14 @@ is supposed to leave inert. If you are reading this to check whether relay
 can perturb an existing deployment, that invariant (label == the remote's
 own `name`, or `name` set explicitly) is the thing to verify.
 
+**Upgrading:** because `remotes.<label>.name` was never declared before
+#51, a `name:` key in an existing params file was inert — and the shipped
+example set one. Where that key differs from the label, #51 renames every
+surface keyed by the remote (per-remote topics, `BridgeInfo` /
+`TopicStatistics` fields, diagnostic task names, and the `remote` / `name`
+service arguments). See the upgrade note under `remotes.<remote_label>.name`
+in [`README.md`](../README.md#parameters) before upgrading a live config.
+
 The exclusion is applied *before* any `last_sent_time` is stamped, so a
 relay never consumes the excluded remote's rate-limit budget: the sender's
 rate state after a relay is exactly as if the relay had not happened.

@@ -85,7 +85,39 @@ ros2 run udp_bridge udp_bridge_node --ros-args --params-file src/udp_bridge/udp_
 -   `remotes_list`: (string array) List of labels for initial remote nodes.
 
 For each remote in `remotes_list`:
--   `remotes.<remote_label>.name`: (string) Name of the remote.
+-   `remotes.<remote_label>.name`: (string, default empty) The name that
+    remote calls *itself* on the wire — its own `name` parameter, which it
+    stamps into every packet it sends. Leave it unset (the default) when the
+    `remotes_list` label already equals that name, which is the usual case;
+    set it when your local label for a remote differs from the name that
+    remote uses. Two remotes resolving to the same name fail `on_configure`
+    (validated before the socket is opened). The resolved name — not the
+    label — is what the bridge keys remotes by; see the upgrade note below.
+
+    > **Upgrade note (#51) — check for a stale `name:` key before upgrading.**
+    > Before #51 this parameter was never declared, so a `name:` key in a
+    > params file was silently ignored and the `remotes_list` label was used
+    > everywhere. The shipped `config/example_params.yaml` set
+    > `label: robot_a` with `name: "robot_a_bridge"`, so a config copied from
+    > it carries an inert key that #51 makes live. **If any of your remotes
+    > has a `remotes.<label>.name` whose value differs from the label**, then
+    > on upgrade everything keyed by that remote is renamed from the label to
+    > the `name:` value:
+    >
+    > - the per-remote topics `~/remotes/<remote>/bridge_info` and
+    >   `~/remotes/<remote>/topic_statistics`;
+    > - `BridgeInfo.remotes[].name` and `BridgeInfo.topics[].remotes[].remote`;
+    > - `TopicStatistics.destination_node`;
+    > - the per-remote diagnostic task names;
+    > - the `remote` / `name` arguments of `remote_subscribe`,
+    >   `remote_advertise`, `remove_subscribe`, `remove_advertise` and
+    >   `add_remote`.
+    >
+    > Anything that consumes those (dashboards, scripts, launch-time service
+    > calls) must use the new name. If you did **not** intend the rename,
+    > delete or comment out the `name:` key and the label is used as before.
+    > If the key was correct all along, note that the loop rule and relay
+    > routing now actually work for that remote — that is the fix #51 shipped.
 -   `remotes.<remote_label>.connections_list`: (string array) List of named connections.
 
 For each connection in `connections_list`:
