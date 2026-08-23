@@ -677,6 +677,19 @@ UDPBridge::CallbackReturn UDPBridge::on_deactivate(const rclcpp_lifecycle::State
   // while INACTIVE. Queued relays are discarded, matching the publish
   // queue's best-effort contract.
   relay_queue_.stop();
+  // Both stop() calls fold the discarded backlog into their dropped counts.
+  // That backlog is the operator deactivating, not link loss, so re-baseline
+  // the diagnostic deltas here: diagnostic_timer_ keeps ticking while
+  // INACTIVE (it is reset only in on_cleanup), and without this the first
+  // tick after a deactivate reports "relay dropping (N since last tick) —
+  // outgoing link stalled?" for drops the operator caused. The cumulative
+  // dropped_total still shows them. (The transition callback runs outside
+  // periodic_group_, so a tick could interleave; the worst case is that one
+  // tick reports the backlog before the re-baseline lands — never a
+  // double-count, since both sides only ever assign the same monotonic
+  // total.)
+  last_reported_publish_drops_ = publish_queue_.dropped_count();
+  last_reported_relay_drops_ = relay_queue_.dropped_count() + relay_drops_.lost();
   // Discard any reorder-buffer packets held at deactivation (issue #35
   // review follow-up). spin_once returns early while INACTIVE, so the
   // window-expiry flush stops ticking; a packet held here would sit out
@@ -2650,8 +2663,9 @@ void UDPBridge::diagnoseReorderBuffer(const std::string& remote_name,
 void UDPBridge::diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper& stat)
 {
   // dropped_count() is atomic; depth takes the queue's brief internal lock.
-  // last_reported_publish_drops_ is touched only here (periodic_group_ is
-  // MutuallyExclusive), so the "recent" delta needs no extra synchronization.
+  // last_reported_publish_drops_ is touched here and, to re-baseline the
+  // delta across a deactivate, in on_deactivate; both writes assign the same
+  // monotonic total, so the "recent" delta needs no extra synchronization.
   const uint64_t dropped = publish_queue_.dropped_count();
   const uint64_t depth = static_cast<uint64_t>(publish_queue_.size());
   const uint64_t recent = dropped - last_reported_publish_drops_;
@@ -2680,7 +2694,8 @@ void UDPBridge::diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper
 void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& stat)
 {
   // Mirror of diagnosePublishQueue for the relay worker (issue #51).
-  // last_reported_relay_drops_ is touched only here (periodic_group_ is
+  // last_reported_relay_drops_ is touched here and in on_deactivate (see
+  // the note there); both assign the same monotonic total (periodic_group_ is
   // MutuallyExclusive), so the "recent" delta needs no synchronization.
   //
   // Two sources of loss are summed here. The queue drops on overflow and
