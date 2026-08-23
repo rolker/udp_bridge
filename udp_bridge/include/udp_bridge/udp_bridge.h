@@ -27,6 +27,7 @@
 #include "packet.h"
 #include "defragmenter.h"
 #include "udp_bridge/publish_queue.h"
+#include "udp_bridge/relay_queue.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
 //#include "std_msgs/msg/int32.hpp"
@@ -501,6 +502,20 @@ private:
   // remote_nodes_ are destroyed — the worker's sink (publishItem /
   // sendBridgeInfo) touches all three.
   PublishQueue publish_queue_;
+
+  // Remote->remote forwarding worker (issue #51). Keeps Connection::send()
+  // — whose sendto() has a ~200 ms worst-case retry loop per stalled
+  // destination — off the socket-drain thread, exactly as publish_queue_
+  // keeps rmw publish work off it (issue #10). Separate from
+  // publish_queue_ so a stalled local subscriber and a stalled remote link
+  // are independent failure domains. Lifecycle mirrors publish_queue_:
+  // configure()'d in on_configure, start()'ed in on_activate,
+  // stop()+join()'ed in on_deactivate, with a backstop stop() in
+  // on_cleanup. Declared LAST for the same destruction-order reason: on a
+  // non-lifecycle teardown its destructor (stop() + join()) must run
+  // before subscribers_ / remote_nodes_ — which its sink touches — are
+  // destroyed.
+  RelayQueue relay_queue_;
 };
 
 } // namespace udp_bridge
