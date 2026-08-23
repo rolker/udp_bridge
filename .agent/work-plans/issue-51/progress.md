@@ -207,3 +207,160 @@ and unreachable `PublishItem` provenance field.
 
 ### Open questions
 - [ ] No open questions — plan is review-plan-ready.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-23 00:11 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-51/plan.md` at `361d55e`
+**PR**: PR-less
+**Verdict**: approve-with-suggestions
+
+### Round-1 must-fix re-verification
+
+Both must-fix findings from the prior review (`91393ec`) are genuinely
+resolved by the redesign, not just reworded — verified independently
+against current source, not by trusting the plan's prose:
+
+- **Must-fix #1 (provenance unreachable at the loop-protection decision)**:
+  resolved by construction. The new design forwards from inside
+  `decodeData()` (`src/udp_bridge.cpp:899`), which already holds
+  `source_info.node_name` directly — there is no ROS pub→sub round trip to
+  lose it across. Confirmed the two sides of the loop comparison share one
+  identity namespace: `unwrap()` sets `source_info.node_name` from
+  `wrapped_packet->source_node` (`src/udp_bridge.cpp:1312`), the same value
+  used to key `remote_nodes_` (`:1330`) and `decodeTopicStatistics`
+  (`:1162`); `subscribers_[topic].remote_details` is keyed by `remote_node`
+  (`include/udp_bridge/types.h:40`, populated at `addSubscriberConnection`,
+  `src/udp_bridge.cpp:1187`), and every call site threads through
+  `remote_info.name` (the config-declared remote name, `:528`) or
+  `source_info.node_name` (`:1308`) — the same config-name/wire-source_node
+  correspondence the codebase already relies on elsewhere (e.g.
+  `decodeTopicStatistics`). The plain string compare is comparing like for
+  like.
+- **Must-fix #2 (opt-in leaked across sibling connections)**: resolved by
+  construction. `relay` lives on `ConnectionRateInfo`
+  (`include/udp_bridge/types.h:10`), keyed per `(remote, connection_id)` —
+  the exact same map `callback()`'s destination loop already iterates
+  per-connection (`src/udp_bridge.cpp:754-762`, each `connection_rate`
+  pushed individually into `destinations`). A `relay: false` connection is
+  structurally unreachable from a sibling's `relay: true`.
+
+### Findings
+
+- [ ] (suggestion) `addSubscriberConnection` (`src/udp_bridge.cpp:1172`)
+  unconditionally overwrites `rd.connection_rates[connection_id].period`
+  on every call (no "if changed" guard, unlike the `reliability`/
+  `durability` fields which use `if(!x.empty())`). If the plan's new
+  `relay` param follows the same unconditional-overwrite pattern (as its
+  own text implies — "threaded through a new trailing `bool relay = false`
+  ... into `rd.connection_rates[connection_id].relay`"), then any call to
+  `addSubscriberConnection` for the same `(source_topic, remote_node,
+  connection_id)` tuple that doesn't carry the relay bit — `decodeSubscribeRequest`
+  (`:1308`, wire-triggered `RemoteSubscribeInternal`, confirmed to have no
+  `relay` field) or `remoteAdvertise` (`:1665`, the `remote_subscribe`
+  ROS service) — will silently reset a statically-configured `relay: true`
+  back to `false`. The plan explicitly says relay is "static-config only
+  for now" and correctly notes `decodeSubscribeRequest` "keeps the
+  default," but doesn't flag that this means those two dynamic paths are a
+  live foot-gun if ever exercised against the same tuple a hub configured
+  via `topics_list` (e.g. an operator using the `subscribe` service for
+  ad hoc reconfiguration on a connection that also has static relay
+  config). Low probability in the star-hub topology the issue targets, but
+  worth either a one-line guard (only touch `.relay` from the static-config
+  path) or an explicit doc callout. — `plan.md` step 1 ("Per-destination
+  opt-in")
+- [ ] (suggestion) The proposed shared helper signature,
+  `selectRateLimitedConnections(remote_details, now, exclude_remote)`, has
+  no parameter for the additional `relay == true` per-connection predicate
+  that `relayToOtherRemotes` needs (`callback()`'s call site should NOT
+  apply this predicate — local-origin forwarding is unconditional). The
+  plan's prose describes filtering by `relay` first and then applying
+  period-gating on the surviving subset, which is the correct order — but
+  if an implementer instead calls the shared helper first and filters the
+  result afterward, `last_sent_time` gets bumped on `relay: false`
+  connections that were never actually sent to, corrupting future
+  period-gating for that destination the next time a local publish fires.
+  Worth tightening the signature (e.g. an optional predicate/require-relay
+  flag) so the ordering constraint isn't just implicit in prose. —
+  `plan.md` step 2 ("Forwarding, called from decodeData()")
+- [ ] (suggestion, doc-only) Relay runs before the stale/reorder gate in
+  `decodeData()`, so a duplicate/out-of-order resend that gets dropped
+  locally as stale is still relayed onward — the plan's own rationale
+  ("downstream bridge assigns its own fresh sequence on forward") is
+  correct and this is self-limiting (the outbound `Connection::send()`'s
+  AIMD admission control, `connection.cpp:514+`, still caps the relay
+  link's byte rate), but the amplification-under-resend consequence isn't
+  named explicitly and would be a natural addition to `doc/relay_design.md`.
+  — `plan.md` step 2
+
+### Verified claims (no issue found)
+
+- `Connection::send()`'s poll/retry loop (`src/connection.cpp:615-673`,
+  comment block `:545-560`) is exactly as described: `poll(..., 10)` up to
+  20 tries → ~200ms worst case, running outside `config_mutex_` (only
+  `sent_packet_statistics_mutex_` guards the reserve/record bookkeeping).
+  Today that cost is paid on `republish_group_` (Reentrant,
+  `src/udp_bridge.cpp:359`, `callback()`'s subscriptions run there per
+  `:1283`), never `socket_drain_group_` (MutuallyExclusive, `:358`, the
+  group `decodeData()`/`spin_once()` run on via the 10ms timer, `:541`).
+  Calling `send()` inline from `decodeData()` would genuinely reintroduce
+  the #10 drain-thread-stall hazard; the new dedicated `relay_queue_`
+  worker thread (mirroring `PublishQueue`, not a callback group) correctly
+  keeps this off both `socket_drain_group_` and `republish_group_`.
+- `PublishQueue` (`include/udp_bridge/publish_queue.h`) is bounded
+  (byte-budget), drop-oldest, single-worker, injected-`Sink` — the pattern
+  the plan proposes mirroring for `relay_queue_` genuinely avoids
+  unbounded growth under sustained relay load, contingent on the
+  implementer actually replicating this shape (byte bound + drop-oldest),
+  which the plan states explicitly.
+- Reusing `send(message_internal, connections, false)`
+  (`src/udp_bridge.cpp:1506`) genuinely routes relayed traffic through the
+  identical `Connection::send()` AIMD admission-control path (#43/#52) as
+  local-origin traffic — confirmed by reading the template chain down to
+  the per-packet `can_send()` check in `connection.cpp`. A relay hub does
+  not silently bypass admission control.
+- `MessageInternal.msg` genuinely carries `destination_topic`,
+  `reliability`, `durability`, `history_depth` fields that can be
+  swapped per destination without re-serializing the payload.
+- `callback()`'s period/`last_sent_time` gating (`src/udp_bridge.cpp:748-765`)
+  matches the plan's description exactly; extracting it under
+  `subscribers_mutex_` (same lock both call sites already need) is
+  race-free by construction — sequential exclusion via the existing
+  mutex, no new lock ordering introduced.
+- `.agents/README.md:92`'s per-topic parameter list is the correct,
+  current insertion point for a `relay` row. Issue #53 is open and matches
+  the plan's cross-reference intent. Test-file naming
+  (`test_reorder_buffer.cpp`, `test_admission_control.cpp` style) matches
+  the existing `test/` convention.
+
+### Summary
+
+The redesign genuinely resolves both round-1 must-fix findings by
+construction, not by reformulation — verified independently against
+current source rather than trusting the plan's citations. The threading
+analysis (retry-loop cost, callback-group boundaries, new dedicated worker)
+and the admission-control reuse claim both check out exactly as described.
+Three suggestion-level gaps remain, none blocking: a latent overwrite-reset
+risk if `relay` follows `period`'s unconditional-overwrite pattern and a
+dynamic subscribe path ever touches a statically-relay-configured tuple; an
+underspecified filter/gate ordering in the proposed shared rate-limiting
+helper that an implementer could get backwards; and a documentation gap
+around resend amplification under the before-the-stale-gate relay point
+(self-limiting via existing admission control, so cosmetic). The plan's
+167 lines (vs. the 30-80 guideline) are justified by the depth of
+verification required after a rejected round-1 design — the excess is
+concrete file:line rationale, not padding.
+
+### Recommended Actions
+
+- [ ] Note in `doc/relay_design.md` (or a plan addendum) whether `relay`
+  should be immune from the dynamic-subscribe overwrite paths
+  (`decodeSubscribeRequest`/`remoteAdvertise`), or accept the risk
+  explicitly.
+- [ ] Tighten `selectRateLimitedConnections`'s contract (signature or
+  docstring) so the relay-flag-filter-then-gate ordering isn't only
+  implicit in the plan's prose.
+- [ ] Add a one-line doc note on resend-amplification-before-relay to
+  `doc/relay_design.md`.
