@@ -114,8 +114,33 @@ connection's `maximum_bytes_per_second` for that combined load.
 **A message is never sent back to the remote it came from.** The
 destination is skipped when its `remote_details` key equals
 `SourceInfo::node_name` — the immediate sender, taken from the wrapped
-packet's `source_node`, the same key `remote_nodes_` is keyed by, so the
-comparison is a plain string compare in a single namespace.
+packet's `source_node`.
+
+### That comparison needs one identity namespace, and it has one
+
+The rule is a plain string compare, so it is only correct if both sides
+spell a remote the same way. There is exactly one namespace for that: the
+name a bridge calls itself on the wire (its own `name` parameter, which it
+stamps into every `WrappedPacket::source_node`). `remote_nodes_` is keyed
+by it, and every routing-table key a static config creates is keyed by it
+too.
+
+`remotes_list` entries are **labels**, not identities — they exist to spell
+parameter paths (`remotes.<label>.connections_list`). The identity of a
+configured remote is `remotes.<label>.name`, falling back to the label when
+unset (see `include/udp_bridge/remote_identity.h`). Two labels resolving to
+the same name fail `on_configure`, and a sequenced packet from a sender
+that matches no configured remote logs a throttled WARN naming the
+parameter to set.
+
+This is worth stating because it was wrong until it was fixed as part of
+#51: `on_configure` keyed everything by the label and never read
+`remotes.<label>.name`, so a remote whose own name differed from the hub's
+label for it matched nothing in the loop rule and had its traffic relayed
+straight back to it — with a **single** remote configured, the shape relay
+is supposed to leave inert. If you are reading this to check whether relay
+can perturb an existing deployment, that invariant (label == the remote's
+own `name`, or `name` set explicitly) is the thing to verify.
 
 The exclusion is applied *before* any `last_sent_time` is stamped, so a
 relay never consumes the excluded remote's rate-limit budget: the sender's
@@ -274,8 +299,22 @@ Relay widens the blast radius, and it is worth stating plainly:
   compromise.
 - Relay is driven by the routing table alone, with no per-source
   authorization: any remote that can send the hub a topic can reach every
-  other remote that lists it. The topic lists are the access-control list,
-  such as it is.
+  other remote that lists it.
+- **The topic lists are not an access-control list, because the hub
+  operator does not solely control them.** `decodeSubscribeRequest` feeds
+  the wire-supplied `source_topic`, `destination_topic` and `period`
+  straight into `addSubscriberConnection`, which writes
+  `subscribers_[source_topic].remote_details[source_node]` — creating topic
+  keys that were never configured. So any host that can reach the port can
+  **self-enrol as a relay destination** for a topic the hub carries, and,
+  because `source_node` is attacker-chosen (next point), can overwrite a
+  legitimate remote's entry in that table: a spoofed request with a
+  negative `period` silently cuts that operator's relayed feed. The
+  configured topic lists describe the intended routing, not an enforced
+  bound on it. This compounds
+  [#53](https://github.com/rolker/udp_bridge/issues/53) rather than being
+  separate from it — the tunnel is what bounds who can reach the port, and
+  nothing below the tunnel bounds what they can ask for.
 - **`source_node` is an attacker-controllable wire field.** The loop rule's
   only input is `SourceInfo::node_name`, taken from the wrapped packet's
   `source_node` — a string the sender chooses. An injected packet can
