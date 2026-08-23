@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 THIS_DIR = Path(__file__).parent
@@ -602,12 +603,46 @@ def _phase_trajectory_rates_bps() -> list:
 
 PHASE_TRAJECTORY_RATES = _phase_trajectory_rates_bps()
 
+def _bench_maximum_packet_size() -> int:
+    """`maximum_packet_size` from configs/three_path.yaml.
+
+    Read, not copied. The #61 drain ceiling is queue_depth / link_rate, and
+    queue depth is packets x packet size -- so a config change with a stale
+    constant here skews the bound silently: too loose masks a latency
+    regression, too tight invents failures. Same lockstep discipline as
+    `_phase_loss_rates` and `_phase_trajectory_rates_bps`.
+
+    Both bridge stanzas must agree, because one number cannot describe two
+    queue depths. Disagreement raises rather than picking a winner.
+    """
+    config = THIS_DIR / 'configs' / 'three_path.yaml'
+    with config.open() as f:
+        doc = yaml.safe_load(f)
+    sizes = {
+        node: params['ros__parameters']['maximum_packet_size']
+        for node, params in doc.items()
+        if isinstance(params, dict) and 'ros__parameters' in params
+        and 'maximum_packet_size' in params['ros__parameters']
+    }
+    if not sizes:
+        raise RuntimeError(
+            f'No maximum_packet_size found in {config}; the #61 transient '
+            'drain ceiling cannot be derived.')
+    if len(set(sizes.values())) != 1:
+        raise RuntimeError(
+            f'Bridge stanzas disagree on maximum_packet_size ({sizes}); a '
+            'single queue-depth constant cannot describe both. Reconcile '
+            f'{config} or make the drain ceiling per-connection.')
+    return int(next(iter(sizes.values())))
+
+
 # Bottleneck queue depth the transient co-tenant bound is derived from (#61):
-# netem's default `limit` in packets, times the bridge's maximum_packet_size
-# from configs/three_path.yaml. Both are harness-side facts, so the drain
-# bound is arithmetic rather than a tuned constant.
+# netem's default `limit` in packets, times the bridge's maximum_packet_size.
+# The packet size is read from configs/three_path.yaml so the two cannot
+# drift; the queue limit is netem's own default, a property of tc rather than
+# of this harness, so it is stated here.
 NETEM_QUEUE_LIMIT_PACKETS = 1000
-NETEM_QUEUE_PACKET_BYTES = 1000
+NETEM_QUEUE_PACKET_BYTES = _bench_maximum_packet_size()
 
 
 def _transient_latency_ceiling_s(link_bps: float | None) -> float:
