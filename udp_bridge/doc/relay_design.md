@@ -46,6 +46,20 @@ other remotes that carry the same topic:
    excluded from anything, and forwarding such a packet would fan it out to
    every remote listing the topic. On an unauthenticated transport (#53)
    that is an injection point; see [Security](#security).
+**The routing-table key is a literal string match, so the names have to
+agree.** `on_configure` keys `subscribers_` by the hub-local `source:`
+*resolved* against the node's namespace (`resolve_topic_or_service_name`),
+while the probe's key is the incoming packet's `destination_topic` exactly
+as it arrived on the wire. A sender whose `destination:` is written
+relative therefore publishes locally under the resolved name — the publish
+path creates the publisher, which resolves it — but leaves the relay probe
+looking up an unresolved key that matches nothing, and relay is silently
+skipped. **Write hub-carried topic names absolutely** (`/odometry`, not
+`odometry`) on both sides. This is not new — `publishers_` has always been
+keyed the same way — but relay is the first thing whose *routing* depends
+on it. Resolving per packet on the socket-drain thread was considered and
+left alone: it is a hot path and the name is attacker-supplied.
+
 2. **Handoff.** When true, the `RelayItem` (topic, sender's node name, the
    received `MessageInternal`, moved rather than copied) is attached to the
    `PublishItem` and handed to `relay_queue_` by `enqueuePublish()` — the
