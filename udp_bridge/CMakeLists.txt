@@ -168,6 +168,15 @@ if(BUILD_TESTING)
   # gap-filler can be published first, instead of hard-dropping the late
   # arrival. Uses injected fake time (no real-time sleeps).
   add_udp_bridge_gtest(test_reorder_buffer test/test_reorder_buffer.cpp)
+  # test_relay_routing (issue #51) exercises destination_selection.h — the
+  # routing decision shared by the local-origin sender (callback) and the
+  # relay sender: the loop rule, routing-table fidelity and rate-limit
+  # parity. No node, no socket.
+  add_udp_bridge_gtest(test_relay_routing test/test_relay_routing.cpp)
+  # test_relay_queue (issue #51) exercises the bounded relay-worker queue in
+  # isolation via an injected sink, mirroring test_publish_queue: forwarding
+  # must never stall the socket-drain thread.
+  add_udp_bridge_gtest(test_relay_queue test/test_relay_queue.cpp)
 
   # Bench-harness smoke test (issue #18). Runs the orchestrator under
   # an unprivileged user namespace; skips cleanly if unshare -Urn is
