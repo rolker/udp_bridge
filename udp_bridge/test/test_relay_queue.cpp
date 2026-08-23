@@ -31,6 +31,7 @@
 //                                 plain std::thread has no executor
 //                                 catch-all behind it.
 
+#include "udp_bridge/relay_drops.h"
 #include "udp_bridge/relay_queue.h"
 
 #include "udp_bridge/connection.h"
@@ -334,6 +335,57 @@ TEST(RelayQueue, ConnectionExceptionInSinkDoesNotKillWorker)
   EXPECT_EQ(processedAfterThrow(queue, m, processed),
             (std::vector<std::string>{"/after"}));
   queue.stop();
+}
+
+// Sink-side drops (issue #51). RelayQueue::dropped_count() sees only what
+// the queue discards; an item the sink dequeues and then abandons — the
+// node left ACTIVE, the sender is unnamed, the topic's routing table was
+// torn down under it — is loss the queue cannot count. A relay drop is
+// unrecoverable (the message never reached a Connection, so the resend
+// layer has nothing to retransmit), so the diagnostic must sum both or it
+// under-reports the thing it exists to show.
+TEST(RelayDropCountersTest, SinkDropsAreCountedAsLoss)
+{
+  udp_bridge::RelayDropCounters counters;
+  EXPECT_EQ(counters.lost(), 0u);
+  EXPECT_TRUE(counters.breakdown().empty());
+
+  counters.record(udp_bridge::RelayDropReason::NotActive);
+  counters.record(udp_bridge::RelayDropReason::UnnamedSender);
+  counters.record(udp_bridge::RelayDropReason::TopicGone);
+  counters.record(udp_bridge::RelayDropReason::TopicGone);
+
+  EXPECT_EQ(counters.lost(), 4u) << "every abandoned relay item is loss";
+  EXPECT_EQ(counters.not_active.load(), 1u);
+  EXPECT_EQ(counters.unnamed_sender.load(), 1u);
+  EXPECT_EQ(counters.topic_gone.load(), 2u);
+
+  const auto breakdown = counters.breakdown();
+  EXPECT_NE(breakdown.find("not_active=1"), std::string::npos);
+  EXPECT_NE(breakdown.find("unnamed_sender=1"), std::string::npos);
+  EXPECT_NE(breakdown.find("topic_gone=2"), std::string::npos);
+  EXPECT_EQ(breakdown.find("rate_limited"), std::string::npos)
+    << "zero-valued reasons stay out of the diagnostic string";
+}
+
+// The fourth early return is NOT loss: the routing table lists other
+// remotes but none is due under its `period` yet. Counting it as a drop
+// would put the relay diagnostic permanently in WARN on any rate-limited
+// topic, which is exactly how a real-loss signal gets ignored.
+TEST(RelayDropCountersTest, RateLimitedIsVisibleButNotLoss)
+{
+  udp_bridge::RelayDropCounters counters;
+  counters.record(udp_bridge::RelayDropReason::NoDestinationDue);
+  counters.record(udp_bridge::RelayDropReason::NoDestinationDue);
+
+  EXPECT_EQ(counters.lost(), 0u) << "the rate limiter working is not relay loss";
+  EXPECT_EQ(counters.no_destination_due.load(), 2u);
+  EXPECT_NE(counters.breakdown().find("rate_limited=2"), std::string::npos)
+    << "it must still be visible to an operator reading the diagnostic";
+
+  counters.reset();
+  EXPECT_EQ(counters.lost(), 0u);
+  EXPECT_TRUE(counters.breakdown().empty());
 }
 
 int main(int argc, char **argv)

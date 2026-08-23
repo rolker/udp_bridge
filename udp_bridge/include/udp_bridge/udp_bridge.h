@@ -28,6 +28,7 @@
 #include "defragmenter.h"
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/publish_queue.h"
+#include "udp_bridge/relay_drops.h"
 #include "udp_bridge/relay_queue.h"
 #include "udp_bridge/remote_identity.h"
 #include "udp_bridge/types.h"
@@ -545,6 +546,13 @@ private:
 
   // Same, for the relay queue (issue #51).
   uint64_t last_reported_relay_drops_ {0};
+
+  /// Sink-side relay drops (issue #51): items relayToOtherRemotes dequeued
+  /// and then returned early on, which RelayQueue::dropped_count() cannot
+  /// see. Summed with the queue's own drops in diagnoseRelayQueue, so the
+  /// "relay dropping" WARN reflects all unrecoverable relay loss and not
+  /// just the overflow half of it. See relay_drops.h.
+  RelayDropCounters relay_drops_;
 
   // Byte budget for relay_queue_ (issue #51). A ROS parameter for the same
   // reason publish_queue_max_bytes is one: it is the memory this node may

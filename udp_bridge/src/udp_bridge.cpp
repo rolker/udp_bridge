@@ -1118,7 +1118,10 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
   try
   {
     if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+    {
+      relay_drops_.record(RelayDropReason::NotActive);
       return;
+    }
 
     // The loop rule needs a sender to exclude. An empty source_node (a
     // packet that never passed through unwrap(), so it carries no wrapped
@@ -1127,7 +1130,10 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     // hasRelayDestinations() already refuses these; this is the same rule
     // restated at the sink, which is reachable independently of the probe.
     if(item.source_node.empty())
+    {
+      relay_drops_.record(RelayDropReason::UnnamedSender);
       return;
+    }
 
     auto now = get_clock()->now();
 
@@ -1139,7 +1145,10 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       // the drain thread's probe and this call.
       auto sub_it = subscribers_.find(item.topic);
       if(sub_it == subscribers_.end())
+      {
+        relay_drops_.record(RelayDropReason::TopicGone);
         return;
+      }
       auto& sub = sub_it->second;
       // Same rate limiting, same last_sent_time state, as locally published
       // traffic (callback()) -- with the sender excluded. The exclusion is
@@ -1161,7 +1170,13 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     }
 
     if(destinations.empty())
+    {
+      // Not loss: the routing table may list other remotes and none is due
+      // under its `period` yet. Counted separately from the three above so
+      // the diagnostic shows it without inflating the loss figure.
+      relay_drops_.record(RelayDropReason::NoDestinationDue);
       return;
+    }
 
     // Forward the message as received -- no re-serialization of the payload.
     // Only the routing/QoS fields are rewritten per destination, by
@@ -2583,7 +2598,16 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // Mirror of diagnosePublishQueue for the relay worker (issue #51).
   // last_reported_relay_drops_ is touched only here (periodic_group_ is
   // MutuallyExclusive), so the "recent" delta needs no synchronization.
-  const uint64_t dropped = relay_queue_.dropped_count();
+  //
+  // Two sources of loss are summed here. The queue drops on overflow and
+  // push-after-stop (RelayQueue::dropped_count); the sink drops an item it
+  // already dequeued when the node left ACTIVE, when the sender is unnamed,
+  // or when the topic's routing table was torn down under it
+  // (relay_drops_). Both are unrecoverable, so both must be visible —
+  // reporting only the queue's would under-report real relay loss. Items
+  // held back purely by the `period` rate limit are counted apart and are
+  // not loss.
+  const uint64_t dropped = relay_queue_.dropped_count() + relay_drops_.lost();
   const uint64_t depth = static_cast<uint64_t>(relay_queue_.size());
   const uint64_t recent = dropped - last_reported_relay_drops_;
   last_reported_relay_drops_ = dropped;
@@ -2591,6 +2615,11 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   stat.add("queued_items", depth);
   stat.add("dropped_total", dropped);
   stat.add("dropped_since_last_tick", recent);
+  stat.add("dropped_by_queue", relay_queue_.dropped_count());
+  stat.add("dropped_by_sink", relay_drops_.lost());
+  const auto breakdown = relay_drops_.breakdown();
+  if(!breakdown.empty())
+    stat.add("sink_drop_reasons", breakdown);
   stat.add("max_bytes", static_cast<uint64_t>(relay_queue_max_bytes_));
 
   // A relay drop is unrecoverable loss for the downstream remotes: the
@@ -2599,8 +2628,10 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // enough for the worker to fall behind.
   if(recent > 0)
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
-      "relay queue dropping (" + std::to_string(recent)
-      + " since last tick) — outgoing link stalled?");
+      "relay dropping (" + std::to_string(recent)
+      + " since last tick"
+      + (breakdown.empty() ? std::string() : "; " + breakdown)
+      + ") — outgoing link stalled?");
   else
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK,
       "queued " + std::to_string(depth) + ", " + std::to_string(dropped)
