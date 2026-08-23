@@ -40,6 +40,7 @@
 
 #include "udp_bridge/udp_bridge.h"
 #include "udp_bridge/qos_resolution.h"
+#include "udp_bridge/destination_selection.h"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/serialization.hpp"
@@ -50,7 +51,6 @@
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
-#include <unordered_set>
 
 #include "udp_bridge_interfaces/msg/remote_subscribe_internal.hpp"
 #include "udp_bridge_interfaces/msg/message_internal.hpp"
@@ -553,6 +553,13 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     {
       diagnosePublishQueue(stat);
     });
+  // Same for the relay queue (issue #51): a relay drop is unrecoverable
+  // data loss for the downstream remotes, so it needs to be visible.
+  diagnostic_updater_->add("udp_bridge " + name_ + ": relay queue",
+    [this](diagnostic_updater::DiagnosticStatusWrapper& stat)
+    {
+      diagnoseRelayQueue(stat);
+    });
   diagnostic_timer_ = create_wall_timer(
     1s, std::bind(&UDPBridge::diagnosticTick, this), periodic_group_);
 
@@ -565,6 +572,16 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     [this](PublishItem&& item){ publishItem(std::move(item)); },
     publish_queue_max_bytes_);
 
+  // Configure the relay worker (issue #51) on the same terms: it forwards
+  // only while ACTIVE, so it is started in on_activate and stopped in
+  // on_deactivate. Its byte budget is a compile-time constant rather than
+  // a parameter -- relay adds no configuration surface; the routing table
+  // is the per-remote topics_list and nothing else (see
+  // doc/relay_design.md).
+  relay_queue_.configure(
+    [this](RelayItem&& item){ relayToOtherRemotes(std::move(item)); },
+    kRelayQueueMaxBytes);
+
   return LifecycleNode::on_configure(state);
 }
 
@@ -574,6 +591,8 @@ UDPBridge::CallbackReturn UDPBridge::on_activate(const rclcpp_lifecycle::State &
   // processes (and publishes) exactly while spin_once is enqueuing. start()
   // is a no-op if already running.
   publish_queue_.start();
+  // Same lifecycle for the relay worker (issue #51).
+  relay_queue_.start();
   return LifecycleNode::on_activate(state);
 }
 
@@ -585,6 +604,10 @@ UDPBridge::CallbackReturn UDPBridge::on_deactivate(const rclcpp_lifecycle::State
   // rmw max_blocking_time), not the whole backlog. A subsequent on_activate
   // restarts a fresh worker.
   publish_queue_.stop();
+  // Stop + join the relay worker too (issue #51), so nothing is forwarded
+  // while INACTIVE. Queued relays are discarded, matching the publish
+  // queue's best-effort contract.
+  relay_queue_.stop();
   // Discard any reorder-buffer packets held at deactivation (issue #35
   // review follow-up). spin_once returns early while INACTIVE, so the
   // window-expiry flush stops ticking; a packet held here would sit out
@@ -609,6 +632,7 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
   // activated (worker never started → no-op) and so the worker is provably
   // joined before anything here touches the maps its sink uses.
   publish_queue_.stop();
+  relay_queue_.stop();  // idempotent backstop, as above (issue #51)
   diagnostic_timer_.reset();
   diagnostic_updater_.reset();
   diagnostic_task_names_.clear();
@@ -731,14 +755,8 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
   // Read remote_details / connection_rates and update last_sent_time + initial
   // statistics under subscribers_mutex_. We also capture per-destination
   // destination_topic and QoS config so the send loop below doesn't need to
-  // re-lock.
-  struct DestinationConfig
-  {
-    std::string destination_topic;
-    std::string reliability;
-    std::string durability;
-    uint32_t history_depth = 0;
-  };
+  // re-lock. DestinationConfig lives in destination_selection.h because the
+  // relay sender captures the same fields the same way (issue #51).
   RemoteConnectionsList destinations;
   std::map<std::string, DestinationConfig> destination_config_by_remote;
   {
@@ -751,18 +769,13 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     if(sub_it == subscribers_.end())
       return;
     auto& sub = sub_it->second;
+    // Rate limiting lives in selectRateLimitedConnections (issue #51) so the
+    // relay path throttles identically against the same last_sent_time
+    // state. No remote to exclude here: this message originated locally, so
+    // there is no sender to avoid echoing to.
+    destinations = selectRateLimitedConnections(sub.remote_details, now);
     for(auto& remote_details: sub.remote_details)
     {
-      std::unordered_set<float> periods; // group the sending to connections with same period
-      for(auto& connection_rate: remote_details.second.connection_rates)
-        if(connection_rate.second.period >= 0)
-          if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
-          {
-            destinations[remote_details.first].push_back(connection_rate.first);
-            connection_rate.second.last_sent_time = now;
-            if(periods.count(connection_rate.second.period) == 0)
-              periods.insert(connection_rate.second.period);
-          }
       auto& dc = destination_config_by_remote[remote_details.first];
       dc.destination_topic = remote_details.second.destination_topic;
       dc.reliability       = remote_details.second.reliability;
@@ -908,6 +921,28 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   if(topic.empty())
     topic = outer_message.source_topic;
 
+  // Relay (issue #51): offer this message to every OTHER remote whose
+  // topics_list carries this topic. Done here, before the stale/reorder
+  // gate, because relaying is independent of this bridge's own
+  // publish/drop decision: a downstream bridge assigns its own fresh
+  // sequence numbers on forward (send(), below) and runs its own gate, so
+  // an upstream resend that we would drop locally is still worth
+  // forwarding. Bounded by admission control on each outgoing connection.
+  //
+  // Only the cheap routing-table probe runs on the socket-drain thread;
+  // the payload copy and the actual sendto happen on the relay worker
+  // (see relay_queue.h / issue #10). In the ordinary single-remote
+  // deployment hasRelayDestinations() is a brief map lookup that returns
+  // false, so relay costs one lock and no copy.
+  if(hasRelayDestinations(topic, source_info.node_name))
+  {
+    RelayItem relay_item;
+    relay_item.topic = topic;
+    relay_item.source_node = source_info.node_name;
+    relay_item.message = outer_message;
+    relay_queue_.push(std::move(relay_item));
+  }
+
   // Build the PublishItem the socket-drain thread hands to the publish
   // worker. Only the CPU-bound deserialize + payload copy runs here — no
   // publisher create / graph query / publish (see issue #10 and
@@ -988,6 +1023,115 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   }
 
   publish_queue_.push(build_item());
+}
+
+bool UDPBridge::hasRelayDestinations(const std::string& topic,
+                                     const std::string& source_node) const
+{
+  // Cheap probe on the socket-drain thread: is there any remote OTHER than
+  // the sender listed for this topic? subscribers_mutex_ is held only for a
+  // map lookup and a short walk of the per-topic remote list (one entry in
+  // every current deployment), never across I/O.
+  std::lock_guard<std::mutex> lock(subscribers_mutex_);
+  auto sub_it = subscribers_.find(topic);
+  if(sub_it == subscribers_.end())
+    return false;
+  return hasRelayDestination(sub_it->second.remote_details, source_node);
+}
+
+void UDPBridge::relayToOtherRemotes(RelayItem&& item)
+{
+  // Runs on the relay worker (issue #51), never on the socket-drain thread:
+  // send() below reaches Connection::send(), whose sendto() retry loop can
+  // cost ~200 ms per stalled destination.
+  //
+  // Catch + log here, mirroring publishItem(): send() can throw
+  // (ConnectionException on socket errors), and the worker is a plain
+  // std::thread with no executor catch-all behind it. RelayQueue has a
+  // last-resort barrier too, but it has no logger.
+  try
+  {
+    if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+      return;
+
+    auto now = get_clock()->now();
+
+    RemoteConnectionsList destinations;
+    std::map<std::string, DestinationConfig> destination_config_by_remote;
+    {
+      std::lock_guard<std::mutex> lock(subscribers_mutex_);
+      // find(), not operator[]: the routing table can be torn down between
+      // the drain thread's probe and this call.
+      auto sub_it = subscribers_.find(item.topic);
+      if(sub_it == subscribers_.end())
+        return;
+      auto& sub = sub_it->second;
+      // Same rate limiting, same last_sent_time state, as locally published
+      // traffic (callback()) -- with the sender excluded. The exclusion is
+      // the loop rule: never send a message back to the remote it came
+      // from. It is applied inside the helper before any last_sent_time is
+      // touched, so the sender's rate-limit state is left untouched.
+      destinations = selectRateLimitedConnections(sub.remote_details, now,
+                                                  item.source_node);
+      for(auto& remote_details: sub.remote_details)
+      {
+        if(remote_details.first == item.source_node)
+          continue;
+        auto& dc = destination_config_by_remote[remote_details.first];
+        dc.destination_topic = remote_details.second.destination_topic;
+        dc.reliability       = remote_details.second.reliability;
+        dc.durability        = remote_details.second.durability;
+        dc.history_depth     = remote_details.second.history_depth;
+      }
+    }
+
+    if(destinations.empty())
+      return;
+
+    // Forward the message as received -- no re-serialization of the payload.
+    // Only the per-destination routing/QoS fields are rewritten below, and
+    // source_topic is left as the original publisher's topic so the far end
+    // still reports where the data actually came from.
+    MessageInternal message_internal = std::move(item.message);
+
+    for(const auto& destination: destinations)
+    {
+      auto config_it = destination_config_by_remote.find(destination.first);
+      if(config_it != destination_config_by_remote.end())
+      {
+        message_internal.destination_topic = config_it->second.destination_topic;
+        message_internal.reliability       = config_it->second.reliability;
+        message_internal.durability        = config_it->second.durability;
+        message_internal.history_depth     = config_it->second.history_depth;
+      }
+      else
+      {
+        message_internal.destination_topic.clear();
+        message_internal.reliability.clear();
+        message_internal.durability.clear();
+        message_internal.history_depth = 0;
+      }
+      RemoteConnectionsList connections;
+      connections[destination.first] = destination.second;
+      // The existing send path: fragmenting, wrapped-packet sequencing and
+      // the per-connection AIMD admission control of #43/#52 all apply to
+      // relayed traffic exactly as they do to locally published traffic.
+      auto size_data = send(message_internal, connections, false);
+      size_data.message_size = message_internal.data.size();
+      {
+        std::lock_guard<std::mutex> lock(subscribers_mutex_);
+        auto sub_it = subscribers_.find(item.topic);
+        if(sub_it != subscribers_.end())
+          sub_it->second.statistics.add(size_data);
+      }
+    }
+  }
+  catch(const std::exception& e)
+  {
+    RCLCPP_ERROR_STREAM(get_logger(),
+      "relay worker: dropping message for '" << item.topic
+      << "' from '" << item.source_node << "': " << e.what());
+  }
 }
 
 void UDPBridge::publishItem(PublishItem&& item)
@@ -2298,6 +2442,35 @@ void UDPBridge::diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
       "publish queue dropping (" + std::to_string(recent)
       + " since last tick) — local subscriber stalled?");
+  else
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK,
+      "queued " + std::to_string(depth) + ", " + std::to_string(dropped)
+      + " dropped total");
+}
+
+void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& stat)
+{
+  // Mirror of diagnosePublishQueue for the relay worker (issue #51).
+  // last_reported_relay_drops_ is touched only here (periodic_group_ is
+  // MutuallyExclusive), so the "recent" delta needs no synchronization.
+  const uint64_t dropped = relay_queue_.dropped_count();
+  const uint64_t depth = static_cast<uint64_t>(relay_queue_.size());
+  const uint64_t recent = dropped - last_reported_relay_drops_;
+  last_reported_relay_drops_ = dropped;
+
+  stat.add("queued_items", depth);
+  stat.add("dropped_total", dropped);
+  stat.add("dropped_since_last_tick", recent);
+  stat.add("max_bytes", static_cast<uint64_t>(kRelayQueueMaxBytes));
+
+  // A relay drop is unrecoverable loss for the downstream remotes: the
+  // message was never handed to a Connection, so the resend layer has
+  // nothing to retransmit. Recent drops mean an outgoing link stalled long
+  // enough for the worker to fall behind.
+  if(recent > 0)
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      "relay queue dropping (" + std::to_string(recent)
+      + " since last tick) — outgoing link stalled?");
   else
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK,
       "queued " + std::to_string(depth) + ", " + std::to_string(dropped)

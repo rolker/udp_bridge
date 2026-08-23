@@ -75,12 +75,29 @@ granularity" decision is moot and dropped.
    (748-765) — extract that block into a shared private helper
    `selectRateLimitedConnections(remote_details, now, exclude_remote)` used
    by both, so rate limiting is identical for local and relayed traffic, not
-   a parallel path. For each selected `(remote, connection)`, copy
+   a parallel path.
+
+   For each selected `(remote, connection)`, copy
    `outer_message` (same bytes, no re-serialization) with
    `destination_topic`/`reliability`/`durability`/`history_depth` swapped per
    destination, and call the existing `send(message_internal, connections,
    false)` (1506) — `Connection::send()` (`connection.cpp:404`) applies its
    own AIMD byte-rate admission control (#43/#52) identically either way.
+
+   *As built:* the helper is a free function in a new header
+   `include/udp_bridge/destination_selection.h`, not a private member of
+   `UDPBridge`. It needs no member state (its inputs are the routing table
+   and `now`), and as a free function the routing decision — the whole of
+   what relay does — is unit-testable without a node or a socket, matching
+   the `qos_resolution.h` / `giveup_diagnostic.h` / `subscriber_registry.h`
+   precedent in this repo. The shared `DestinationConfig` struct
+   (previously local to `callback()`) moved there with it. A companion free
+   function `hasRelayDestination(remote_details, source_node)` is the
+   read-only form of the same loop rule: `decodeData` calls it (through the
+   private `UDPBridge::hasRelayDestinations`, which adds the
+   `subscribers_mutex_` lookup) to skip the payload copy entirely when no
+   other remote lists the topic — which is every configuration in this repo
+   today.
 
 3. **Threading: hand off to a worker, don't call `send()` inline on the
    drain thread.** `decodeData()` runs on `socket_drain_group_` (`spin_once`,
@@ -100,6 +117,17 @@ granularity" decision is moot and dropped.
    (configure/start/stop mirroring `publish_queue_`, 564-611) drains it and
    runs `relayToOtherRemotes` off both the drain thread and the publish
    worker.
+
+   *As built:* `relayToOtherRemotes(RelayItem&& item)` takes the queue item
+   (which carries exactly the planned `topic` / `outer_message` /
+   `source_node`) so it can serve directly as the queue's sink, mirroring
+   `publishItem`. Two additions the plan did not name, both consequences of
+   adding a worker: the queue's byte budget is a compile-time constant
+   (`kRelayQueueMaxBytes`, 64 MiB) rather than a ROS parameter — relay adds
+   no configuration surface — and a `relay queue` diagnostic task
+   (`diagnoseRelayQueue`, mirroring `diagnosePublishQueue`) makes relay
+   drops visible, since a dropped relay is unrecoverable: the message never
+   reached a `Connection`, so the resend layer has nothing to retransmit.
 
 4. **Tests** (`test/`, `test_reorder_buffer.cpp`/`test_admission_control.cpp`
    style): three-node relay (A→hub→B, hub also locally subscribed — local
@@ -138,8 +166,9 @@ Commit sequence (atomic): `relay_queue_` scaffolding (unused) →
 
 | File | Change |
 |------|--------|
-| `include/udp_bridge/udp_bridge.h` | Declare `relayToOtherRemotes`, `selectRateLimitedConnections`, `relay_queue_` |
+| `include/udp_bridge/udp_bridge.h` | Declare `relayToOtherRemotes`, `hasRelayDestinations`, `diagnoseRelayQueue`, `relay_queue_` |
 | `include/udp_bridge/relay_queue.h` | New: `RelayItem`/`RelayQueue`, mirrors `publish_queue.h` |
+| `include/udp_bridge/destination_selection.h` | New (as built): free `selectRateLimitedConnections` / `hasRelayDestination` + shared `DestinationConfig`, so the routing decision is testable without a node |
 | `src/udp_bridge.cpp` | Extract `selectRateLimitedConnections`; add `relayToOtherRemotes`; call from `decodeData()`; `relay_queue_` lifecycle wiring |
 | `test/` (new) | Three-node relay, echo regression, routing-table fidelity, rate-limit parity |
 | `doc/relay_design.md` | New design doc |

@@ -26,6 +26,7 @@
 #include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
+#include "udp_bridge/destination_selection.h"
 #include "udp_bridge/publish_queue.h"
 #include "udp_bridge/relay_queue.h"
 #include "udp_bridge/types.h"
@@ -124,6 +125,28 @@ private:
   /// dead-but-matched subscriber; first-arrival rmw discovery) stalls only
   /// the worker, never the socket-drain thread.
   void publishItem(PublishItem&& item);
+
+  /// True when some remote other than `source_node` lists `topic` in its
+  /// routing table — i.e. when this received message has somewhere to be
+  /// relayed (issue #51). Cheap enough for the socket-drain thread: one
+  /// subscribers_ lookup under subscribers_mutex_, no copy, no I/O. Lets
+  /// decodeData skip the payload copy entirely in the ordinary
+  /// single-remote deployment, where relay is unreachable by construction.
+  bool hasRelayDestinations(const std::string& topic,
+                            const std::string& source_node) const;
+
+  /// relay_queue_ sink: runs on the relay worker thread (issue #51).
+  /// Forwards a message received from one remote to the OTHER remotes whose
+  /// per-remote topics_list carries the same topic — the topic list is the
+  /// routing table, there is no relay parameter. The loop rule (never send
+  /// back to item.source_node) is applied by
+  /// selectRateLimitedConnections's exclude_remote, which also throttles
+  /// relayed traffic against exactly the same last_sent_time state as
+  /// locally published traffic. Sends go through the existing send() path,
+  /// so fragmenting, sequencing and AIMD admission control (#43/#52) apply
+  /// unchanged. Direct-neighbour only: cycles are unsupported — see
+  /// doc/relay_design.md.
+  void relayToOtherRemotes(RelayItem&& item);
 
   /// Decodes topic info from remote.
   void decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info);
@@ -233,6 +256,12 @@ private:
   /// distinct from wire loss — see doc/qos_design.md). Registered once in
   /// on_configure (a single global task, not per-remote).
   void diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper& stat);
+
+  /// Populate the relay-queue DiagnosticStatus (issue #51): queued depth +
+  /// total drops, WARNing on drops since the previous tick. A relay drop is
+  /// unrecoverable — the message never reached a Connection, so the resend
+  /// layer cannot retransmit it. Registered once in on_configure.
+  void diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& stat);
 
   /// Lifecycle-safe wrapper around `declare_parameter`. Parameters
   /// declared during `on_configure` persist across a
@@ -492,6 +521,16 @@ private:
   // than latching WARN forever after a single historical drop. Touched only
   // from the diagnostic callback (periodic_group_, mutually exclusive).
   uint64_t last_reported_publish_drops_ {0};
+
+  // Same, for the relay queue (issue #51).
+  uint64_t last_reported_relay_drops_ {0};
+
+  // Byte budget for relay_queue_. A constant, not a parameter: relay adds
+  // no configuration surface (the per-remote topics_list is the whole
+  // routing table). Sized like the publish queue's default — one
+  // reassembled image is large, and the queue must absorb a link stall of a
+  // few seconds without discarding a burst.
+  static constexpr size_t kRelayQueueMaxBytes = 64u * 1024u * 1024u;
 
   // Decouples the rmw-touching tail of decodeData from the socket-drain
   // thread (issue #10). configure()'d in on_configure, start()'ed in
