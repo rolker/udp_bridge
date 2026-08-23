@@ -105,9 +105,21 @@ An earlier draft of this work added a per-destination `relay` opt-in
 defaulting to off. It was removed as protection against nothing:
 
 - **The echo it guarded against cannot occur.** Relay does not touch
-  `ignore_local_publications`, so a bridge still never hears its own
+  `ignore_local_publications` (set on every forwarding subscription,
+  `src/udp_bridge.cpp:1641`), so a bridge still never hears its own
   republish, and the loop rule below independently refuses to send back to
   the sender. A symmetric two-host pair is bit-for-bit unchanged.
+
+  Worth being explicit about how load-bearing that option is on a hub: the
+  relay match condition means the hub necessarily *also* holds a forwarding
+  subscription on the topic it is about to republish, so
+  `ignore_local_publications` is the only thing separating "publish
+  locally" from "publish locally, hear it back, and send it out again". It
+  is an rmw-dependent option, and the evidence that it holds today is
+  empirical — a hub does not relay at all before this change, which is
+  #51's own symptom. A three-bridge hub scenario in the #18 bench harness
+  asserting exactly one copy per remote is the right place to pin it, and
+  is recommended as a follow-up there rather than done here.
 - **It would have guarded configurations where relay is unreachable.**
   Relay only changes behaviour where a *second* remote lists the same
   topic, and every configuration in this repo declares exactly one remote
