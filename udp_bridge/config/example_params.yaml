@@ -29,18 +29,38 @@
     # instead of the late arrival being hard-dropped. Clamped to 0–500 ms.
     reorder_hold_window_ms: 0.0
 
-    # List of initial remote nodes to connect to.
+    # List of initial remote nodes to connect to. These are LABELS: they
+    # spell the parameter paths below (remotes.<label>.connections_list).
+    # The remote's identity on the wire is remotes.<label>.name, which
+    # defaults to the label -- see the note on that key below.
     #
-    # Listing a SECOND remote here also turns this bridge into a relay hub
-    # for any topic both remotes carry -- see the commented operator_1
-    # block at the end of this file, and doc/relay_design.md.
+    # Listing a SECOND remote here also turns this bridge into a relay hub.
+    # A topic received from one remote is forwarded to every OTHER remote
+    # whose topics_list names that hub-local topic as its `source:`. Only
+    # the RECEIVING remote has to list it; the sender need not appear in
+    # that topic's routing table at all. See the commented operator_1 block
+    # at the end of this file, and doc/relay_design.md.
     remotes_list: ["robot_a"]
 
     remotes:
       robot_a:  # Label for the remote (used in remotes_list)
-        # Name of the remote node as known by the remote itself.
-        # Defaults to the label (robot_a) if omitted.
-        name: "robot_a_bridge"
+        # Name of the remote node as known by the remote itself -- i.e.
+        # that bridge's own `name` parameter, which it stamps into every
+        # packet it sends. Defaults to the label (robot_a) if omitted,
+        # which is the usual case: set this ONLY when the remote calls
+        # itself something other than the label used here.
+        #
+        # This is the remote's identity everywhere it matters, including
+        # the relay loop rule ("never send a message back to the remote it
+        # came from"), which compares this name against the sender name on
+        # the wire. Getting it wrong means the hub does not recognise that
+        # remote's own traffic and can relay it back to it; the bridge
+        # WARNs when it receives a packet from a name matching no
+        # configured remote. Two remotes resolving to the same name is a
+        # configuration error and fails startup.
+        #
+        # Left as the default here, matching the operator_1 block below.
+        # name: "robot_a"
 
         # List of named connections to this remote.
         connections_list: ["telemetry"]
@@ -110,8 +130,13 @@
       #
       # With the lists below, the hub relays:
       #
-      #   - /shoreside/robot_a/odometry  -> operator_1 (both remotes carry
-      #     it, so odometry received from robot_a is forwarded on)
+      #   - /shoreside/robot_a/odometry  -> operator_1, because operator_1
+      #     lists that topic as its `source:`. That is the whole condition:
+      #     only the RECEIVING remote has to carry the topic. robot_a's own
+      #     topics_list keys this bridge's routing table on robot_a's
+      #     `source:` names (/odometry), never on /shoreside/robot_a/
+      #     odometry, so the two remotes share no routing-table key here --
+      #     and relay happens anyway.
       #
       # ...and does NOT relay:
       #
@@ -130,9 +155,8 @@
       # (A -> B -> C -> A) would circulate a message indefinitely. See
       # doc/relay_design.md.
       #
-      # (No `name:` key here: the remote's name IS its remotes_list label.
-      #  `remotes.<label>.name` is not read by on_configure -- the robot_a
-      #  block above is stale on that point.)
+      # (No `name:` key here: operator_1 calls itself "operator_1" on the
+      #  wire, so the label is the identity and the key can be omitted.)
       #
       # operator_1:
       #   connections_list: ["wan"]
