@@ -37,7 +37,7 @@
     remotes_list: ["robot_a"]
 
     remotes:
-      robot_a: # Label for the remote (used in remotes_list)
+      robot_a:  # Label for the remote (used in remotes_list)
         # Name of the remote node as known by the remote itself.
         # Defaults to the label (robot_a) if omitted.
         name: "robot_a_bridge"
@@ -94,7 +94,7 @@
               /robot_a/battery:
                 source: "/battery_state"
                 destination: "/shoreside/robot_a/battery_state"
-                period: 1.0 # Limit to 1Hz
+                period: 1.0  # Limit to 1Hz
 
       # ----------------------------------------------------------------
       # Second remote (commented out): what a relay hub looks like.
