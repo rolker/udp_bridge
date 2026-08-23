@@ -9,6 +9,7 @@
 #include "udp_bridge/connection.h"
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/relay_item.h"
+#include "udp_bridge/send_isolation.h"
 
 namespace udp_bridge
 {
@@ -40,26 +41,9 @@ void sendToEachDestination(const SelectedConnections& destinations,
                            ErrorFn&& on_error)
 {
   for(const auto& destination: destinations)
-  {
-    try
-    {
-      send_one(destination.first, destination.second);
-    }
-    catch(const ConnectionException& e)
-    {
-      // No base class: this must be caught before (and separately from)
-      // std::exception, or not at all.
-      on_error(destination.first, e.getMessage());
-    }
-    catch(const std::exception& e)
-    {
-      on_error(destination.first, std::string(e.what()));
-    }
-    catch(...)
-    {
-      on_error(destination.first, std::string("unknown exception"));
-    }
-  }
+    callIsolated(destination.first,
+                 [&]{ send_one(destination.first, destination.second); },
+                 on_error);
 }
 
 /// Fan a relayed message out to each selected destination, rewriting its

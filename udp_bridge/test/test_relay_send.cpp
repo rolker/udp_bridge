@@ -34,6 +34,7 @@
 //                                 destination topic.
 
 #include "udp_bridge/relay_send.h"
+#include "udp_bridge/send_isolation.h"
 
 #include <cstdint>
 #include <map>
@@ -47,6 +48,7 @@ using udp_bridge::ConnectionException;
 using udp_bridge::SelectedConnections;
 using udp_bridge::DestinationConfig;
 using udp_bridge::relayToEachDestination;
+using udp_bridge::callIsolated;
 using udp_bridge::sendToEachDestination;
 
 namespace
@@ -301,6 +303,74 @@ TEST(RelaySend, RewriteStillHappensAfterAFailedDestination)
   ASSERT_EQ(errors.size(), 1u);
   EXPECT_EQ(errors.front(), "operator_a: Timeout");
   EXPECT_EQ(last_destination_topic, "/tablet/nav");
+}
+
+// callIsolated is the primitive under both the relay fan-out above and
+// UDPBridge::send()'s per-connection loop. Per-connection matters on its
+// own: a throw from a remote's first connection would otherwise abandon its
+// remaining REDUNDANT connections — the paths that exist so one failing
+// link does not lose the message — and abandon the statistics record for
+// the whole send, so the failure would not even appear in
+// ~/topic_statistics.
+TEST(RelaySend, CallIsolatedCatchesAllThreeArms)
+{
+  std::vector<std::string> errors;
+  auto record = [&errors](const std::string& label, const std::string& what)
+  {
+    errors.push_back(label + ": " + what);
+  };
+
+  callIsolated("wifi", []{ throw ConnectionException("Timeout"); }, record);
+  callIsolated("wan", []{ throw std::runtime_error("boom"); }, record);
+  callIsolated("lte", []{ throw 42; }, record);
+
+  ASSERT_EQ(errors.size(), 3u);
+  EXPECT_EQ(errors[0], "wifi: Timeout")
+    << "ConnectionException has no base class and must be caught first";
+  EXPECT_EQ(errors[1], "wan: boom");
+  EXPECT_EQ(errors[2], "lte: unknown exception");
+}
+
+TEST(RelaySend, CallIsolatedReportsNothingOnSuccess)
+{
+  bool called = false;
+  callIsolated("wifi", [&]{ called = true; },
+    [](const std::string&, const std::string&)
+    {
+      FAIL() << "on_error must not run for a send that did not throw";
+    });
+  EXPECT_TRUE(called);
+}
+
+// The per-connection continuation UDPBridge::send() relies on: a throwing
+// connection is recorded as failed and the remote's remaining connections
+// are still attempted.
+TEST(RelaySend, AFailingConnectionDoesNotAbandonARemotesOtherConnections)
+{
+  const std::vector<std::string> connection_ids{"wifi", "wan", "lte"};
+  std::vector<std::string> attempted;
+  std::map<std::string, std::string> results;
+
+  for(const auto& id: connection_ids)
+    callIsolated(id,
+      [&]
+      {
+        attempted.push_back(id);
+        if(id == "wifi")
+          throw ConnectionException("Timeout");
+        results[id] = "success";
+      },
+      [&](const std::string& label, const std::string&)
+      {
+        results[label] = "failed";
+      });
+
+  EXPECT_EQ(attempted, connection_ids)
+    << "every redundant connection must still be attempted";
+  EXPECT_EQ(results["wifi"], "failed")
+    << "the failure must be recorded, not lost with the statistics";
+  EXPECT_EQ(results["wan"], "success");
+  EXPECT_EQ(results["lte"], "success");
 }
 
 int main(int argc, char **argv)

@@ -1935,13 +1935,34 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
     }
   }
 
+  // Per-CONNECTION failure isolation. Connection::send() throws
+  // ConnectionException (no base class) on its ordinary Timeout path; left
+  // to propagate, one throw would abandon a remote's remaining REDUNDANT
+  // connections -- the very paths that exist so a single failing link does
+  // not lose the message -- and abandon the statistics record for the whole
+  // send, so the failure would not even show up in ~/topic_statistics.
+  // Record the failure, log it, and carry on to the next connection.
+  // Isolation at the caller (sendToEachDestination, for relay) is per
+  // remote, which is a coarser unit than this.
   for(const auto& entry: connections_by_remote)
   {
     for(const auto& connection: entry.second)
       if(connection)
       {
-        auto result = connection->send(wrapped_packets, socket_, name_, is_overhead, now);
-        size_data.send_results[entry.first][connection->id()] = result;
+        const std::string connection_id = connection->id();
+        callIsolated(connection_id,
+          [&]
+          {
+            auto result = connection->send(wrapped_packets, socket_, name_, is_overhead, now);
+            size_data.send_results[entry.first][connection_id] = result;
+          },
+          [&](const std::string& id, const std::string& what)
+          {
+            size_data.send_results[entry.first][id] = SendResult::failed;
+            RCLCPP_ERROR_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
+              "send to '" << entry.first << "' connection '" << id
+              << "' failed: " << what);
+          });
       }
   }
 
