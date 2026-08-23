@@ -341,6 +341,41 @@ TEST(RelayRouting, SamePeriodGroupingFollowsIterationOrder)
     << "grouping only pulls in connections visited after the first due one";
 }
 
+// The probe must not answer true for a destination the selector can never
+// choose. A negative period means "never send": relaying to such a remote
+// costs a payload copy, a relay-queue slot and a worker wakeup for a
+// message that is then dropped at selection. Fails if the probe stops
+// consulting connection_rates.
+TEST(RelayRouting, ProbeAgreesWithSelectorOnNeverSendRemotes)
+{
+  std::map<std::string, RemoteDetails> table;
+  table["boat"] = remote("/status", "wifi");
+  table["operator"] = remote("/status", "wifi", -1.0f);  // never send
+
+  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, "boat").empty())
+    << "precondition: the selector chooses nobody here";
+  EXPECT_FALSE(hasRelayDestination(table, "boat"))
+    << "so the probe must not make the drain thread pay for a copy";
+
+  // A second operator that CAN be sent to flips the probe back.
+  table["operator_b"] = remote("/status", "wifi");
+  EXPECT_TRUE(hasRelayDestination(table, "boat"));
+}
+
+// A remote listed for the topic but with no connections at all is likewise
+// unreachable: the selector iterates connection_rates and picks nothing.
+TEST(RelayRouting, ProbeIgnoresRemotesWithNoConnections)
+{
+  std::map<std::string, RemoteDetails> table;
+  table["boat"] = remote("/status", "wifi");
+  RemoteDetails no_connections;
+  no_connections.destination_topic = "/status";
+  table["operator"] = no_connections;
+
+  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, "boat").empty());
+  EXPECT_FALSE(hasRelayDestination(table, "boat"));
+}
+
 int main(int argc, char **argv)
 {
   testing::InitGoogleTest(&argc, argv);

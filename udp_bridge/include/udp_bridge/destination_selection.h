@@ -34,11 +34,21 @@ struct DestinationConfig
 /// routing table — i.e. when a message received from `source_node` on this
 /// topic has somewhere to be relayed (issue #51).
 ///
-/// This is the same loop rule selectRateLimitedConnections applies, in a
-/// read-only form: it is the cheap probe the socket-drain thread runs before
-/// paying for a payload copy, so the two must agree. A symmetric two-host
-/// pair (each side listing only the other) always answers false — which is
-/// why relay changes nothing for every configuration in this repo.
+/// This is the read-only form of what selectRateLimitedConnections would
+/// decide: it is the cheap probe the socket-drain thread runs before paying
+/// for a payload copy, so the two must agree. A symmetric two-host pair
+/// (each side listing only the other) always answers false — which is why
+/// relay changes nothing for every configuration in this repo.
+///
+/// It applies both of the selector's structural filters: the loop rule (the
+/// sender is skipped) and `period < 0`, which means "never send" — a remote
+/// whose every connection is set to a negative period can never be
+/// selected, so answering true for it would cost a payload copy, a relay
+/// queue slot and a worker wakeup for a message that is then dropped at
+/// selection. What the probe deliberately does NOT apply is the *temporal*
+/// part of the rate limit (`now - last_sent_time`): that depends on the
+/// clock and mutates `last_sent_time`, so it belongs to the selector alone,
+/// on the relay worker. The probe is therefore may-send, never must-send.
 ///
 /// An **empty** `source_node` answers false, always. The loop rule is a
 /// comparison against the sender's name, so an unnamed sender cannot be
@@ -55,8 +65,13 @@ inline bool hasRelayDestination(
   if(source_node.empty())
     return false;
   for(const auto& remote: remote_details)
-    if(remote.first != source_node)
-      return true;
+  {
+    if(remote.first == source_node)
+      continue;
+    for(const auto& connection_rate: remote.second.connection_rates)
+      if(connection_rate.second.period >= 0)
+        return true;
+  }
   return false;
 }
 
