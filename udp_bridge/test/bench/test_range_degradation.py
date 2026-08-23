@@ -97,16 +97,20 @@ THRESHOLDS = {
     # below (#61) and it is intermittent, so a single clean run does not
     # retire it.
     'K_cotenant_p95_latency_s': 5.0,
-    # Transient ceiling for a window whose link rate DROPPED versus the
-    # previous window (#61). A capacity cliff leaves the bottleneck's standing
-    # queue draining at the NEW rate, and that delay is not something the
-    # bridge's rate control can recall -- see the invariant's docstring.
-    # Derived from the worst-case drain: netem's default `limit 1000` packets
-    # x 1000 B maximum_packet_size / 62_500 B/s (the slowest phase) = 16.0 s;
-    # 20.0 adds margin for the tail of the sampling window. This is NOT a
-    # relaxation of the steady-state bound -- it is a separate bound on a
-    # separate phenomenon, and it still fails if the queue gets deeper.
-    'K_cotenant_transient_p95_latency_s': 20.0,
+    # Margin on the per-window queue-drain bound for a window whose link rate
+    # DROPPED versus the previous one (#61). A capacity cliff leaves the
+    # bottleneck's standing queue draining at the NEW rate, a delay the
+    # bridge's rate control cannot recall -- see the invariant's docstring.
+    #
+    # The bound is DERIVED PER WINDOW from that window's link rate, not fixed:
+    # netem's `limit 1000` packets x 1000 B maximum_packet_size / rate. A
+    # single number would have to be the slowest phase's (62.5 kB/s -> 16.0 s)
+    # and would then be ~20x looser than the physics for the fringe downshift
+    # (1.25 MB/s -> 0.8 s), leaving the fast windows effectively unguarded on
+    # latency. This margin covers the tail of the sampling window; the ceiling
+    # never goes below the steady-state bound, so a downshift is never judged
+    # more harshly than a steady window.
+    'K_cotenant_transient_drain_margin': 1.25,
     # Bulk fragmentation floor (#57). A 480 KB incompressible Image over a
     # 1000-byte maximum_packet_size fragments into floor(480000/1000)=480
     # pieces at minimum; per-fragment bridge headers cut the effective payload
@@ -572,6 +576,32 @@ def _phase_trajectory_rates_bps() -> list:
 
 PHASE_TRAJECTORY_RATES = _phase_trajectory_rates_bps()
 
+# Bottleneck queue depth the transient co-tenant bound is derived from (#61):
+# netem's default `limit` in packets, times the bridge's maximum_packet_size
+# from configs/three_path.yaml. Both are harness-side facts, so the drain
+# bound is arithmetic rather than a tuned constant.
+NETEM_QUEUE_LIMIT_PACKETS = 1000
+NETEM_QUEUE_PACKET_BYTES = 1000
+
+
+def _transient_latency_ceiling_s(link_bps: float | None) -> float:
+    """p95 latency ceiling for a window whose link rate just dropped (#61).
+
+    The standing queue was filled at the OLD rate and drains at the NEW one,
+    so the worst-case added delay is queue_depth / new_rate. Never returns
+    less than the steady-state ceiling: a downshift window must not be judged
+    more harshly than a steady one. Falls back to the steady ceiling when the
+    window's rate is unknown, which keeps an unmapped window guarded rather
+    than silently exempt.
+    """
+    steady = THRESHOLDS['K_cotenant_p95_latency_s']
+    if not link_bps:
+        return steady
+    drain_s = (NETEM_QUEUE_LIMIT_PACKETS * NETEM_QUEUE_PACKET_BYTES
+               / link_bps)
+    return max(steady,
+               drain_s * THRESHOLDS['K_cotenant_transient_drain_margin'])
+
 
 # NOTE (#57): before #57 this ran in the zero-fragmentation regime -- Bulk
 # compressed to a single packet, so resend traffic was near-zero and this
@@ -680,6 +710,8 @@ def _cotenant_delivery_per_window(artifacts) -> list:
             'expected': expected,
             'p95_latency_s': p95,
             'downshift': downshift,
+            'link_bps': (rates[occurrence][1]
+                         if occurrence < len(rates) else None),
         })
     return out
 
@@ -701,8 +733,12 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
 
     **Two bounds, two phenomena (#61).** Windows are judged against
     `K_cotenant_p95_latency_s` (5 s) in steady state, but against
-    `K_cotenant_transient_p95_latency_s` (20 s) when the window's link rate
-    dropped versus the previous one. The 2026-08-22 run measured a 15.8 s p95
+    a per-window queue-drain bound when the window's link rate dropped versus
+    the previous one — `_transient_latency_ceiling_s`, derived from that
+    window's own rate rather than fixed at the slowest phase's, so a fast
+    downshift (fringe, 1.25 MB/s → 0.8 s) stays guarded on latency instead of
+    inheriting the 16 s bound the slowest phase needs. The 2026-08-22 run
+    measured a 15.8 s p95
     entering `critical` while delivery stayed at 0.52 — the flow was connected
     and unusable. That is the bottleneck's standing queue draining at the new
     rate (netem `limit 1000` x 1000 B / 62_500 B/s = 16.0 s, matching the
@@ -726,7 +762,6 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
     per_window = _cotenant_delivery_per_window(artifacts)
     k = THRESHOLDS['K_cotenant_delivery_pct']
     p95_ceiling = THRESHOLDS['K_cotenant_p95_latency_s']
-    transient_ceiling = THRESHOLDS['K_cotenant_transient_p95_latency_s']
     violators = []
     evaluated = 0
     for w in per_window:
@@ -750,7 +785,8 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
             # send-rate headroom can recall (#61). Reported separately so the
             # two phenomena are never conflated -- and still asserted, so a
             # deeper queue or a genuine starvation regression fails here.
-            ceiling = (transient_ceiling if w['downshift'] else p95_ceiling)
+            ceiling = (_transient_latency_ceiling_s(w['link_bps'])
+                       if w['downshift'] else p95_ceiling)
             kind = ('queue-drain transient after a capacity downshift, #61'
                     if w['downshift'] else 'steady state')
             if w['p95_latency_s'] > ceiling:
