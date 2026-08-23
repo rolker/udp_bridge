@@ -163,3 +163,47 @@ The plan's central by-value-storage argument for `PublishQueue`/reorder-buffer s
 - [ ] Add an explicit per-destination `relay` check to the forward loop so a `relay: false` connection cannot receive relayed traffic merely because a sibling connection with `relay: true` shares the same source-topic subscription.
 - [ ] Add a doc note (relay_design.md) on the 2-hop-only loop-protection scope and the unsupported cycle/mesh case.
 - [ ] Extend the test plan to cover the real local-publish → forwarding-callback path, not just PublishQueue/reorder-buffer storage.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-23 00:02 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Re-plan**: yes — rewrote the plan in place after Plan Review (`91393ec`,
+verdict changes-requested) rejected the prior design's loopback-based relay
+and unreachable `PublishItem` provenance field.
+
+**What changed vs. the rejected design**:
+- Dropped the ROS-loopback relay path entirely (`ignore_local_publications`
+  toggling in `updateLocalSubscriptions()` is no longer touched at all).
+- Dropped the `PublishItem.origin_remote_node` field and everything that
+  depended on threading it through `PublishQueue`/the reorder buffer — the
+  "provenance storage granularity" decision from the old plan is now moot.
+- New design forwards entirely inside `decodeData()` at receive time, using
+  the already-existing `subscribers_[topic].remote_details` routing table and
+  `source_info.node_name` (a plain string compare against the routing table's
+  key) for the loop rule — no provenance storage needed anywhere.
+- Fixed must-fix #2 (opt-in leaking across sibling connections) by putting
+  the new `relay` flag on `ConnectionRateInfo` itself (the same per-connection
+  map `callback()` already reads), so a `relay: false` connection can never
+  receive forwarded traffic regardless of a sibling's setting.
+- Added a new required design element the old plan never addressed: a
+  dedicated `relay_queue_` worker (mirroring `PublishQueue`/issue #10)
+  because `Connection::send()`'s UDP `sendto()` has a bounded-but-nonzero
+  (~200ms) worst case per packet, documented in `connection.cpp:545-560`,
+  and calling it inline from `decodeData()` (on `socket_drain_group_`) would
+  reintroduce the #10 drain-thread-blocking hazard.
+- Added a `selectRateLimitedConnections` refactor so forwarded traffic goes
+  through the identical period-gating and `Connection::send()` AIMD admission
+  control (#43/#52) as locally-originated traffic, rather than a parallel
+  code path that could drift.
+- Test plan swapped the old "provenance retention across queue/reorder"
+  test (now moot) for a "per-destination opt-in isolation" test targeting
+  must-fix #2 directly, plus a new rate-limit-parity test.
+
+**Plan**: `.agent/work-plans/issue-51/plan.md` at `361d55e`
+**Branch**: feature/issue-51 at `361d55e`
+**Phases**: single
+
+### Open questions
+- [ ] No open questions — plan is review-plan-ready.
