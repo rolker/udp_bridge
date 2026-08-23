@@ -120,3 +120,15 @@ mechanism here, not a new ADR.
 - [ ] Update `config/example_params.yaml` and `README.md`/`doc/conceptual_overview.md` for the new relay flag and topology capability as part of this PR, not a follow-up.
 - [ ] Cross-reference #53 (unauthenticated transport trust model) in the design doc.
 - [ ] Confirm provenance storage granularity (per-message vs. per-topic-source) before implementation, since it drives whether `PublishItem` gains a field or a side-table is threaded through the reorder buffer.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-22 23:41 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-51/plan.md` at `1c91f0d`
+**Branch**: feature/issue-51 at `1c91f0d`
+**Phases**: single
+
+### Open questions
+- [ ] No open questions — plan is review-plan-ready.
