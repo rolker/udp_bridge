@@ -636,9 +636,19 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     walk_wifi(hold_s, phase_log)
     walk_end = time.time()
 
+    # Let publishers and subscribers finish and flush their counts. A hung
+    # child is tolerated here rather than raised: the counts we did get still
+    # feed the validity guard below, which reports a missing tier through
+    # BENCH_ERROR_* with the detail of what was missing. Letting
+    # TimeoutExpired escape instead would replace that diagnostic with a bare
+    # traceback. Cleanup is unaffected -- children are reaped by the atexit
+    # and signal handlers regardless. Mirrors run_subscriber_death below.
     for tier in TIER_DESTINATIONS:
-        pubs[tier].proc.wait(timeout=pub_duration + 10)
-        subs[tier].proc.wait(timeout=pub_duration + 15)
+        for child, budget in ((pubs[tier], 10), (subs[tier], 15)):
+            try:
+                child.proc.wait(timeout=pub_duration + budget)
+            except subprocess.TimeoutExpired:
+                print(f'BENCH_WARN_CHILD_HUNG={child.name}', file=sys.stderr)
 
     # Stop the tracers gracefully so files flush before cleanup.
     recvq.stop(timeout=3.0)

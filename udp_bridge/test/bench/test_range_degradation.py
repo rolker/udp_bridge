@@ -157,8 +157,28 @@ ALLOWED_TOPIC_CONNECTIONS = {
 # behavior on the lossy/critical legs and to produce a stable in-range
 # baseline at each end.
 SCENARIO_HOLD_S = 10.0
-# Subprocess timeout — generous for setup/teardown overhead.
-SCENARIO_TIMEOUT_S = SCENARIO_HOLD_S * 9 + 60.0
+def _import_run_scenario_ready_timeout() -> float:
+    """`run_scenario.READY_TIMEOUT_S`, read rather than duplicated.
+
+    The orchestrator adds this budget to publisher lifetime, so the outer
+    subprocess cap has to include it. Reading the value keeps the two in
+    lockstep — the same lockstep discipline as `_phase_loss_rates` and
+    `_phase_trajectory_rates_bps` below.
+    """
+    sys.path.insert(0, str(THIS_DIR))
+    import run_scenario  # type: ignore
+    return float(run_scenario.READY_TIMEOUT_S)
+
+
+# Subprocess timeout — generous for setup/teardown overhead, and it must
+# also cover the pre-walk readiness gate (#57), whose budget the orchestrator
+# adds to publisher lifetime. Without that term a slow gate would push the run
+# past this outer cap and kill it mid-teardown, so pytest would report a bare
+# TimeoutExpired instead of the BENCH_ERROR_* diagnostics the harness emits to
+# say what actually went wrong -- the harness losing its own error reporting
+# at exactly the moment it has something to report.
+SCENARIO_TIMEOUT_S = (SCENARIO_HOLD_S * 9 + 60.0
+                      + _import_run_scenario_ready_timeout())
 
 
 def _userns_available() -> bool:
