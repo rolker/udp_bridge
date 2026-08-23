@@ -364,3 +364,37 @@ concrete file:line rationale, not padding.
   implicit in the plan's prose.
 - [ ] Add a one-line doc note on resend-amplification-before-relay to
   `doc/relay_design.md`.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-23 00:05 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Plan**: `.agent/work-plans/issue-51/plan.md` at `9244e9b`
+**Branch**: feature/issue-51 at `9244e9b`
+**Phases**: single PR, four atomic commits
+
+Host-inline amendment to the round-2 plan (`361d55e`), on operator direction.
+The relay opt-in flag is removed: the per-remote `topics_list` is already the
+routing table (ROS 1 precedent), and the flag guarded an echo the loop rule
+prevents on its own.
+
+Evidence the flag protected nothing: this design never touches
+`ignore_local_publications`, so a bridge still never hears its own republish
+and a symmetric pair is bit-for-bit unchanged; and relay only alters behaviour
+where a SECOND remote lists the same topic, while every config in the repo
+declares exactly one remote per bridge (`config/example_params.yaml:33`,
+`test/bench/configs/three_path.yaml:30,56`).
+
+Round-2 findings 1 and 2 were both flag-plumbing costs and are resolved by
+deletion: no `ConnectionRateInfo` field for a dynamic subscribe to reset, and
+no relay filter to mis-order in the rate-limiting helper. Finding 3 (relay
+precedes the stale/reorder gate) is carried as a `doc/relay_design.md` line.
+
+Retained as load-bearing: the `relay_queue_` worker (`Connection::send()`'s
+`sendto()` has a ~200 ms worst-case retry loop, so forwarding must stay off
+the socket drain thread, per #10) and the shared `selectRateLimitedConnections`
+extraction so forwarded traffic is rate-limited identically to local traffic.
+
+### Open questions
+- [ ] No open questions — plan is implementation-ready.
