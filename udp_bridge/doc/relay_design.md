@@ -134,9 +134,18 @@ too.
 parameter paths (`remotes.<label>.connections_list`). The identity of a
 configured remote is `remotes.<label>.name`, falling back to the label when
 unset (see `include/udp_bridge/remote_identity.h`). Two labels resolving to
-the same name fail `on_configure`, and a sequenced packet from a sender
-that matches no configured remote logs a throttled WARN naming the
-parameter to set.
+the same name fail `on_configure`, and the first sequenced packet from a
+sender that matches no configured remote logs a WARN naming the parameter
+to set.
+
+Note what that WARN is and is not. The branch it sits in runs only while
+the sender has no `RemoteNode`, so it fires **once per unknown name for the
+process lifetime** — it is a startup-time signal, not a recurring one, and
+an operator who missed it (or whose logs have rolled) will not see it
+again. The throttle on it only collapses a burst of *different* unknown
+senders. Making the condition continuously visible would mean a
+`DiagnosticStatus` row for it; that is deliberately left as a follow-up
+rather than added here.
 
 This is worth stating because it was wrong until it was fixed as part of
 #51: `on_configure` keyed everything by the label and never read
