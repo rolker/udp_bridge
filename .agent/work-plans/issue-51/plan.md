@@ -184,14 +184,29 @@ Commit sequence (atomic): `relay_queue_` scaffolding (unused) →
 | `include/udp_bridge/udp_bridge.h` | Declare `relayToOtherRemotes`, `hasRelayDestinations`, `diagnoseRelayQueue`, `relay_queue_` |
 | `include/udp_bridge/relay_queue.h` | New: `RelayItem`/`RelayQueue`, mirrors `publish_queue.h` |
 | `include/udp_bridge/destination_selection.h` | New (as built): free `selectRateLimitedConnections` / `hasRelayDestination` + shared `DestinationConfig`, so the routing decision is testable without a node |
+| `include/udp_bridge/relay_item.h` | New (as built): `RelayItem` (split out of `relay_queue.h`) + `applyRelayDestination`, the per-destination topic/QoS rewrite |
+| `include/udp_bridge/relay_send.h` | New (as built): `sendToEachDestination` / `relayToEachDestination` — the fan-out with per-remote failure isolation and the per-destination rewrite kept inside the loop |
+| `include/udp_bridge/send_isolation.h` | New (as built, review round 2): `callIsolated`, the three-arm try/catch (`ConnectionException` has no base class) shared by the relay fan-out and `UDPBridge::send`'s per-connection loop |
+| `include/udp_bridge/remote_identity.h` | New (as built, review round 2): resolves a configured remote's WIRE identity (`remotes.<label>.name`, else the label) so the loop rule compares one namespace |
+| `include/udp_bridge/relay_drops.h` | New (as built, review round 2): `RelayDropCounters` — the sink-side drops `RelayQueue::dropped_count()` cannot see |
 | `src/udp_bridge.cpp` | Extract `selectRateLimitedConnections`; add `relayToOtherRemotes`; call from `decodeData()`; `relay_queue_` lifecycle wiring |
 | `test/` (new) | Three-node relay, echo regression, routing-table fidelity, rate-limit parity |
 | `doc/relay_design.md` | New design doc |
 | `config/example_params.yaml` | Commented second-remote example showing what relays |
 | `README.md`, `doc/conceptual_overview.md` | Describe relay + star-only scope |
 
-No new parameter: `types.h` is untouched, `addSubscriberConnection` keeps its
-signature, and `.agents/README.md`'s verified-parameter table needs no row.
+`types.h` is untouched and `addSubscriberConnection` keeps its signature.
+**Superseded:** this section originally read "No new parameter … and
+`.agents/README.md`'s verified-parameter table needs no row". As built there
+IS one new parameter — `relay_queue_max_bytes`, per the revision recorded
+above — and `.agents/README.md` carries its row, plus the new test targets.
+
+`remotes.<label>.name` is not a new parameter: it was already declared and
+documented, just never read. Round 2 of review found that the relay loop
+rule compared the wire `source_node` against config *labels*, so a remote
+whose own name differed from its label had its traffic echoed back to it,
+with a single remote configured. Reading that parameter as the remote's
+identity is the fix; see `remote_identity.h`.
 
 ## Principles Self-Check
 
