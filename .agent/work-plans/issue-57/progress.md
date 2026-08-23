@@ -325,3 +325,29 @@ Lifecycle: **Implementation → review-code** (re-review the fixes, pre-push).
 
 ### Next step
 Lifecycle: **Local Review** → address-findings (verdict changes-requested) → re-review → push / open PR. Ship: recommended — one mechanical must-fix, then shippable.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-23 02:41 +00:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-57 at `6dd80a9`
+**Mode**: pre-push
+**Depth**: Deep (reason: test_range_degradation.py +341/-6 ≥200 lines; project plan.md override-trigger)
+**Must-fix**: 0 | **Suggestions**: 2
+**Round**: 3 | **Ship**: recommended — 0 must-fix; all three round-2 findings closed; the two new suggestions are latent harness-timeout robustness on the readiness-gate code, applyable pre-push or trackable
+
+### Findings
+- [ ] (suggestion) `SCENARIO_TIMEOUT_S` (150 s) not bumped when `pub_duration` absorbed `READY_TIMEOUT_S` (30 s); worst-case gate + 90 s walk + teardown ≈ 144 s leaves ~5 s under the outer `subprocess.run(timeout=150)` cap, so a near-timeout gate can let the outer cap fire before the intended `BENCH_ERROR_*` diagnostics — `test_range_degradation.py:161`
+- [ ] (suggestion) `run_range_degradation` pub/sub `wait()` calls unguarded, unlike sibling `run_subscriber_death` (856-865) which wraps them in `try/except TimeoutExpired`; a hung pub/sub raises a traceback instead of the nonzero-exit/BENCH_ERROR path (cleanup still safe via atexit/finally — no leak) — `run_scenario.py:640-641`
+
+### Notes
+- Round-2 findings all confirmed closed: (must-fix) skip/fail conflation → `_require_clean_phase_stats` (`4867bdf`); (sugg) uniform 20 s transient ceiling → per-window `_transient_latency_ceiling_s` + `K_cotenant_transient_drain_margin`, old const removed (`f7327e0`); (sugg) `recvq_wedge_ceiling_bytes` TODO(#57 part 2) → re-derived-and-closed at 100 KB (host-run post-stall peak 14,976 B, 6.7x under).
+- New since round 2: readiness gate (`wait_ready.py`) + run-validity guard (`DELIVERY_REQUIRED_TIERS`, publish-vs-deliver split). Both adversarial passes verified: gate remote/connection naming (`operator`/`wifi` on the boat mirror) matches the rest of the suite; 100 kB/s threshold sits between the ~2 kB/s Critical+Telemetry floor and the ~2 MB/s mix; rclpy init/shutdown/destroy_node balanced on all exit paths (ready / timeout / exception); no node or child-process leak on gate timeout (atexit + finally + signal handlers); `link_bps`↔window indexing correct (9 windows, 9 rates, same `occurrence` index as the validated `downshift`); per-window drain units correct (1000×1000/62500 = 16.0 s); skip-vs-fail and validity-guard logic sound; no KeyError on `pub_counts` (populated in the range_degradation return dict).
+- The readiness gate REMOVES a recovery-invariant XPASS coin-flip rather than adding one: it forces a real ~2 MB/s pre-event baseline so `xfail(strict=True)` #60 fails deterministically (post/pre ~0.001) instead of intermittently passing (XPASS → CI failure).
+- Static analysis (flake8 E/W/F): only E241 on the untouched `PHASE_TRAJECTORY` alignment table and W503 (ament-preferred style). No added line introduces a lint finding.
+- Local Adversarial skipped: Ollama not installed on this host. Copilot off (default).
+
+### Next step
+Lifecycle: **Local Review** → push / open PR → triage-reviews. Ship: recommended — approved; the two suggestions can be applied pre-push or tracked as harness-robustness follow-ups.
