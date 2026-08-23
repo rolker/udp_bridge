@@ -219,6 +219,26 @@ WARNs on drops since the previous tick. A relay drop is **unrecoverable** —
 the message never reached a `Connection`, so the resend layer has nothing
 to retransmit.
 
+## Statistics
+
+Relayed traffic is added to the topic's `MessageStatistics` exactly as
+locally-originated traffic is (`~/topic_statistics`, `BridgeInfo`), so
+relayed bytes are visible rather than invisible. Two things to know when
+reading those numbers on a hub:
+
+- **Local-origin and relayed traffic are summed per topic.** The message
+  counts and sizes for a relayed topic mix the two, so a hub's
+  `topic_statistics` for `/boat_a/nav` is not a measure of what its own
+  publishers produced. The per-destination `send_results` breakdown *is*
+  per remote, so where the traffic went is still distinguishable; where it
+  came from is not.
+- `message_size` for a relayed message is the received payload size
+  (`MessageInternal::data`), the same quantity `callback()` records for a
+  locally published one.
+
+Splitting the two would mean a per-source dimension in `MessageStatistics`
+— a wire-format change to `TopicStatistics`, out of scope here.
+
 ## Rate limiting is shared, not parallel
 
 `selectRateLimitedConnections()`
@@ -251,6 +271,23 @@ Relay widens the blast radius, and it is worth stating plainly:
   authorization: any remote that can send the hub a topic can reach every
   other remote that lists it. The topic lists are the access-control list,
   such as it is.
+- **`source_node` is an attacker-controllable wire field.** The loop rule's
+  only input is `SourceInfo::node_name`, taken from the wrapped packet's
+  `source_node` — a string the sender chooses. An injected packet can
+  therefore claim to come from any remote, which suppresses relay to that
+  one remote (naming a remote as the sender excludes it) but reaches every
+  other remote listing the topic. A packet that is *not* wrapped at all
+  carries no `source_node`; those are refused outright — the probe answers
+  false for an empty sender, precisely because a rule that excludes by name
+  excludes nobody when there is no name. Neither behaviour is
+  authentication, and neither is a substitute for the tunnel.
+- **Relayed packets occupy each `Connection`'s `sent_packets_` resend
+  buffer.** Forwarding goes through the ordinary `send()` path, so a
+  relayed message is tracked for retransmission on every outgoing
+  connection it went to, for up to `kSentPacketTTL` (5 s), and is subject to
+  the same resend budget (#44). Injected traffic accepted by a hub
+  therefore consumes not just downstream bandwidth but downstream *resend
+  state*, on every link, until it ages out.
 
 **The deployment requirement is unchanged and is load-bearing:** run
 udp_bridge only inside a tunnel (WireGuard, in this workspace's

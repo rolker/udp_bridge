@@ -1127,6 +1127,12 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
         auto size_data = send(message_internal, connections, false);
         size_data.message_size = message_internal.data.size();
         {
+          // Relayed bytes go into the topic's statistics alongside
+          // local-origin ones, so they are visible in ~/topic_statistics
+          // rather than invisible. They are summed, not separated: the
+          // per-destination send_results breakdown says where the traffic
+          // went, but a per-source split would need a wire-format change
+          // to TopicStatistics. See doc/relay_design.md, Statistics.
           std::lock_guard<std::mutex> lock(subscribers_mutex_);
           auto sub_it = subscribers_.find(item.topic);
           if(sub_it != subscribers_.end())
