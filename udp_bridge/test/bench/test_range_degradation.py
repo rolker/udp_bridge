@@ -487,13 +487,19 @@ def _split_in_range_phases(artifacts) -> tuple[dict, dict] | None:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        'Known defect, rolker/udp_bridge#60: after over_horizon the AIMD cap '
-        'leaves the floor at ~8.2 kB/s and recovers by max(2048, 0.1 x '
-        'effective) per ~1 Hz sample -- ~6 samples flat then ~48 geometric, '
-        'about 54 s to regain a ~2 MB/s baseline, against T_recovery_s=30. '
-        'Measured at 0.1% and 0.3% of baseline across two #57 runs. Invisible '
-        'before #57 because the compressible Bulk payload made the baseline '
-        '~8 kB/s of single packets, reachable in two samples. Consequence of '
+        'Known defect, rolker/udp_bridge#60: after over_horizon the Bulk tier '
+        'is shut out COMPLETELY, not merely slowed. Measured over the final '
+        'in_range window (10 samples, gated run 2026-08-22): Bulk offered '
+        '5,077,800 B/s and succeeded at exactly 0, while the same window '
+        'pre-event ran 1,139,732 success against 3,359,233 offered. The '
+        '~2,050 B/s the connection does carry is entirely Critical (165) + '
+        'Telemetry (1,879) -- small packets that fit under a cap a 480 KB '
+        'fragmented message cannot. Mechanism: the AIMD cap leaves the floor '
+        'at ~8.2 kB/s and recovers by max(2048, 0.1 x effective) per ~1 Hz '
+        'sample -- ~6 samples flat then ~48 geometric, about 54 s to regain a '
+        '~2 MB/s baseline, against T_recovery_s=30. Invisible before #57 '
+        'because the compressible Bulk payload made the baseline ~8 kB/s of '
+        'single packets, reachable in two samples. Consequence of '
         "#52's (correct) switch to an effective-cap-relative additive step. "
         'strict=True so this turns back into a failure when #60 lands -- do '
         'NOT lower X_recovery_pct or widen T_recovery_s to clear it.'

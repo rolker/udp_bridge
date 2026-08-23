@@ -128,6 +128,19 @@ The two Bulk acceptance invariants ([#57](https://github.com/rolker/udp_bridge/i
 10. **Fragmentation exercised** — the boat send-side `average_fragment_count` for `/boat/bulk/image` stays ≥ `T_fragment_floor` in the clean in-range phase. With the incompressible 480 KB payload and a 1000-byte `maximum_packet_size`, an image fragments into ≥ 480 pieces (`floor(480000/1000)`; per-fragment headers push it higher), so the resend/reassembly machinery is exercised for real. The pre-#57 single-packet bug would drive this to ~1 and fail here. (#57 Acceptance criterion 2.)
 11. **Bulk wire rate** — the boat send-side per-topic Bulk *offered* rate (`send.success_bytes_per_second` + `send.dropped_bytes_per_second`) clears `W_wire_pct` × the ~4.8 MB/s nominal Bulk offered load in the clean in-range phase. Bulk is offered at ~4.8 MB/s (120% of the 4 MB/s WiFi budget) and the limiter is entitled to shed the excess toward the cap — so the invariant measures what the tier *presents*, not what survives; this catches a regression that silently drops Bulk back to the pre-#57 ~0.5 kB/s single-packet trickle. Sourced per-topic from `topic_statistics`, not the WiFi connection aggregate. (#57 Acceptance criterion 1.)
 
+**Readiness gate.** The phase walk does not start until the boat bridge is
+genuinely carrying the three-tier mix (`wait_ready.py`, budget
+`READY_TIMEOUT_S`). Bulk needs discovery plus its first fragmented 480 KB
+image before it reaches the wire, and the first `in_range_clean` window is the
+recovery invariant's **pre-event baseline** — starting the walk into that race
+made the baseline ~2 kB/s of Critical+Telemetry in roughly half of runs
+instead of the real ~2 MB/s, turning a deterministic defect into an apparent
+coin flip. A run that cannot reach its own starting state now fails loudly
+rather than measuring a baseline that never happened. Cost: the readiness
+budget is added to publisher lifetime, so a run spends it idling after the
+walk regardless of how quickly the gate clears (~30 s; worth reclaiming, but
+correctness first).
+
 **Harness validity guard.** Before any invariant is evaluated, the
 orchestrator checks the run actually happened: every tier must have
 **published**, and Critical and Telemetry must have **arrived**

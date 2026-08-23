@@ -89,6 +89,15 @@ TIER_DESTINATIONS = {
 # arithmetic. Every tier, Bulk included, must still PUBLISH.
 DELIVERY_REQUIRED_TIERS = ('critical', 'telemetry')
 
+# Budget for the pre-walk readiness gate (#57). Bulk needs a few seconds of
+# discovery plus its first fragmented image before it contributes to the
+# wire; observed ready in well under 10 s on the dev host. The generous
+# ceiling exists so a slow or loaded machine waits rather than silently
+# measuring a baseline the run never established -- exceeding it is a
+# harness failure, not something to sleep through. Added to publisher
+# lifetime so the gate never eats into the walk's data.
+READY_TIMEOUT_S = 30.0
+
 # Sail-out-and-return trajectory applied to the WiFi path only (cell
 # and Starlink hold their CLEAN_PROFILE baselines). The phase names
 # are written into the phase log so `test_range_degradation.py` can
@@ -384,6 +393,29 @@ def launch_sub(domain: int, topic: str, msg_type: str, duration_s: float,
     )
 
 
+def wait_ready(timeout_s: float, domain: int = OPERATOR_DOMAIN) -> None:
+    """Block until the boat bridge is carrying the full three-tier mix.
+
+    Raises RuntimeError on timeout rather than proceeding: a run whose Bulk
+    tier never reached the wire cannot produce a meaningful pre-event
+    baseline, and silently measuring one is how this harness previously
+    turned a deterministic defect into a coin flip (#57). See wait_ready.py.
+    """
+    script = Path(__file__).parent / 'wait_ready.py'
+    proc = subprocess.run(
+        [sys.executable, str(script), '--timeout-s', str(timeout_s)],
+        env=_env_for(domain),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            'Bench readiness gate failed -- the three-tier mix never reached '
+            f'the wire within {timeout_s:.0f}s.\n{proc.stderr.strip()}')
+    if _debug():
+        print(proc.stdout.strip(), file=sys.stderr)
+
+
 def launch_recv_q_trace(port: int, output_csv: Path,
                         interval_s: float = 0.5) -> _Child:
     """Run recv_q_trace.py against a UDP port; writes CSV until SIGTERM."""
@@ -575,8 +607,9 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     time.sleep(2)  # let recorder + tracer + co-tenant receiver settle
 
     # We need pub/sub to outlive the walk by a couple of seconds so the
-    # final in_range_clean recovery phase has steady-state data.
-    pub_duration = hold_s * len(PHASE_TRAJECTORY) + 4
+    # final in_range_clean recovery phase has steady-state data -- plus the
+    # readiness gate below, which spends real time before the walk starts.
+    pub_duration = hold_s * len(PHASE_TRAJECTORY) + 4 + READY_TIMEOUT_S
     subs = {
         tier: launch_sub(OPERATOR_DOMAIN, topic, msg_type, pub_duration + 2)
         for tier, (msg_type, topic) in TIER_DESTINATIONS.items()
@@ -589,6 +622,14 @@ def run_range_degradation(hold_s: float, outdir: Path) -> dict:
     # Co-tenant runs for the whole walk: the question is whether the
     # bridge leaves it room in EVERY phase, not on average.
     cotenant_tx = launch_cotenant_sender(PATHS[0][1], pub_duration)
+
+    # Don't start the walk until Bulk is genuinely on the wire (#57). The
+    # first in_range_clean window is the recovery invariant's PRE-EVENT
+    # BASELINE; starting the walk while Bulk is still in discovery makes that
+    # baseline ~2 kB/s of Critical+Telemetry instead of the real ~2 MB/s, and
+    # the invariant then measures recovery against a baseline that never
+    # happened. See wait_ready.py for the measured evidence.
+    wait_ready(timeout_s=READY_TIMEOUT_S)
 
     walk_start = time.time()
     phase_log: list = []
