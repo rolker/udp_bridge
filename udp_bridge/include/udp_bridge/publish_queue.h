@@ -137,12 +137,13 @@ public:
   {
     // run() reads sink_ / max_bytes_ without the lock, so reconfiguring a
     // running queue is a data race — one that surfaces as a corrupted
-    // std::function call, not as a wrong value. Assert the contract the
-    // comment above states rather than trusting callers to keep it.
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      assert(!running_ && "PublishQueue::configure() must not be called while running");
-    }
+    // std::function call, not as a wrong value. Check and assign under
+    // mutex_ so the pair cannot interleave with start()/stop() and so the
+    // assignment is ordered before the worker start() launches under the
+    // same mutex. The assert is a debug-build aid only (compiled out under
+    // NDEBUG, which is how this ships); the locking is what holds.
+    std::lock_guard<std::mutex> lock(mutex_);
+    assert(!running_ && "PublishQueue::configure() must not be called while running");
     sink_ = std::move(sink);
     max_bytes_ = max_bytes;
   }

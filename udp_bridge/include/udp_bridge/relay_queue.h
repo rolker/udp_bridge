@@ -46,15 +46,18 @@ public:
 
   /// Set the worker's sink and byte budget. Call once before start() (e.g.
   /// in on_configure); changing these while running is not supported —
-  /// run() reads both without the lock. Asserted rather than left to the
-  /// comment, since a reconfigure-while-active would be a data race that
-  /// shows up as a corrupted std::function call, not as a wrong value.
+  /// run() reads both without the lock.
+  ///
+  /// The check and the assignment both happen under mutex_, so a caller that
+  /// breaks the contract cannot interleave with start()/stop(), and the
+  /// assignment is ordered before the worker thread that start() launches
+  /// under the same mutex. The assert is a debug-build aid only — it is
+  /// compiled out under NDEBUG, which is how this ships — so the locking,
+  /// not the assert, is what makes the ordering hold.
   void configure(Sink sink, size_t max_bytes)
   {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      assert(!running_ && "RelayQueue::configure() must not be called while running");
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    assert(!running_ && "RelayQueue::configure() must not be called while running");
     sink_ = std::move(sink);
     max_bytes_ = max_bytes;
   }
