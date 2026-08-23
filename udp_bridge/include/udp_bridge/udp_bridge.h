@@ -463,9 +463,11 @@ private:
   /// from a sender that matches no configured remote: on a static config
   /// that is the visible symptom of a label/`name` mismatch, which makes
   /// the relay loop rule compare two different namespaces and lets the hub
-  /// echo a remote's own traffic back to it. Populated in on_configure
-  /// (before any timer exists, so no reader can race the write), cleared
-  /// in on_cleanup, and read under remote_nodes_mutex_.
+  /// echo a remote's own traffic back to it. Populated in on_configure,
+  /// cleared in on_cleanup, and read on the socket-drain path — all three
+  /// under remote_nodes_mutex_. The write is *not* race-free by timing: on
+  /// a re-configure only diagnostic_timer_ was reset in on_cleanup, so the
+  /// other timers survive and keep firing while on_configure runs.
   std::set<std::string> configured_remote_names_;
 
   // Per-remote diagnostic state for the resend-give-up rate

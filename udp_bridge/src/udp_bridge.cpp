@@ -462,9 +462,15 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   bridge_info_publisher_ = create_publisher<BridgeInfo>(node_name+"/bridge_info", latching_qos);
 
-  configured_remote_names_.clear();
-  for(const auto& entry: identity_by_label)
-    configured_remote_names_.insert(entry.second);
+  // Under remote_nodes_mutex_, matching every reader. A re-configure is
+  // the case that matters: on_cleanup resets only diagnostic_timer_, so
+  // spin_timer_ and friends survive and keep firing while this runs.
+  {
+    std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+    configured_remote_names_.clear();
+    for(const auto& entry: identity_by_label)
+      configured_remote_names_.insert(entry.second);
+  }
 
   for(auto remote_name: remotes_list)
   {
