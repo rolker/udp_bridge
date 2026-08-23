@@ -105,6 +105,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
 | `relay_queue_max_bytes` | 64 MiB | Byte budget for the relay worker queue (#51); clamped 1 MiB–2 GiB, same default and clamps as `publish_queue_max_bytes` |
+| `remotes.<label>.name` | `""` (empty) | Wire name of the remote (#51). Empty → the `remotes_list` label is used. Duplicate resolved names fail `on_configure` (validated before the socket is opened) |
 | `remotes_list` | `[]` | Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
 
 See `config/example_params.yaml` for the nested structure.
@@ -179,9 +180,16 @@ there works today.
   when `maximum_bytes_per_second` is 0 is **50000 B/s** — the
   `example_params.yaml` comment claiming 500000 is wrong (that number is the
   socket buffer size).
-- **`remotes.<label>.name` is not a real parameter** — the remote's name is
-  the `remotes_list` label itself. The old `udp_bridge/README.md` and the
-  example YAML comment claiming otherwise are stale.
+- **`remotes.<label>.name` IS a real parameter as of #51** — and it changes
+  what everything downstream is keyed by. The `remotes_list` entry is a
+  *label* (it spells the parameter path); `remotes.<label>.name`, when
+  non-empty, is the name that remote uses on the wire, and it is what
+  `remote_nodes_`, `subscribers_[topic].remote_details`, the per-remote
+  topics/diagnostics and the service `remote`/`name` arguments key on.
+  Empty (the default) means label == wire name, which is what every config
+  in this workspace does. Before #51 the parameter was never declared, so a
+  `name:` key in YAML was silently inert — see the upgrade note in
+  `udp_bridge/README.md` before changing one.
 - **Connection config is one complete per-connection block**: partial
   overrides silently break return-path routing (boat replies to the wrong
   host, data flow drops to zero).

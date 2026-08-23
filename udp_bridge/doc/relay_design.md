@@ -269,9 +269,9 @@ of the worker:
 
 - what `RelayQueue` itself discards — overflow and push-after-stop;
 - what the sink (`relayToOtherRemotes`) abandons after dequeuing it: the
-  node left ACTIVE, the sender carries no `source_node`, or the topic's
-  routing table was torn down between the drain thread's probe and the sink
-  call. These are broken out per reason in `sink_drop_reasons`
+  sender carries no `source_node` (`UnnamedSender`), or the topic's routing
+  table was torn down between the drain thread's probe and the sink call
+  (`TopicGone`). These are broken out per reason in `sink_drop_reasons`
   (`include/udp_bridge/relay_drops.h`).
 
 An item held back only by the per-connection `period` rate limit is counted

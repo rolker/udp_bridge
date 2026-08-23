@@ -2685,9 +2685,9 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   //
   // Two sources of loss are summed here. The queue drops on overflow and
   // push-after-stop (RelayQueue::dropped_count); the sink drops an item it
-  // already dequeued when the node left ACTIVE, when the sender is unnamed,
-  // or when the topic's routing table was torn down under it
-  // (relay_drops_). Both are unrecoverable, so both must be visible —
+  // already dequeued when the sender is unnamed or when the topic's
+  // routing table was torn down under it (relay_drops_).
+  // Both are unrecoverable, so both must be visible —
   // reporting only the queue's would under-report real relay loss. Items
   // held back purely by the `period` rate limit are counted apart and are
   // not loss.
