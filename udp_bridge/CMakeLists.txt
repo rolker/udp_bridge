@@ -177,6 +177,10 @@ if(BUILD_TESTING)
   # isolation via an injected sink, mirroring test_publish_queue: forwarding
   # must never stall the socket-drain thread.
   add_udp_bridge_gtest(test_relay_queue test/test_relay_queue.cpp)
+  # test_relay_send (issue #51) exercises the per-destination failure
+  # isolation of the relay fan-out: ConnectionException (which has no base
+  # class) is caught, and one failing remote does not cancel the others.
+  add_udp_bridge_gtest(test_relay_send test/test_relay_send.cpp)
 
   # Bench-harness smoke test (issue #18). Runs the orchestrator under
   # an unprivileged user namespace; skips cleanly if unshare -Urn is

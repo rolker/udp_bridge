@@ -41,6 +41,7 @@
 #include "udp_bridge/udp_bridge.h"
 #include "udp_bridge/qos_resolution.h"
 #include "udp_bridge/destination_selection.h"
+#include "udp_bridge/relay_send.h"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/serialization.hpp"
@@ -1103,37 +1104,55 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     // still reports where the data actually came from.
     MessageInternal message_internal = std::move(item.message);
 
-    for(const auto& destination: destinations)
-    {
-      auto config_it = destination_config_by_remote.find(destination.first);
-      if(config_it != destination_config_by_remote.end())
+    // Per-destination failure isolation (see relay_send.h): a throw from one
+    // remote's send -- ConnectionException on the ordinary Timeout path -- is
+    // logged and the fan-out continues to the remaining remotes.
+    sendToEachDestination(destinations,
+      [&](const std::string& remote_name, const std::vector<std::string>& connection_ids)
       {
-        message_internal.destination_topic = config_it->second.destination_topic;
-        message_internal.reliability       = config_it->second.reliability;
-        message_internal.durability        = config_it->second.durability;
-        message_internal.history_depth     = config_it->second.history_depth;
-      }
-      else
+        auto config_it = destination_config_by_remote.find(remote_name);
+        if(config_it != destination_config_by_remote.end())
+        {
+          message_internal.destination_topic = config_it->second.destination_topic;
+          message_internal.reliability       = config_it->second.reliability;
+          message_internal.durability        = config_it->second.durability;
+          message_internal.history_depth     = config_it->second.history_depth;
+        }
+        else
+        {
+          message_internal.destination_topic.clear();
+          message_internal.reliability.clear();
+          message_internal.durability.clear();
+          message_internal.history_depth = 0;
+        }
+        RemoteConnectionsList connections;
+        connections[remote_name] = connection_ids;
+        // The existing send path: fragmenting, wrapped-packet sequencing and
+        // the per-connection AIMD admission control of #43/#52 all apply to
+        // relayed traffic exactly as they do to locally published traffic.
+        auto size_data = send(message_internal, connections, false);
+        size_data.message_size = message_internal.data.size();
+        {
+          std::lock_guard<std::mutex> lock(subscribers_mutex_);
+          auto sub_it = subscribers_.find(item.topic);
+          if(sub_it != subscribers_.end())
+            sub_it->second.statistics.add(size_data);
+        }
+      },
+      [&](const std::string& remote_name, const std::string& what)
       {
-        message_internal.destination_topic.clear();
-        message_internal.reliability.clear();
-        message_internal.durability.clear();
-        message_internal.history_depth = 0;
-      }
-      RemoteConnectionsList connections;
-      connections[destination.first] = destination.second;
-      // The existing send path: fragmenting, wrapped-packet sequencing and
-      // the per-connection AIMD admission control of #43/#52 all apply to
-      // relayed traffic exactly as they do to locally published traffic.
-      auto size_data = send(message_internal, connections, false);
-      size_data.message_size = message_internal.data.size();
-      {
-        std::lock_guard<std::mutex> lock(subscribers_mutex_);
-        auto sub_it = subscribers_.find(item.topic);
-        if(sub_it != subscribers_.end())
-          sub_it->second.statistics.add(size_data);
-      }
-    }
+        RCLCPP_ERROR_STREAM(get_logger(),
+          "relay worker: send to '" << remote_name << "' failed for topic '"
+          << item.topic << "' (from '" << item.source_node << "'): " << what);
+      });
+  }
+  catch(const ConnectionException& e)
+  {
+    // ConnectionException has no base class, so it is not covered by the
+    // std::exception handler below (connection.h).
+    RCLCPP_ERROR_STREAM(get_logger(),
+      "relay worker: dropping message for '" << item.topic
+      << "' from '" << item.source_node << "': " << e.getMessage());
   }
   catch(const std::exception& e)
   {
