@@ -93,12 +93,12 @@ struct RelayDropCounters
     return no_destination_due.load(std::memory_order_relaxed);
   }
 
-  void reset()
-  {
-    unnamed_sender.store(0, std::memory_order_relaxed);
-    topic_gone.store(0, std::memory_order_relaxed);
-    no_destination_due.store(0, std::memory_order_relaxed);
-  }
+  // Deliberately no reset(): these counters are monotonic for the process
+  // lifetime, like RelayQueue::dropped_count(), and the diagnostic reports
+  // deltas against last_reported_relay_drops_. Zeroing them without
+  // zeroing that baseline in the same place would underflow
+  // `dropped - last_reported_relay_drops_` to ~2^64 and pin the relay
+  // diagnostic at WARN.
 };
 
 } // namespace udp_bridge

@@ -438,11 +438,6 @@ TEST(RelayDropCountersTest, RateLimitedIsVisibleButNotLoss)
     << "it must still be visible to an operator reading the diagnostic";
   EXPECT_TRUE(counters.lossBreakdown().empty())
     << "the rate limit must never appear in the loss breakdown or the WARN";
-
-  counters.reset();
-  EXPECT_EQ(counters.lost(), 0u);
-  EXPECT_EQ(counters.rateLimited(), 0u);
-  EXPECT_TRUE(counters.lossBreakdown().empty());
 }
 
 int main(int argc, char **argv)
