@@ -2706,7 +2706,14 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // reporting only the queue's would under-report real relay loss. Items
   // held back purely by the `period` rate limit are counted apart and are
   // not loss.
-  const uint64_t dropped = relay_queue_.dropped_count() + relay_drops_.lost();
+  //
+  // Every counter is read exactly once into a local: the worker keeps
+  // incrementing while this runs, and re-reading dropped_count()/lost() for
+  // the per-source rows could otherwise publish a status where
+  // dropped_by_queue + dropped_by_sink exceeds dropped_total.
+  const uint64_t dropped_by_queue = relay_queue_.dropped_count();
+  const uint64_t dropped_by_sink = relay_drops_.lost();
+  const uint64_t dropped = dropped_by_queue + dropped_by_sink;
   const uint64_t depth = static_cast<uint64_t>(relay_queue_.size());
   const uint64_t recent = dropped - last_reported_relay_drops_;
   last_reported_relay_drops_ = dropped;
@@ -2714,8 +2721,8 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   stat.add("queued_items", depth);
   stat.add("dropped_total", dropped);
   stat.add("dropped_since_last_tick", recent);
-  stat.add("dropped_by_queue", relay_queue_.dropped_count());
-  stat.add("dropped_by_sink", relay_drops_.lost());
+  stat.add("dropped_by_queue", dropped_by_queue);
+  stat.add("dropped_by_sink", dropped_by_sink);
   const auto breakdown = relay_drops_.breakdown();
   if(!breakdown.empty())
     stat.add("sink_drop_reasons", breakdown);
