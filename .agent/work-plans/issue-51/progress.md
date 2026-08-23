@@ -673,21 +673,103 @@ Mutation checks run and reverted (each new behavioural guard has a test that fai
 
 ### Findings
 
-- [ ] (must-fix) The loop rule compares the wire `source_node` against `remote_details` keys, which for statically-configured remotes are the `remotes_list` **labels** (`udp_bridge.cpp:436,559`) — `remotes.<label>.name` is declared in the example but never read anywhere. If a remote's own `name` parameter differs from the hub's label for it, the loop rule matches nothing and the hub echoes the sender's own traffic back to it, which is exactly what `relay_design.md` promises cannot happen ("the same key `remote_nodes_` is keyed by, so the comparison is a plain string compare in a single namespace" — there are two namespaces). `config/example_params.yaml:34` ships the mismatch as the example (`robot_a` label, `name: "robot_a_bridge"`). Document the label == remote-`name` invariant in `doc/relay_design.md` and drop or correct the unread `name:` key — `doc/relay_design.md:113-118`, `config/example_params.yaml:34`
-- [ ] (must-fix) The Security section's "The topic lists are the access-control list, such as it is" is not accurate: `decodeSubscribeRequest` feeds wire-supplied `source_topic` / `destination_topic` / `period` straight into `addSubscriberConnection` (`udp_bridge.cpp:1529`), which does `subscribers_[source_topic].remote_details[remote_node]` (`1406-1409`) and creates topic keys that were never configured — so any reachable host self-enrolls as a relay destination, and a spoofed `source_node` can overwrite a legitimate remote's entry (a negative `period` silently cuts that operator's relayed feed). The rest of that section is careful and honest; this one sentence overstates the hub operator's control — `doc/relay_design.md:275-278`
-- [ ] (must-fix) The operator-facing relay rule in the example config is wrong: "a relay hub for any topic **both remotes carry**" is false for this very file — `robot_a`'s `topics_list` keys `subscribers_` on its `source:` names (`/odometry`, `/battery_state`), never on `/shoreside/robot_a/odometry`, so the two remotes share no routing-table key. Relay needs only the *receiving* remote to list the hub-local topic as its `source:`; the sender need not appear in that topic's table at all — `config/example_params.yaml:33-36`
-- [ ] (suggestion) `relayToOtherRemotes` reads the lifecycle `current_state_` from the relay worker while the executor thread can be writing it — unsynchronized, and redundant since `on_deactivate`'s `stop()` joins the worker; `publishItem` pointedly makes no such call, so the pattern is new and asymmetric — `src/udp_bridge.cpp:1086`
-- [ ] (suggestion) Four early returns discard an already-dequeued relay item without counting it (not ACTIVE, empty sender, topic torn down, nothing due), so `relay_queue_.dropped_count()` and the "relay queue dropping" WARN under-report real relay loss — `src/udp_bridge.cpp:1086,1094,1103,1129`
-- [ ] (suggestion) The relay path omits `callback()`'s once-per-message `send_results[""][""]` seed (`udp_bridge.cpp:818`), so the aggregate `destination_node == ""` row counts only locally-originated messages; the adjacent comment and `relay_design.md` § Statistics say relayed and local traffic are "summed", which holds only for the per-destination rows — `src/udp_bridge.cpp:1157-1169`, `doc/relay_design.md:229-243`
-- [ ] (suggestion, cross-pass confirmed by both adversarial lenses) The rationale says reconstructing the `MessageInternal` at release "would mean keeping the payload twice over" — the chosen design keeps it twice too (`PublishItem::message` plus `relay->message.data`) for as long as the item sits in the reorder buffer, which is bounded per topic but not by bytes; a relaying hub's held-packet memory doubles with no accounting and no mention where the hold window is sized — `include/udp_bridge/publish_queue.h:40-54`
-- [ ] (suggestion) The relay probe takes `subscribers_mutex_` before the stale gate, so every packet the reorder-disabled fast path drops now pays for it, weakening the "gate before the payload copy so a dropped packet costs nothing" property that path's own comment advertises; moving the probe below that gate would restore it (the reorder path must keep it where it is) — `src/udp_bridge.cpp:962`
-- [ ] (suggestion) Nothing binds that `applyRelayDestination` is called *inside* the per-destination lambda: it is tested standalone and `sendToEachDestination` is tested with stub sinks, so hoisting the rewrite out of the loop — every destination getting one remote's topic and QoS, a classic fan-out bug — would fail no test — `test/test_relay_routing.cpp`, `src/udp_bridge.cpp:1146-1150`
-- [ ] (suggestion) Failure isolation is per *remote*, not per connection: `UDPBridge::send()` has no try/catch around its `connection->send()` loop, so a throw on a remote's first connection skips its remaining redundant connections and its statistics record — `src/udp_bridge.cpp:1815`
-- [ ] (suggestion) The two `last_sent_time` assertions in `UnnamedSenderIsNeverRelayed` are vacuous — the test never calls the selector, so they pass for any implementation; the `EXPECT_FALSE` above them is what binds the guard — `test/test_relay_routing.cpp:151-152`
-- [ ] (suggestion) Comment names the sink `UDPBridge::relayItem`; it is `relayToOtherRemotes` — `include/udp_bridge/relay_queue.h:150`
-- [ ] (suggestion) Two `PublishQueue`-inherited hardening gaps are now duplicated in a second queue: concurrent `stop()` callers can both reach `worker_.join()` (`running_` is cleared only after the join), and `configure()` writes `sink_`/`max_bytes_` unlocked against `run()`'s unlocked read — safe only by the "call once before start()" comment; an `assert(!running_)` would enforce it. Also `on_shutdown` stops neither worker — `include/udp_bridge/relay_queue.h:48-52,74-89`, `src/udp_bridge.cpp:686`
-- [ ] (suggestion) Plan drift: `plan.md` still carries "No new parameter: … `.agents/README.md`'s verified-parameter table needs no row", contradicting the revision recorded above it and the row actually shipped; `relay_item.h` and `relay_send.h` are absent from the Files-to-Change table — `.agent/work-plans/issue-51/plan.md:193-194,180-193`
+- [x] (must-fix) The loop rule compares the wire `source_node` against `remote_details` keys, which for statically-configured remotes are the `remotes_list` **labels** (`udp_bridge.cpp:436,559`) — `remotes.<label>.name` is declared in the example but never read anywhere. If a remote's own `name` parameter differs from the hub's label for it, the loop rule matches nothing and the hub echoes the sender's own traffic back to it, which is exactly what `relay_design.md` promises cannot happen ("the same key `remote_nodes_` is keyed by, so the comparison is a plain string compare in a single namespace" — there are two namespaces). `config/example_params.yaml:34` ships the mismatch as the example (`robot_a` label, `name: "robot_a_bridge"`). Document the label == remote-`name` invariant in `doc/relay_design.md` and drop or correct the unread `name:` key — `doc/relay_design.md:113-118`, `config/example_params.yaml:34`
+- [x] (must-fix) The Security section's "The topic lists are the access-control list, such as it is" is not accurate: `decodeSubscribeRequest` feeds wire-supplied `source_topic` / `destination_topic` / `period` straight into `addSubscriberConnection` (`udp_bridge.cpp:1529`), which does `subscribers_[source_topic].remote_details[remote_node]` (`1406-1409`) and creates topic keys that were never configured — so any reachable host self-enrolls as a relay destination, and a spoofed `source_node` can overwrite a legitimate remote's entry (a negative `period` silently cuts that operator's relayed feed). The rest of that section is careful and honest; this one sentence overstates the hub operator's control — `doc/relay_design.md:275-278`
+- [x] (must-fix) The operator-facing relay rule in the example config is wrong: "a relay hub for any topic **both remotes carry**" is false for this very file — `robot_a`'s `topics_list` keys `subscribers_` on its `source:` names (`/odometry`, `/battery_state`), never on `/shoreside/robot_a/odometry`, so the two remotes share no routing-table key. Relay needs only the *receiving* remote to list the hub-local topic as its `source:`; the sender need not appear in that topic's table at all — `config/example_params.yaml:33-36`
+- [x] (suggestion) `relayToOtherRemotes` reads the lifecycle `current_state_` from the relay worker while the executor thread can be writing it — unsynchronized, and redundant since `on_deactivate`'s `stop()` joins the worker; `publishItem` pointedly makes no such call, so the pattern is new and asymmetric — `src/udp_bridge.cpp:1086`
+- [x] (suggestion) Four early returns discard an already-dequeued relay item without counting it (not ACTIVE, empty sender, topic torn down, nothing due), so `relay_queue_.dropped_count()` and the "relay queue dropping" WARN under-report real relay loss — `src/udp_bridge.cpp:1086,1094,1103,1129`
+- [x] (suggestion) The relay path omits `callback()`'s once-per-message `send_results[""][""]` seed (`udp_bridge.cpp:818`), so the aggregate `destination_node == ""` row counts only locally-originated messages; the adjacent comment and `relay_design.md` § Statistics say relayed and local traffic are "summed", which holds only for the per-destination rows — `src/udp_bridge.cpp:1157-1169`, `doc/relay_design.md:229-243`
+- [x] (suggestion, cross-pass confirmed by both adversarial lenses) The rationale says reconstructing the `MessageInternal` at release "would mean keeping the payload twice over" — the chosen design keeps it twice too (`PublishItem::message` plus `relay->message.data`) for as long as the item sits in the reorder buffer, which is bounded per topic but not by bytes; a relaying hub's held-packet memory doubles with no accounting and no mention where the hold window is sized — `include/udp_bridge/publish_queue.h:40-54`
+- [x] (suggestion) The relay probe takes `subscribers_mutex_` before the stale gate, so every packet the reorder-disabled fast path drops now pays for it, weakening the "gate before the payload copy so a dropped packet costs nothing" property that path's own comment advertises; moving the probe below that gate would restore it (the reorder path must keep it where it is) — `src/udp_bridge.cpp:962`
+- [x] (suggestion) Nothing binds that `applyRelayDestination` is called *inside* the per-destination lambda: it is tested standalone and `sendToEachDestination` is tested with stub sinks, so hoisting the rewrite out of the loop — every destination getting one remote's topic and QoS, a classic fan-out bug — would fail no test — `test/test_relay_routing.cpp`, `src/udp_bridge.cpp:1146-1150`
+- [x] (suggestion) Failure isolation is per *remote*, not per connection: `UDPBridge::send()` has no try/catch around its `connection->send()` loop, so a throw on a remote's first connection skips its remaining redundant connections and its statistics record — `src/udp_bridge.cpp:1815`
+- [x] (suggestion) The two `last_sent_time` assertions in `UnnamedSenderIsNeverRelayed` are vacuous — the test never calls the selector, so they pass for any implementation; the `EXPECT_FALSE` above them is what binds the guard — `test/test_relay_routing.cpp:151-152`
+- [x] (suggestion) Comment names the sink `UDPBridge::relayItem`; it is `relayToOtherRemotes` — `include/udp_bridge/relay_queue.h:150`
+- [x] (suggestion) Two `PublishQueue`-inherited hardening gaps are now duplicated in a second queue: concurrent `stop()` callers can both reach `worker_.join()` (`running_` is cleared only after the join), and `configure()` writes `sink_`/`max_bytes_` unlocked against `run()`'s unlocked read — safe only by the "call once before start()" comment; an `assert(!running_)` would enforce it. Also `on_shutdown` stops neither worker — `include/udp_bridge/relay_queue.h:48-52,74-89`, `src/udp_bridge.cpp:686`
+- [x] (suggestion) Plan drift: `plan.md` still carries "No new parameter: … `.agents/README.md`'s verified-parameter table needs no row", contradicting the revision recorded above it and the row actually shipped; `relay_item.h` and `relay_send.h` are absent from the Files-to-Change table — `.agent/work-plans/issue-51/plan.md:193-194,180-193`
 
 ### Plan adherence
 
 Plan was updated in-branch (`7b9f708`) for both reversals — gate ordering and the relay-queue parameter — and both revisions match what is built. The stale "No new parameter" sentence in Files-to-Change is the only residue. Two new headers arrived that the plan does not list; both are extractions the review asked for, not scope creep. Commits remain atomic and in a defensible order.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-23 18:37 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-51 at `a3a6917`
+**Addressed**: `## Local Review (Pre-Push)` of 2026-08-23 17:58 -04:00 (branch at `0e87d79`), round 2 — 3 must-fixes, 11 suggestions
+**Commits**: e317ba5 07539ed 0d60fda 4984d51 ac4290d d9b059d e89a8ec e2615ce 6312636 f296f76 5d1cd53 a3a6917 
+
+**Verification**: `./build.sh udp_bridge` exit 0; `./test.sh udp_bridge` exit 0; `colcon test-result --verbose` exit 0 — **231 tests, 0 errors, 0 failures, 14 skipped** (was 209 before this pass). `pre-commit run --from-ref origin/jazzy --to-ref HEAD`: all hooks Passed. Not pushed; no PR.
+
+### Must-fix 1 was re-classified as a code defect, not a doc correction
+
+The review filed it as "document the label == remote-`name` invariant and drop
+the unread `name:` key". The host disagreed and verified why, and the
+verification holds against source: `subscribers_[topic].remote_details` is
+keyed by the `remotes_list` **label** (`udp_bridge.cpp:436,559`), the arriving
+packet carries the sender's **self-declared** name
+(`WrappedPacket::source_node`), and `remotes.<label>.name` was declared and
+never read. Whenever the two differ the loop rule's string compare matches
+nothing and the hub relays the message straight back to its sender — with a
+**single** remote configured, which falsifies `relay_design.md`'s claim that a
+symmetric pair is bit-for-bit unchanged, the claim used to justify shipping
+without a relay opt-in flag.
+
+Of the host's two options, (b) — single namespace, fail loud — was taken, in
+the form that makes the namespace genuinely single rather than mapping wire
+names back to labels at use time: resolve the identity once at configure time
+(`remotes.<label>.name`, else the label; `remote_identity.h`), so the label
+survives only as a parameter-path spelling and every downstream key is the
+wire name. (a) was rejected because a wire-name→label map leaves the two
+namespaces in place and only patches the one comparison, while `remote_nodes_`
+would still grow a second entry for the same remote.
+
+Fail-loud, in two places: two labels resolving to one wire name fail the
+`on_configure` transition (they would otherwise collide in `remote_nodes_` and
+silently overwrite a remote's connections); and a sequenced packet from a
+sender matching no configured remote logs a throttled WARN naming the
+parameter to set. The WARN is not a refusal because genuinely dynamic remotes
+(CONNECT / `add_remote` / an unconfigured host's subscribe request) legitimately
+arrive the same way — refusing would break them. It is the only signal an
+operator gets that a mismatch is live.
+
+### Actions
+
+- [x] (must-fix) Loop rule compares wire `source_node` against config labels — fixed as a code defect, see above — `src/udp_bridge.cpp:431-464`, `include/udp_bridge/remote_identity.h`, `doc/relay_design.md`, `config/example_params.yaml` (`e317ba5`, `07539ed`, `0d60fda`)
+- [x] (must-fix) Security section overstates operator control — `decodeSubscribeRequest` lets any reachable host self-enrol as a relay destination and a spoofed `source_node` can overwrite a legitimate remote's entry; stated plainly and tied to #53 — `doc/relay_design.md` (`07539ed`)
+- [x] (must-fix) "a relay hub for any topic both remotes carry" is wrong; relay needs only the *receiving* remote to list the hub-local topic as its `source:` — corrected in three places in the example, including the operator_1 block — `config/example_params.yaml` (`0d60fda`)
+- [x] (suggestion) Unsynchronized lifecycle read on the relay worker — **removed** rather than synchronized: the worker runs only between `start()` and the `stop()` that joins it, and during the transition the state reads DEACTIVATING, which would abandon an in-flight item the join is willing to wait for — `src/udp_bridge.cpp` (`e2615ce`)
+- [x] (suggestion) Four uncounted relay drops — `RelayDropCounters` (`relay_drops.h`) records a reason at each early return; `diagnoseRelayQueue` sums queue drops and sink drops for the total and the WARN and reports them separately. The "nothing due" return is counted apart as `rate_limited` and excluded from loss, so the diagnostic does not sit permanently in WARN on a rate-limited topic. `stop()`'s discarded backlog is now counted too (both queues) — `include/udp_bridge/relay_drops.h`, `src/udp_bridge.cpp` (`4984d51`, `e2615ce`)
+- [x] (suggestion) Missing `send_results[""][""]` statistics seed on the relay path — added, under the same lock and before the rate-limit check, as `callback()` does — `src/udp_bridge.cpp`, new `test/test_message_statistics.cpp` (`ac4290d`)
+- [x] (suggestion, cross-pass confirmed) Doubled payload residency in the reorder buffer — the rationale claim is now true rather than softened: while a relay form is attached it is the sole holder of the payload, and `enqueuePublish` materializes the publish form from it just before handing the relay form off. The copy is deferred, not added, and a gate-dropped packet now pays for no publish copy at all — `include/udp_bridge/publish_queue.h`, `src/udp_bridge.cpp`, `doc/relay_design.md` (`e89a8ec`)
+- [x] (suggestion) Relay probe above the stale gate — moved below it on the reorder-disabled fast path (the default), restoring "a dropped packet costs nothing"; the reorder path must keep it above, since a Buffer decision stores the built item — `src/udp_bridge.cpp`, `doc/relay_design.md` (`6312636`)
+- [x] (suggestion) Nothing pinned `applyRelayDestination` *inside* the fan-out loop — extracted `relayToEachDestination` and tested it; **verified failing** against a deliberately hoisted rewrite (3 of 7 relay-send cases fail), passing as written — `include/udp_bridge/relay_send.h`, `test/test_relay_send.cpp` (`d9b059d`)
+- [x] (suggestion) Failure isolation per remote, not per connection — extracted the three-arm try/catch as `callIsolated` (`send_isolation.h`) and applied it per connection in `UDPBridge::send()`: the failure is recorded as `SendResult::failed` and logged, and the remote's remaining redundant connections are still attempted — `src/udp_bridge.cpp`, `test/test_relay_send.cpp` (`f296f76`)
+- [x] (suggestion) Vacuous `last_sent_time` assertions in `UnnamedSenderIsNeverRelayed` — replaced with the corollary that binds: with an empty `exclude_remote` the selector reaches every remote, sender included, which is what the probe's refusal prevents — `test/test_relay_routing.cpp` (`5d1cd53`)
+- [x] (suggestion) Comment named the sink `UDPBridge::relayItem` — `include/udp_bridge/relay_queue.h` (`5d1cd53`)
+- [x] (suggestion) Two `PublishQueue`-inherited hardening gaps + `on_shutdown` — `stop_mutex_` held for the duration of `stop()` in both queues so concurrent callers cannot both reach `join()`; `assert(!running_)` in both `configure()`s; `on_shutdown` now stops both workers, since shutdown is reachable from ACTIVE without passing through `on_deactivate` — `include/udp_bridge/relay_queue.h`, `include/udp_bridge/publish_queue.h`, `src/udp_bridge.cpp` (`e2615ce`)
+- [x] (suggestion) Plan drift — the superseded "No new parameter" sentence is marked as such with what is true instead, and the five new headers are listed in Files-to-Change — `.agent/work-plans/issue-51/plan.md` (`a3a6917`)
+
+**Deferred**: none. Every finding was actioned.
+
+### New tests (231 total, up from 209)
+
+- `test_relay_routing` +3: `ConfiguredNameIsTheIdentityNotTheLabel`, `DuplicateRemoteIdentityIsRejected`, `LabelDifferingFromWireNameStillNeverEchoes` (the must-fix-1 regression: a one-remote config whose label differs from the sender's wire name relays nothing, with the label-keyed table asserted alongside it as the pre-fix behaviour).
+- `test_relay_queue` +4: sink-drop counting, rate-limited-is-not-loss, `StopCountsTheDiscardedBacklog`, `ConcurrentStopsAreSerialized`.
+- `test_relay_send` +6: per-destination topic/QoS inside the fan-out loop, unconfigured-destination defaults, rewrite after a failed destination, and the three `callIsolated` cases.
+- `test_publish_queue` +5: single payload residency, faithful materialization, no-relay no-op, empty payload, and the two stop-path cases.
+- `test_message_statistics` (new file, 3): no aggregate row without the seed, aggregate counts messages not destinations, relayed messages reach the aggregate row.
+
+### Note for the re-review
+
+Two of the new tests bind an *extraction* rather than the call site, which is
+this package's established pattern (`destination_selection`, `relay_send`,
+`giveup_diagnostic`) but is worth naming: `resolveRemoteIdentity` /
+`resolveRemoteIdentities` and `materializePublishPayload` are unit-tested, and
+`on_configure` / `enqueuePublish` calling them is not separately pinned — there
+is no node-level test harness in this package (no test constructs a
+`UDPBridge`). Against the pre-fix tree both fail to compile rather than fail an
+assertion. The `applyRelayDestination` and `callIsolated` cases, by contrast,
+were verified failing against a deliberately reverted implementation.
