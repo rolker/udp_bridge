@@ -1099,9 +1099,12 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       return;
 
     // Forward the message as received -- no re-serialization of the payload.
-    // Only the per-destination routing/QoS fields are rewritten below, and
-    // source_topic is left as the original publisher's topic so the far end
-    // still reports where the data actually came from.
+    // Only the routing/QoS fields are rewritten per destination, by
+    // applyRelayDestination: destination_topic and QoS from that remote's
+    // config, and source_topic set to the hub-local topic so the receiver's
+    // "destination_topic, else source_topic" fallback lands on the hub's
+    // name rather than the upstream publisher's (which two boats can share).
+    // See relay_item.h for why, and doc/relay_design.md.
     MessageInternal message_internal = std::move(item.message);
 
     // Per-destination failure isolation (see relay_send.h): a throw from one
@@ -1111,20 +1114,9 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       [&](const std::string& remote_name, const std::vector<std::string>& connection_ids)
       {
         auto config_it = destination_config_by_remote.find(remote_name);
-        if(config_it != destination_config_by_remote.end())
-        {
-          message_internal.destination_topic = config_it->second.destination_topic;
-          message_internal.reliability       = config_it->second.reliability;
-          message_internal.durability        = config_it->second.durability;
-          message_internal.history_depth     = config_it->second.history_depth;
-        }
-        else
-        {
-          message_internal.destination_topic.clear();
-          message_internal.reliability.clear();
-          message_internal.durability.clear();
-          message_internal.history_depth = 0;
-        }
+        applyRelayDestination(message_internal, item.topic,
+                              config_it != destination_config_by_remote.end()
+                                ? config_it->second : DestinationConfig());
         RemoteConnectionsList connections;
         connections[remote_name] = connection_ids;
         // The existing send path: fragmenting, wrapped-packet sequencing and

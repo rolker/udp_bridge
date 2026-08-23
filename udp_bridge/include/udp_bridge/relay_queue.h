@@ -12,51 +12,10 @@
 #include <thread>
 #include <utility>
 
-#include "udp_bridge_interfaces/msg/message_internal.hpp"
+#include "udp_bridge/relay_item.h"
 
 namespace udp_bridge
 {
-
-/// One relay job handed from the socket-drain thread to the relay worker
-/// (issue #51). It carries the message exactly as it arrived — the same
-/// serialized MessageInternal that decodeData deserialized, so forwarding
-/// costs no re-serialization of the payload — plus the immediate sender's
-/// node name, which is the loop rule's only input: a relay is never sent
-/// back to the remote it came from.
-///
-/// The handoff exists for the same reason PublishItem does (issue #10): the
-/// socket-drain thread must never make a call that can block. Forwarding
-/// runs Connection::send(), whose sendto() has a ~200 ms worst-case
-/// MSG_DONTWAIT retry loop per stalled destination (connection.cpp), so N
-/// stalled destinations would stack ~200 ms x N ahead of the next recvfrom.
-struct RelayItem
-{
-  /// Destination topic as resolved by decodeData (destination_topic, or
-  /// source_topic when that is empty). This is the key into subscribers_,
-  /// i.e. the routing-table lookup for who else wants this traffic.
-  std::string topic;
-
-  /// Immediate sender (SourceInfo::node_name). The loop rule skips any
-  /// destination whose remote name equals this — direct-neighbour only;
-  /// see doc/relay_design.md for why cycles are unsupported.
-  std::string source_node;
-
-  /// The received message, forwarded byte-for-byte apart from the
-  /// per-destination destination_topic / QoS fields the relay path
-  /// overwrites for each recipient.
-  udp_bridge_interfaces::msg::MessageInternal message;
-
-  /// Approximate footprint for the queue's byte budget. The payload
-  /// dominates; the small string fields are included so an empty-payload
-  /// message still counts a nonzero amount.
-  size_t byte_size() const
-  {
-    return message.data.size()
-      + topic.size() + source_node.size()
-      + message.source_topic.size() + message.destination_topic.size()
-      + message.datatype.size();
-  }
-};
 
 /// Bounded, drop-oldest relay queue served by a single worker thread.
 ///

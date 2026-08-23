@@ -52,8 +52,20 @@ other remotes that carry the same topic:
    AIMD admission control of #43/#52 all apply to relayed traffic exactly as
    they do to locally published traffic.
 
-`source_topic` is left as the original publisher's topic, so the far end
-still reports where the data actually came from.
+`source_topic` is rewritten to the **hub-local** topic — the key into
+`subscribers_`, i.e. the topic name this bridge itself knows the data by.
+The receiver resolves a message to `destination_topic`, falling back to
+`source_topic` when it is empty, and an empty `destination_topic` is
+ordinary (`remoteAdvertise` / `decodeSubscribeRequest` pass it through with
+no fallback of their own). Leaving `source_topic` as the upstream
+publisher's name would send that fallback to the wrong topic: two boats
+each publishing `/nav`, remapped by the hub to `/boat_a/nav` and
+`/boat_b/nav`, would collide back onto `/nav` downstream. The rewrite also
+makes a relayed message identical in shape to a locally-originated one,
+whose `source_topic` is likewise the sending bridge's own topic
+(`callback()`). Provenance is not lost — the immediate sender travels in
+the wrapped packet's `source_node`, which is where the receiver reads it
+from anyway.
 
 ## There is no relay parameter
 

@@ -47,6 +47,7 @@
 //                                 exact pre-#51 gating behaviour.
 
 #include "udp_bridge/destination_selection.h"
+#include "udp_bridge/relay_item.h"
 
 #include <map>
 #include <string>
@@ -55,8 +56,10 @@
 #include <gtest/gtest.h>
 
 using udp_bridge::ConnectionRateInfo;
+using udp_bridge::DestinationConfig;
 using udp_bridge::RemoteDetails;
 using udp_bridge::SelectedConnections;
+using udp_bridge::applyRelayDestination;
 using udp_bridge::hasRelayDestination;
 using udp_bridge::selectRateLimitedConnections;
 
@@ -262,6 +265,54 @@ TEST(RelayRouting, SamePeriodConnectionsSendAsAGroup)
   auto selected = selectRateLimitedConnections(table, kT0);
   ASSERT_EQ(selected.count("operator"), 1u);
   EXPECT_EQ(selected["operator"], (std::vector<std::string>{"a", "b"}));
+}
+
+// Per-destination field rewriting on the relay path. The hazard is the
+// receiver's "destination_topic, else source_topic" fallback: with an empty
+// destination_topic (which remoteAdvertise / decodeSubscribeRequest pass
+// through unchanged), an unrewritten source_topic resolves downstream to the
+// UPSTREAM publisher's topic name, not the hub's. Two boats publishing /nav,
+// remapped by the hub, would collide back onto /nav.
+TEST(RelayRouting, RelayRewritesSourceTopicToTheHubTopic)
+{
+  udp_bridge_interfaces::msg::MessageInternal message;
+  message.source_topic = "/nav";                   // as boat_a published it
+  message.destination_topic = "/boat_a/nav";       // as boat_a addressed it
+  message.data = {1, 2, 3};
+
+  // An operator whose config gives no explicit destination topic.
+  DestinationConfig config;
+  applyRelayDestination(message, "/boat_a/nav", config);
+
+  EXPECT_TRUE(message.destination_topic.empty());
+  EXPECT_EQ(message.source_topic, "/boat_a/nav")
+    << "the receiver's fallback must land on the hub-local topic";
+  EXPECT_EQ(message.data, (std::vector<uint8_t>{1, 2, 3})) << "payload untouched";
+}
+
+// With an explicit per-destination topic and QoS, those win; source_topic is
+// still the hub-local name.
+TEST(RelayRouting, RelayAppliesPerDestinationTopicAndQos)
+{
+  udp_bridge_interfaces::msg::MessageInternal message;
+  message.source_topic = "/nav";
+  message.destination_topic = "/boat_a/nav";
+  message.reliability = "reliable";
+  message.durability = "transient_local";
+  message.history_depth = 10;
+
+  DestinationConfig config;
+  config.destination_topic = "/operator/boat_a/nav";
+  config.reliability = "best_effort";
+  config.durability = "volatile";
+  config.history_depth = 1;
+  applyRelayDestination(message, "/boat_a/nav", config);
+
+  EXPECT_EQ(message.destination_topic, "/operator/boat_a/nav");
+  EXPECT_EQ(message.source_topic, "/boat_a/nav");
+  EXPECT_EQ(message.reliability, "best_effort");
+  EXPECT_EQ(message.durability, "volatile");
+  EXPECT_EQ(message.history_depth, 1u);
 }
 
 int main(int argc, char **argv)
