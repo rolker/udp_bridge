@@ -67,7 +67,18 @@ granularity" decision is moot and dropped.
    top of `decodeData()` (902, after `topic` is computed, before the
    stale/reorder gate — every accepted packet is offered for relay
    independent of local publish/drop decisions, since a downstream bridge
-   assigns its own fresh sequence on forward, `send()` at 1540). It locks
+   assigns its own fresh sequence on forward, `send()` at 1540).
+
+   *Revised after pre-push review (operator decision): relay follows the
+   gate, not precedes it.* Because forwarding assigns fresh sequence
+   numbers, a downstream bridge cannot recognise a relayed stale packet as
+   stale and would republish older data as newest. `decodeData()` now only
+   PROBES for relay destinations; the relay form rides inside the
+   `PublishItem` (an optional `RelayItem`, so a reorder-buffered packet
+   keeps it) and `UDPBridge::enqueuePublish()` — the single admit-to-publish
+   point — hands it to `relay_queue_` for exactly the packets the gate
+   admits. Moving the handoff there also removed the payload copy that ran
+   on the socket-drain thread (`outer_message` is moved, not copied). It locks
    `subscribers_mutex_`, looks up `subscribers_[topic]`, and for each
    `remote_details` entry whose key **!= `source_info.node_name`** (the loop
    rule — plain string compare), applies
@@ -122,12 +133,16 @@ granularity" decision is moot and dropped.
    (which carries exactly the planned `topic` / `outer_message` /
    `source_node`) so it can serve directly as the queue's sink, mirroring
    `publishItem`. Two additions the plan did not name, both consequences of
-   adding a worker: the queue's byte budget is a compile-time constant
-   (`kRelayQueueMaxBytes`, 64 MiB) rather than a ROS parameter — relay adds
-   no configuration surface — and a `relay queue` diagnostic task
+   adding a worker: the queue's byte budget, and a `relay queue` diagnostic task
    (`diagnoseRelayQueue`, mirroring `diagnosePublishQueue`) makes relay
    drops visible, since a dropped relay is unrecoverable: the message never
    reached a `Connection`, so the resend layer has nothing to retransmit.
+   The budget was first built as a compile-time constant
+   (`kRelayQueueMaxBytes`, 64 MiB) on the reasoning that relay adds no
+   configuration surface; pre-push review found that a fixed value is a
+   capability limit on the very queue that carries a hub's whole downstream
+   fan-out, so it is now the `relay_queue_max_bytes` parameter, with the
+   same default and clamps as `publish_queue_max_bytes`.
 
 4. **Tests** (`test/`, `test_reorder_buffer.cpp`/`test_admission_control.cpp`
    style): three-node relay (A→hub→B, hub also locally subscribed — local
@@ -154,10 +169,10 @@ granularity" decision is moot and dropped.
    cross-referencing open #53 (unauthenticated transport — a hub widens blast
    radius across 3+ parties). `README.md`/`doc/conceptual_overview.md`:
    describe the capability and the star-only constraint.
-   `config/example_params.yaml`: no new parameter to document, but add a
+   `config/example_params.yaml`: add a
    commented second-remote example showing what now relays and what does not.
-   `.agents/README.md`: no new row (no new parameter) — but if the verified-
-   parameter table gains a "behaviour" note anywhere, relay belongs in it.
+   `.agents/README.md`: *as built,* one new row — `relay_queue_max_bytes`
+   (see the revision noted above).
 
 Commit sequence (atomic): `relay_queue_` scaffolding (unused) →
 `relayToOtherRemotes` + helper extraction + wiring → tests → docs.
@@ -201,7 +216,7 @@ signature, and `.agents/README.md`'s verified-parameter table needs no row.
 |---|---|---|
 | New `relay_queue_` worker | Lifecycle wiring (configure/activate/deactivate/cleanup) | Yes |
 | Relay follows the topic lists with no opt-in | A future config adding a second remote that lists an already-carried topic starts relaying it | Documented in `doc/relay_design.md`; no existing config is multi-remote |
-| Relay precedes the stale/reorder gate | Upstream resends are forwarded downstream (bounded by admission control) | Documented in `doc/relay_design.md` |
+| ~~Relay precedes the stale/reorder gate~~ → **relay follows the gate** (revised after pre-push review) | Only admitted packets are forwarded; a buffered packet carries its relay form and is relayed when released | Documented in `doc/relay_design.md`; pinned by `test_reorder_buffer` |
 | Relay widens hub blast radius | `doc/relay_design.md` Security section, #53 | Yes |
 | `callback()`'s gating logic extracted into shared helper | `callback()` must keep identical behavior | Yes — existing tests + new parity test |
 
@@ -219,7 +234,9 @@ signature, and `.agents/README.md`'s verified-parameter table needs no row.
   opt-in leak is moot because there is no opt-in flag — relay follows the
   topic lists, which are per-destination by definition. Round-2 findings 1
   and 2 were both flag-plumbing concerns and disappeared with it; finding 3
-  (relay precedes the stale/reorder gate) is carried as a doc line.
+  (relay vs. the stale/reorder gate) was carried as a doc line, then decided
+  by the operator after the pre-push review: relay only what the gate
+  admits. See the revision under step 2.
 
 ## Estimated Scope
 
