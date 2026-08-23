@@ -540,7 +540,7 @@ binary; `pre-commit` is not on PATH): all hooks Passed or Skipped
 **Must-fix**: 4 | **Suggestions**: 9
 **Round**: 1 | **Ship**: continue — three precise fixes plus one genuine design question (relay ordering vs the stale gate) that warrants an operator decision, not another blind round.
 
-**Specialists**: Static Analysis (cppcheck + yamllint; ament_cpplint unavailable — no new findings); Claude Adversarial Lens A + Lens B; Copilot off (default); Local Adversarial skipped (Ollama llama-server OOM-killed on both attempts, and the diff exceeds the default 32k num_ctx).
+**Specialists**: Static Analysis (cppcheck + yamllint; ament_cpplint unavailable — no new findings); Copilot off (default); Local Adversarial skipped (Ollama llama-server OOM-killed on both attempts, and the diff exceeds the default 32k num_ctx). Two Claude Adversarial passes (Lens A / Lens B) were dispatched but **neither returned before this entry was written** — no specialist report contributed to it. Every finding below is the lead reviewer's own, and each was verified directly against source in this session (file and line cited per finding); none is carried on an unreturned subagent's authority. A later adversarial report, if it lands, should be reconciled as a separate entry.
 
 **Verification re-run independently**: `./build.sh udp_bridge` exit 0; `./test.sh udp_bridge` exit 0; `colcon test-result` 191 tests, 0 errors, 0 failures, 14 skipped. Relay suites confirmed in the XML: test_relay_routing 7/7, test_relay_queue 4/4. Commit identity correct on all 14 commits; no issue-closing keywords anywhere.
 
