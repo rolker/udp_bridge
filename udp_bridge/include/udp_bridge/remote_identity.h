@@ -62,6 +62,12 @@ inline std::map<std::string, std::string> resolveRemoteIdentities(
   std::map<std::string, std::string> label_by_identity;
   for(const auto& entry: labels_and_names)
   {
+    // A label repeated in `remotes_list` is not a collision: it names the
+    // same parameter block, so it resolves to the same identity and
+    // configuring it twice was always idempotent. Skip it rather than
+    // reporting that a remote collides with itself.
+    if(identity_by_label.count(entry.first))
+      continue;
     auto identity = resolveRemoteIdentity(entry.first, entry.second);
     auto existing = label_by_identity.find(identity);
     if(existing != label_by_identity.end())

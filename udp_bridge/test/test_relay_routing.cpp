@@ -191,6 +191,31 @@ TEST(RelayRouting, DuplicateRemoteIdentityIsRejected)
   EXPECT_NE(error.find("hub"), std::string::npos);
 }
 
+// A label repeated in `remotes_list` names one parameter block, so it is
+// the same remote twice, not two remotes colliding. Before #51 the repeat
+// was simply configured twice, idempotently; failing the transition on it
+// (with "remotes 'a' and 'a' both resolve to...") would be a regression
+// against a config that used to work.
+TEST(RelayRouting, RepeatedLabelIsIdempotentNotACollision)
+{
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"robot_a", "robot_a_bridge"},
+                                             {"robot_a", "robot_a_bridge"},
+                                             {"operator_1", ""}}, &error);
+  EXPECT_TRUE(error.empty()) << "a remote cannot collide with itself";
+  ASSERT_EQ(identities.size(), 2u);
+  EXPECT_EQ(identities.at("robot_a"), "robot_a_bridge");
+  EXPECT_EQ(identities.at("operator_1"), "operator_1");
+
+  // A genuine collision is still rejected when the repeat is present.
+  error.clear();
+  auto colliding = resolveRemoteIdentities({{"robot_a", "hub"},
+                                            {"robot_a", "hub"},
+                                            {"robot_b", "hub"}}, &error);
+  EXPECT_TRUE(colliding.empty());
+  EXPECT_FALSE(error.empty());
+}
+
 // The regression: one remote, configured under a label that differs from the
 // name it uses on the wire. Keyed as the fixed on_configure keys it, the loop
 // rule matches and nothing is relayed. Keyed by the label -- the pre-fix
