@@ -1206,20 +1206,21 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     // Per-destination failure isolation (see relay_send.h): a throw from one
     // remote's send -- ConnectionException on the ordinary Timeout path -- is
     // logged and the fan-out continues to the remaining remotes.
-    sendToEachDestination(destinations,
-      [&](const std::string& remote_name, const std::vector<std::string>& connection_ids)
+    relayToEachDestination(message_internal, item.topic, destinations,
+      destination_config_by_remote,
+      [&](const std::string& remote_name,
+          const std::vector<std::string>& connection_ids,
+          MessageInternal& rewritten)
       {
-        auto config_it = destination_config_by_remote.find(remote_name);
-        applyRelayDestination(message_internal, item.topic,
-                              config_it != destination_config_by_remote.end()
-                                ? config_it->second : DestinationConfig());
+        // `rewritten` is message_internal with this remote's
+        // destination_topic and QoS already applied.
         RemoteConnectionsList connections;
         connections[remote_name] = connection_ids;
         // The existing send path: fragmenting, wrapped-packet sequencing and
         // the per-connection AIMD admission control of #43/#52 all apply to
         // relayed traffic exactly as they do to locally published traffic.
-        auto size_data = send(message_internal, connections, false);
-        size_data.message_size = message_internal.data.size();
+        auto size_data = send(rewritten, connections, false);
+        size_data.message_size = rewritten.data.size();
         {
           // Relayed bytes go into the topic's statistics alongside
           // local-origin ones, so they are visible in ~/topic_statistics
