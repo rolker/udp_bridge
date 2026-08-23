@@ -25,7 +25,7 @@ dropping those exclusions.
 
 | Package | Language | Build targets (from CMakeLists.txt) |
 |---------|----------|-------------------------------------|
-| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 15 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`) |
+| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 17 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`, `test_relay_routing`, `test_relay_queue`) |
 | `udp_bridge_interfaces` | rosidl | 13 messages + 3 services (`Subscribe`, `AddRemote`, `ListRemotes`) |
 
 `udp_bridge` depends on `rclcpp`, `rclcpp_lifecycle`, `diagnostic_updater`,
@@ -44,7 +44,9 @@ udp_bridge/
 ├── test/mininet/         # manual-run integration scripts — NOT wired into CI
 ├── launch/               # udp_bridge_launch.py + legacy ROS 1 test launches
 ├── config/example_params.yaml
-└── doc/                  # conceptual_overview.md, qos_design.md (read this)
+└── doc/                  # conceptual_overview.md, qos_design.md (read this),
+                          #   admission_control_design.md, resend_budget_design.md,
+                          #   relay_design.md
 udp_bridge_interfaces/    # msg/ + srv/ definitions
 ```
 
@@ -70,6 +72,14 @@ callback groups whose invariants are documented at the top of
   rmw-touching republish of received data, so a stalled destination
   publisher can't wedge the socket drain. Bounded by
   `publish_queue_max_bytes`; drops oldest under back-pressure.
+- A separate **relay worker thread** (`RelayQueue`, issue #51) forwards a
+  message received from one remote to the OTHER remotes whose `topics_list`
+  carries the same topic, for hub topologies (`boat → hub → operators`).
+  Same reason for the thread: `Connection::send()`'s `sendto()` can retry for
+  ~200 ms, which must not happen on the socket drain. Bounded by the
+  compile-time `kRelayQueueMaxBytes` (64 MiB — deliberately not a parameter);
+  drops oldest under back-pressure and reports them in the `relay queue`
+  diagnostic. See `doc/relay_design.md`.
 
 Wire format: `Packet`/`WrappedPacket` (packet.h, wrapped_packet.h), zlib
 compression on send (`src/packet.cpp`), fragmentation above
@@ -121,6 +131,7 @@ Services (all `udp_bridge_interfaces/srv`, on `<node_name>/...`):
 1. `udp_bridge/src/udp_bridge_node.cpp` — callback-group + threading invariants (top comment)
 2. `udp_bridge/src/udp_bridge.cpp` — locking convention (top comment) + `on_configure`
 3. `udp_bridge/doc/qos_design.md` — QoS policy and the rmw_zenoh_cpp RELIABLE workaround
+   (and `doc/relay_design.md` before touching the receive path — relay runs there)
 4. `udp_bridge/include/udp_bridge/resend_constants.h` — resend-protocol timing contract
 5. `udp_bridge/config/example_params.yaml` — parameter structure
 
@@ -168,6 +179,12 @@ there works today.
 - **Connection config is one complete per-connection block**: partial
   overrides silently break return-path routing (boat replies to the wrong
   host, data flow drops to zero).
+- **Relay has no parameter, and no cycle protection.** The per-remote
+  `topics_list` is the relay routing table: a second remote listing an
+  already-carried topic starts that traffic flowing to it. The only loop
+  protection is "never send back to the immediate sender", so **star
+  topologies only** — `A → B → C → A` would circulate a message
+  indefinitely (`doc/relay_design.md`).
 - **Threading:** never add blocking work to the socket-drain path; respect
   the lock-briefly-copy-out convention documented at the top of
   `udp_bridge.cpp` and the group assignments in `udp_bridge_node.cpp`.

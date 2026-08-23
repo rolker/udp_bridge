@@ -30,6 +30,10 @@
     reorder_hold_window_ms: 0.0
 
     # List of initial remote nodes to connect to.
+    #
+    # Listing a SECOND remote here also turns this bridge into a relay hub
+    # for any topic both remotes carry -- see the commented operator_1
+    # block at the end of this file, and doc/relay_design.md.
     remotes_list: ["robot_a"]
 
     remotes:
@@ -91,3 +95,61 @@
                 source: "/battery_state"
                 destination: "/shoreside/robot_a/battery_state"
                 period: 1.0 # Limit to 1Hz
+
+      # ----------------------------------------------------------------
+      # Second remote (commented out): what a relay hub looks like.
+      #
+      # Add "operator_1" to remotes_list above to enable it. With both
+      # remotes configured, this bridge is a hub:
+      #
+      #     robot_a  ---->  this bridge  ---->  operator_1
+      #
+      # There is no relay parameter. The topics_list below IS the routing
+      # table: operator_1 receives exactly the topics it lists, whether
+      # they were published locally or arrived from robot_a.
+      #
+      # With the lists below, the hub relays:
+      #
+      #   - /shoreside/robot_a/odometry  -> operator_1 (both remotes carry
+      #     it, so odometry received from robot_a is forwarded on)
+      #
+      # ...and does NOT relay:
+      #
+      #   - /shoreside/robot_a/battery_state -> operator_1 does not list
+      #     it, so it stops here. Relay follows the routing table and
+      #     nothing else.
+      #   - anything back to robot_a. A message is never sent back to the
+      #     remote it came from (the loop rule).
+      #
+      # Note the direction of the topic names: on the hub, the topic
+      # relayed to operator_1 is the topic the hub itself publishes/knows
+      # -- i.e. robot_a's DESTINATION topic -- not robot_a's source name.
+      #
+      # Star topologies only: operator_1 must not also have a route back
+      # to robot_a. The bridge knows only the last hop, so a cycle
+      # (A -> B -> C -> A) would circulate a message indefinitely. See
+      # doc/relay_design.md.
+      #
+      # (No `name:` key here: the remote's name IS its remotes_list label.
+      #  `remotes.<label>.name` is not read by on_configure -- the robot_a
+      #  block above is stale on that point.)
+      #
+      # operator_1:
+      #   connections_list: ["wan"]
+      #   connections:
+      #     wan:
+      #       host: "203.0.113.20"
+      #       port: 4200
+      #       # Size this for the relayed load as well as any locally
+      #       # published traffic -- relayed messages are metered by the
+      #       # same admission control (doc/admission_control_design.md).
+      #       maximum_bytes_per_second: 500000
+      #       topics_list: ["/shoreside/robot_a/odometry"]
+      #       topics:
+      #         /shoreside/robot_a/odometry:
+      #           source: "/shoreside/robot_a/odometry"
+      #           destination: "/robot_a/odometry"
+      #           # Rate limiting applies to relayed traffic identically to
+      #           # locally published traffic -- same code, same state.
+      #           period: 0.5
+      #           queue_size: 10
