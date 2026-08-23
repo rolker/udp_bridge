@@ -30,6 +30,17 @@
 //                                 pair must relay nothing; this test fails
 //                                 if the exclude_remote filter is removed
 //                                 from EITHER the probe or the selection.
+//   ConfiguredNameIsTheIdentityNotTheLabel / DuplicateRemoteIdentityIsRejected
+//                               / LabelDifferingFromWireNameStillNeverEchoes —
+//                                 the identity namespace the loop rule
+//                                 compares in. A static config keys the
+//                                 routing table by the remote's WIRE name
+//                                 (`remotes.<label>.name`, else the label),
+//                                 because that is what arrives in
+//                                 WrappedPacket::source_node; keying by the
+//                                 label made the hub echo a remote's own
+//                                 traffic back to it even with one remote
+//                                 configured.
 //   RoutingTableFidelity        — a remote whose topics_list omits the topic
 //                                 receives no relayed traffic for it, while
 //                                 a sibling that lists it does.
@@ -48,6 +59,7 @@
 
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/relay_item.h"
+#include "udp_bridge/remote_identity.h"
 
 #include <map>
 #include <string>
@@ -61,6 +73,8 @@ using udp_bridge::RemoteDetails;
 using udp_bridge::SelectedConnections;
 using udp_bridge::applyRelayDestination;
 using udp_bridge::hasRelayDestination;
+using udp_bridge::resolveRemoteIdentities;
+using udp_bridge::resolveRemoteIdentity;
 using udp_bridge::selectRateLimitedConnections;
 
 namespace
@@ -129,6 +143,85 @@ TEST(RelayRouting, EchoIsNeverSentBackToTheSender)
 
   auto selected = selectRateLimitedConnections(table, kT0, "operator");
   EXPECT_TRUE(selected.empty());
+}
+
+// The loop rule compares the wire `source_node` against the keys of the
+// topic's routing table, so a static config MUST key that table by the name
+// the remote calls itself on the wire -- not by its `remotes_list` label.
+//
+// Before issue #51's identity fix, on_configure keyed everything by the
+// label and never read `remotes.<label>.name`, so a remote whose own name
+// differed from the hub's label for it matched nothing in the loop rule and
+// the hub relayed that remote's traffic straight back to it. That happens
+// with a SINGLE remote configured -- the configuration relay is supposed to
+// leave inert -- which is why it is a correctness bug and not a
+// documentation gap.
+//
+// These tests model the two halves. `resolveRemoteIdentity` is the single
+// place a static config decides the key (on_configure calls it via
+// resolveRemoteIdentities); keying the table through it and then handing the
+// selector the wire name is exactly the production path, and the echo below
+// is what the pre-fix keying produced.
+TEST(RelayRouting, ConfiguredNameIsTheIdentityNotTheLabel)
+{
+  // Unset `name` keeps the historical behaviour: the label is the identity.
+  EXPECT_EQ(resolveRemoteIdentity("robot_a", ""), "robot_a");
+  // Set `name` wins -- it is what arrives in WrappedPacket::source_node.
+  EXPECT_EQ(resolveRemoteIdentity("robot_a", "robot_a_bridge"), "robot_a_bridge");
+
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"robot_a", "robot_a_bridge"},
+                                             {"operator_1", ""}}, &error);
+  EXPECT_TRUE(error.empty());
+  ASSERT_EQ(identities.size(), 2u);
+  EXPECT_EQ(identities.at("robot_a"), "robot_a_bridge");
+  EXPECT_EQ(identities.at("operator_1"), "operator_1");
+}
+
+// Two labels resolving to one wire name would collide in remote_nodes_ and
+// in every topic's routing table, the second silently overwriting the
+// first's connections. on_configure fails the transition on this.
+TEST(RelayRouting, DuplicateRemoteIdentityIsRejected)
+{
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"robot_a", "hub"},
+                                             {"robot_b", "hub"}}, &error);
+  EXPECT_TRUE(identities.empty());
+  EXPECT_FALSE(error.empty()) << "a duplicate identity must be reported, not merged";
+  EXPECT_NE(error.find("hub"), std::string::npos);
+}
+
+// The regression: one remote, configured under a label that differs from the
+// name it uses on the wire. Keyed as the fixed on_configure keys it, the loop
+// rule matches and nothing is relayed. Keyed by the label -- the pre-fix
+// behaviour, asserted below for contrast -- the hub echoes the sender's own
+// message back to it.
+TEST(RelayRouting, LabelDifferingFromWireNameStillNeverEchoes)
+{
+  const std::string label = "robot_a";
+  const std::string wire_name = "robot_a_bridge";  // remotes.robot_a.name
+
+  std::string error;
+  auto identities = resolveRemoteIdentities({{label, wire_name}}, &error);
+  ASSERT_TRUE(error.empty());
+
+  // addSubscriberConnection is called with this key by on_configure.
+  std::map<std::string, RemoteDetails> table;
+  table[identities.at(label)] = remote("/status", "wifi");
+
+  // The packet arrives carrying the sender's own name.
+  EXPECT_FALSE(hasRelayDestination(table, wire_name))
+    << "a single-remote config must have nowhere to relay, whatever the label is";
+  auto selected = selectRateLimitedConnections(table, kT0, wire_name);
+  EXPECT_TRUE(selected.empty()) << "the hub relayed the sender's message back to it";
+  EXPECT_EQ(table[wire_name].connection_rates["wifi"].last_sent_time.nanoseconds(), 0)
+    << "an excluded sender's rate-limit state must be untouched";
+
+  // What the label-keyed table did, so the failure this pins is explicit.
+  std::map<std::string, RemoteDetails> label_keyed;
+  label_keyed[label] = remote("/status", "wifi");
+  EXPECT_TRUE(hasRelayDestination(label_keyed, wire_name))
+    << "keying by the label is what made the loop rule miss";
 }
 
 // A packet that never passed through unwrap() carries no source_node, so the

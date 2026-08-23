@@ -29,6 +29,7 @@
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/publish_queue.h"
 #include "udp_bridge/relay_queue.h"
+#include "udp_bridge/remote_identity.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
 //#include "std_msgs/msg/int32.hpp"
@@ -454,6 +455,17 @@ private:
 
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
+
+  /// Wire identities of the statically-configured remotes (issue #51) —
+  /// `remotes.<label>.name` where set, else the `remotes_list` label; see
+  /// remote_identity.h. Used only to recognise, and warn about, traffic
+  /// from a sender that matches no configured remote: on a static config
+  /// that is the visible symptom of a label/`name` mismatch, which makes
+  /// the relay loop rule compare two different namespaces and lets the hub
+  /// echo a remote's own traffic back to it. Populated in on_configure
+  /// (before any timer exists, so no reader can race the write), cleared
+  /// in on_cleanup, and read under remote_nodes_mutex_.
+  std::set<std::string> configured_remote_names_;
 
   // Per-remote diagnostic state for the resend-give-up rate
   // computation (issue #22). Guarded by remote_nodes_mutex_ —
