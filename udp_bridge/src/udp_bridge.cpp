@@ -719,6 +719,13 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
 
 UDPBridge::CallbackReturn UDPBridge::on_shutdown(const rclcpp_lifecycle::State & state)
 {
+  // Shutdown is reachable from ACTIVE directly, without passing through
+  // on_deactivate, so both workers have to be stopped here too or a
+  // shutdown-from-active leaves them running against maps that are about
+  // to be destroyed. stop() is idempotent, so the ordinary
+  // deactivate -> cleanup -> shutdown path pays nothing (issues #10/#51).
+  publish_queue_.stop();
+  relay_queue_.stop();
   return LifecycleNode::on_shutdown(state);
 }
 
@@ -1124,11 +1131,17 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
   // last-resort barrier too, but it has no logger.
   try
   {
-    if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
-    {
-      relay_drops_.record(RelayDropReason::NotActive);
-      return;
-    }
+    // No lifecycle-state check here, deliberately, and unlike an earlier
+    // draft of this function. The worker runs only between on_activate's
+    // start() and on_deactivate's stop(), and stop() joins it before
+    // anything else in on_deactivate runs — so reaching this point already
+    // means the node was ACTIVE. Reading current_state_ from this thread
+    // would be an unsynchronized read of state the executor thread writes,
+    // and during the deactivate transition it reports DEACTIVATING, which
+    // would abandon an in-flight item the join is willing to wait for.
+    // publishItem makes no such call either; the join is the guarantee in
+    // both cases. Items still queued when stop() runs are discarded and
+    // counted by RelayQueue itself.
 
     // The loop rule needs a sender to exclude. An empty source_node (a
     // packet that never passed through unwrap(), so it carries no wrapped

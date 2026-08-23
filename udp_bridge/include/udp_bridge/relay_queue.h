@@ -2,6 +2,7 @@
 #define UDP_BRIDGE_RELAY_QUEUE_H
 
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -44,9 +45,16 @@ public:
   RelayQueue& operator=(const RelayQueue&) = delete;
 
   /// Set the worker's sink and byte budget. Call once before start() (e.g.
-  /// in on_configure); changing these while running is not supported.
+  /// in on_configure); changing these while running is not supported —
+  /// run() reads both without the lock. Asserted rather than left to the
+  /// comment, since a reconfigure-while-active would be a data race that
+  /// shows up as a corrupted std::function call, not as a wrong value.
   void configure(Sink sink, size_t max_bytes)
   {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      assert(!running_ && "RelayQueue::configure() must not be called while running");
+    }
     sink_ = std::move(sink);
     max_bytes_ = max_bytes;
   }
@@ -69,10 +77,17 @@ public:
   /// Signal the worker to finish and join it. Any items still queued are
   /// discarded (best-effort: the join waits at most for one in-flight sink
   /// call to return, not for the whole backlog to drain through a
-  /// possibly-stalled sink). After stop(), push() is a no-op until the next
-  /// start(). Safe to call repeatedly and from the destructor.
+  /// possibly-stalled sink) and COUNTED — a discarded relay is
+  /// unrecoverable loss like any other, and stop() is reached on the
+  /// ordinary deactivate path, not only at shutdown. After stop(), push()
+  /// is a no-op until the next start(). Safe to call repeatedly, from the
+  /// destructor, and concurrently.
   void stop()
   {
+    // Serializes the whole stop, so two concurrent callers cannot both
+    // reach worker_.join() (running_ is cleared only after the join, so
+    // the running_ check alone does not exclude the second caller).
+    std::lock_guard<std::mutex> stop_lock(stop_mutex_);
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if(!running_)
@@ -84,6 +99,7 @@ public:
       worker_.join();
     std::lock_guard<std::mutex> lock(mutex_);
     running_ = false;
+    dropped_count_.fetch_add(queue_.size(), std::memory_order_relaxed);
     queue_.clear();
     queued_bytes_ = 0;
   }
@@ -115,7 +131,8 @@ public:
     cv_.notify_one();
   }
 
-  /// Total items dropped due to overflow or push-after-stop.
+  /// Total items dropped due to overflow, push-after-stop, or a stop()
+  /// that discarded a backlog.
   uint64_t dropped_count() const
   {
     return dropped_count_.load(std::memory_order_relaxed);
@@ -169,6 +186,11 @@ private:
   }
 
   mutable std::mutex mutex_;
+  /// Held for the duration of stop() only, so concurrent stops serialize
+  /// rather than racing on worker_.join(). Never held while mutex_ is
+  /// wanted by another thread's push()/size(), and always acquired BEFORE
+  /// mutex_, never after.
+  std::mutex stop_mutex_;
   std::condition_variable cv_;
   std::deque<RelayItem> queue_;
   size_t queued_bytes_ = 0;

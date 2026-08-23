@@ -2,6 +2,7 @@
 #define UDP_BRIDGE_PUBLISH_QUEUE_H
 
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
 #include <cstring>
 #include <cstddef>
@@ -134,6 +135,14 @@ public:
   /// in on_configure); changing these while running is not supported.
   void configure(Sink sink, size_t max_bytes)
   {
+    // run() reads sink_ / max_bytes_ without the lock, so reconfiguring a
+    // running queue is a data race — one that surfaces as a corrupted
+    // std::function call, not as a wrong value. Assert the contract the
+    // comment above states rather than trusting callers to keep it.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      assert(!running_ && "PublishQueue::configure() must not be called while running");
+    }
     sink_ = std::move(sink);
     max_bytes_ = max_bytes;
   }
@@ -163,6 +172,10 @@ public:
   /// destructor.
   void stop()
   {
+    // Serializes the whole stop, so two concurrent callers cannot both
+    // reach worker_.join(): running_ is cleared only after the join, so
+    // the running_ check alone does not exclude the second caller.
+    std::lock_guard<std::mutex> stop_lock(stop_mutex_);
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if(!running_)
@@ -174,6 +187,10 @@ public:
       worker_.join();
     std::lock_guard<std::mutex> lock(mutex_);
     running_ = false;
+    // A discarded backlog is real loss and belongs in the drop total, the
+    // same as an overflow drop; stop() is reached on the ordinary
+    // deactivate path, not only at shutdown.
+    dropped_count_.fetch_add(queue_.size(), std::memory_order_relaxed);
     queue_.clear();
     queued_bytes_ = 0;
   }
@@ -263,6 +280,10 @@ private:
   }
 
   mutable std::mutex mutex_;
+  /// Held for the duration of stop() only, so concurrent stops serialize
+  /// rather than racing on worker_.join(). Always acquired BEFORE mutex_,
+  /// never after.
+  std::mutex stop_mutex_;
   std::condition_variable cv_;
   std::deque<PublishItem> queue_;
   size_t queued_bytes_ = 0;

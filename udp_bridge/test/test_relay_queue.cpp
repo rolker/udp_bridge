@@ -22,6 +22,11 @@
 //   StopWhileSinkBlockedJoinsAfterSinkReturns — shutdown is bounded by one
 //                                 in-flight sink call (in the field, one
 //                                 Connection::send()), not by the backlog.
+//   StopCountsTheDiscardedBacklog — and what it throws away is counted, so
+//                                 a deactivate cannot silently eat a hub's
+//                                 queued fan-out.
+//   ConcurrentStopsAreSerialized — two stop() callers must not both reach
+//                                 worker_.join().
 //   ThrowingSinkDoesNotKillWorker / ConnectionExceptionInSinkDoesNotKillWorker
 //                                 — the last-resort barrier. The relay sink
 //                                 reaches Connection::send(), which throws
@@ -254,6 +259,58 @@ TEST(RelayQueue, StopWhileSinkBlockedJoinsAfterSinkReturns)
   EXPECT_TRUE(stop_done.load());
 }
 
+// The backlog stop() throws away is loss, and unrecoverable loss at that —
+// the messages never reached a Connection. It happens on the ordinary
+// deactivate path, not only at shutdown, so it has to reach the drop total
+// the `relay queue` diagnostic reports; otherwise a deactivate silently
+// eats a hub's queued fan-out.
+TEST(RelayQueue, StopCountsTheDiscardedBacklog)
+{
+  BlockingSink sink;
+  RelayQueue queue;
+  queue.configure([&sink](RelayItem&& item){ sink(std::move(item)); }, 4096);
+  queue.start();
+
+  queue.push(makeItem("/held", 16));   // taken by the worker, blocks in the sink
+  sink.wait_until_blocked();
+  queue.push(makeItem("/queued_a", 16));
+  queue.push(makeItem("/queued_b", 16));
+  ASSERT_EQ(queue.size(), 2u) << "both must still be queued behind the blocked sink";
+  ASSERT_EQ(queue.dropped_count(), 0u) << "nothing has overflowed";
+
+  std::thread stopper([&]{ queue.stop(); });
+  // Let stop() latch stop_requested_ before the worker is released, so the
+  // worker returns rather than racing to dequeue the backlog first.
+  std::this_thread::sleep_for(50ms);
+  sink.release();
+  stopper.join();
+
+  EXPECT_EQ(queue.size(), 0u);
+  EXPECT_EQ(queue.dropped_count(), 2u)
+    << "the two items stop() discarded must be counted as drops";
+}
+
+// stop() is documented safe to call repeatedly and from the destructor;
+// two threads calling it at once must not both reach worker_.join()
+// (running_ is cleared only after the join, so the running_ check alone
+// does not exclude the second caller).
+TEST(RelayQueue, ConcurrentStopsAreSerialized)
+{
+  RelayQueue queue;
+  queue.configure([](RelayItem&&){}, 4096);
+  queue.start();
+
+  std::thread a([&]{ queue.stop(); });
+  std::thread b([&]{ queue.stop(); });
+  a.join();
+  b.join();
+
+  // A second round must still work: stop() left the queue cleanly stopped.
+  queue.start();
+  queue.stop();
+  SUCCEED();
+}
+
 namespace
 {
 
@@ -339,8 +396,8 @@ TEST(RelayQueue, ConnectionExceptionInSinkDoesNotKillWorker)
 
 // Sink-side drops (issue #51). RelayQueue::dropped_count() sees only what
 // the queue discards; an item the sink dequeues and then abandons — the
-// node left ACTIVE, the sender is unnamed, the topic's routing table was
-// torn down under it — is loss the queue cannot count. A relay drop is
+// sender is unnamed, or the topic's routing table was torn down under it —
+// is loss the queue cannot count. A relay drop is
 // unrecoverable (the message never reached a Connection, so the resend
 // layer has nothing to retransmit), so the diagnostic must sum both or it
 // under-reports the thing it exists to show.
@@ -350,18 +407,15 @@ TEST(RelayDropCountersTest, SinkDropsAreCountedAsLoss)
   EXPECT_EQ(counters.lost(), 0u);
   EXPECT_TRUE(counters.breakdown().empty());
 
-  counters.record(udp_bridge::RelayDropReason::NotActive);
   counters.record(udp_bridge::RelayDropReason::UnnamedSender);
   counters.record(udp_bridge::RelayDropReason::TopicGone);
   counters.record(udp_bridge::RelayDropReason::TopicGone);
 
-  EXPECT_EQ(counters.lost(), 4u) << "every abandoned relay item is loss";
-  EXPECT_EQ(counters.not_active.load(), 1u);
+  EXPECT_EQ(counters.lost(), 3u) << "every abandoned relay item is loss";
   EXPECT_EQ(counters.unnamed_sender.load(), 1u);
   EXPECT_EQ(counters.topic_gone.load(), 2u);
 
   const auto breakdown = counters.breakdown();
-  EXPECT_NE(breakdown.find("not_active=1"), std::string::npos);
   EXPECT_NE(breakdown.find("unnamed_sender=1"), std::string::npos);
   EXPECT_NE(breakdown.find("topic_gone=2"), std::string::npos);
   EXPECT_EQ(breakdown.find("rate_limited"), std::string::npos)

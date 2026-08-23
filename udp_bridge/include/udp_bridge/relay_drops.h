@@ -19,8 +19,6 @@ namespace udp_bridge
 /// loss, which is the one thing that diagnostic exists to show.
 enum class RelayDropReason
 {
-  /// The node left ACTIVE between the push and the sink call.
-  NotActive,
   /// No `source_node`, so the loop rule has nobody to exclude. Refused
   /// deliberately; see destination_selection.h.
   UnnamedSender,
@@ -39,7 +37,6 @@ enum class RelayDropReason
 /// because nothing is published through these counters.
 struct RelayDropCounters
 {
-  std::atomic<uint64_t> not_active {0};
   std::atomic<uint64_t> unnamed_sender {0};
   std::atomic<uint64_t> topic_gone {0};
   std::atomic<uint64_t> no_destination_due {0};
@@ -48,8 +45,6 @@ struct RelayDropCounters
   {
     switch(reason)
     {
-      case RelayDropReason::NotActive:
-        not_active.fetch_add(1, std::memory_order_relaxed); break;
       case RelayDropReason::UnnamedSender:
         unnamed_sender.fetch_add(1, std::memory_order_relaxed); break;
       case RelayDropReason::TopicGone:
@@ -64,8 +59,7 @@ struct RelayDropCounters
   /// Excludes NoDestinationDue, which is the configured rate limit.
   uint64_t lost() const
   {
-    return not_active.load(std::memory_order_relaxed)
-         + unnamed_sender.load(std::memory_order_relaxed)
+    return unnamed_sender.load(std::memory_order_relaxed)
          + topic_gone.load(std::memory_order_relaxed);
   }
 
@@ -84,7 +78,6 @@ struct RelayDropCounters
       out += "=";
       out += std::to_string(value);
     };
-    append("not_active", not_active.load(std::memory_order_relaxed));
     append("unnamed_sender", unnamed_sender.load(std::memory_order_relaxed));
     append("topic_gone", topic_gone.load(std::memory_order_relaxed));
     append("rate_limited", no_destination_due.load(std::memory_order_relaxed));
@@ -93,7 +86,6 @@ struct RelayDropCounters
 
   void reset()
   {
-    not_active.store(0, std::memory_order_relaxed);
     unnamed_sender.store(0, std::memory_order_relaxed);
     topic_gone.store(0, std::memory_order_relaxed);
     no_destination_due.store(0, std::memory_order_relaxed);

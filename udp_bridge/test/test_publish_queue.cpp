@@ -313,6 +313,51 @@ TEST(PublishQueue, ThrowingSinkDoesNotKillWorker)
   EXPECT_EQ(processed.front(), "after");
 }
 
+// The backlog stop() throws away is loss and must reach the drop total the
+// `publish queue` diagnostic reports — stop() runs on the ordinary
+// deactivate path, not only at shutdown. Mirrors the RelayQueue case.
+TEST(PublishQueue, StopCountsTheDiscardedBacklog)
+{
+  BlockingSink sink;
+  udp_bridge::PublishQueue queue;
+  queue.configure([&sink](udp_bridge::PublishItem&& item){ sink(std::move(item)); }, 4096);
+  queue.start();
+
+  queue.push(makeItem("held", 64));
+  sink.wait_until_blocked();
+  queue.push(makeItem("queued_a", 64));
+  queue.push(makeItem("queued_b", 64));
+  ASSERT_EQ(queue.size(), 2u);
+  ASSERT_EQ(queue.dropped_count(), 0u);
+
+  std::thread stopper([&]{ queue.stop(); });
+  // Let stop() latch stop_requested_ before releasing the worker.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  sink.release();
+  stopper.join();
+
+  EXPECT_EQ(queue.size(), 0u);
+  EXPECT_EQ(queue.dropped_count(), 2u)
+    << "the items stop() discarded must be counted as drops";
+}
+
+// Two threads calling stop() at once must not both reach worker_.join().
+TEST(PublishQueue, ConcurrentStopsAreSerialized)
+{
+  udp_bridge::PublishQueue queue;
+  queue.configure([](udp_bridge::PublishItem&&){}, 4096);
+  queue.start();
+
+  std::thread a([&]{ queue.stop(); });
+  std::thread b([&]{ queue.stop(); });
+  a.join();
+  b.join();
+
+  queue.start();
+  queue.stop();
+  SUCCEED();
+}
+
 // A relaying item holds its payload in ONE place at a time (issue #51).
 //
 // A hub is the node that concentrates traffic, and the reorder buffer holds
