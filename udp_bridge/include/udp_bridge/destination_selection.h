@@ -30,6 +30,36 @@ struct DestinationConfig
   uint32_t history_depth = 0;
 };
 
+/// True when some remote other than `source_node` appears in this topic's
+/// routing table — i.e. when a message received from `source_node` on this
+/// topic has somewhere to be relayed (issue #51).
+///
+/// This is the same loop rule selectRateLimitedConnections applies, in a
+/// read-only form: it is the cheap probe the socket-drain thread runs before
+/// paying for a payload copy, so the two must agree. A symmetric two-host
+/// pair (each side listing only the other) always answers false — which is
+/// why relay changes nothing for every configuration in this repo.
+///
+/// An **empty** `source_node` answers false, always. The loop rule is a
+/// comparison against the sender's name, so an unnamed sender cannot be
+/// excluded from anything: relaying such a packet would send it to every
+/// remote listing the topic, the sender included. `node_name` is empty for
+/// any packet that did not pass through `unwrap()` — a bare, unwrapped Data
+/// packet, which on an unauthenticated transport (#53) anyone who can reach
+/// the port can inject. Refusing to relay it is the conservative answer:
+/// the packet is still published locally, exactly as before #51.
+inline bool hasRelayDestination(
+  const std::map<std::string, RemoteDetails>& remote_details,
+  const std::string& source_node)
+{
+  if(source_node.empty())
+    return false;
+  for(const auto& remote: remote_details)
+    if(remote.first != source_node)
+      return true;
+  return false;
+}
+
 /// Choose which (remote, connection) pairs are due to receive a message
 /// right now, and stamp their last_sent_time.
 ///
@@ -68,36 +98,6 @@ struct DestinationConfig
 ///        This is the relay loop rule: a message is never sent back to the
 ///        remote it came from. Empty for the local-origin path, which has
 ///        no remote to exclude.
-/// True when some remote other than `source_node` appears in this topic's
-/// routing table — i.e. when a message received from `source_node` on this
-/// topic has somewhere to be relayed (issue #51).
-///
-/// This is the same loop rule selectRateLimitedConnections applies, in a
-/// read-only form: it is the cheap probe the socket-drain thread runs before
-/// paying for a payload copy, so the two must agree. A symmetric two-host
-/// pair (each side listing only the other) always answers false — which is
-/// why relay changes nothing for every configuration in this repo.
-///
-/// An **empty** `source_node` answers false, always. The loop rule is a
-/// comparison against the sender's name, so an unnamed sender cannot be
-/// excluded from anything: relaying such a packet would send it to every
-/// remote listing the topic, the sender included. `node_name` is empty for
-/// any packet that did not pass through `unwrap()` — a bare, unwrapped Data
-/// packet, which on an unauthenticated transport (#53) anyone who can reach
-/// the port can inject. Refusing to relay it is the conservative answer:
-/// the packet is still published locally, exactly as before #51.
-inline bool hasRelayDestination(
-  const std::map<std::string, RemoteDetails>& remote_details,
-  const std::string& source_node)
-{
-  if(source_node.empty())
-    return false;
-  for(const auto& remote: remote_details)
-    if(remote.first != source_node)
-      return true;
-  return false;
-}
-
 inline SelectedConnections selectRateLimitedConnections(
   std::map<std::string, RemoteDetails>& remote_details,
   const rclcpp::Time& now,
