@@ -15,6 +15,11 @@ subscription; the pub→sub round trip carries no provenance side-channel. A
 second must-fix showed the opt-in leaked across connections sharing a
 subscription.
 
+A second revision then removed the relay opt-in flag altogether (operator
+direction, ROS 1 precedent): the per-remote topic lists already *are* the
+routing table, and the flag guarded an echo the loop rule prevents on its
+own. See Approach step 1.
+
 **New direction:** relay entirely inside `decodeData()` at receive time, no
 ROS loopback, no `PublishItem` change. `decodeData()`
 (`src/udp_bridge.cpp:902`) already has `topic` and `outer_message.data` (raw
@@ -30,17 +35,32 @@ granularity" decision is moot and dropped.
 
 ## Approach
 
-1. **Per-destination opt-in (default off).** Add `bool relay = false;` to
-   `ConnectionRateInfo` (`types.h:10`, same granularity as `period`). Add
-   `remotes.<r>.connections.<c>.topics.<t>.relay` in the `topics_list` loop
-   (`src/udp_bridge.cpp` ~470-520), `declareIfMissing(..., false)`, threaded
-   through a new trailing `bool relay = false` on `addSubscriberConnection`
-   (`udp_bridge.h:284`, `udp_bridge.cpp:1172`) into
-   `rd.connection_rates[connection_id].relay`. `decodeSubscribeRequest`
-   (1308) keeps the default — relay is static-config only for now. Living on
-   the same per-connection map `callback()` reads means a `relay: false`
-   connection can never receive forwarded traffic regardless of a sibling's
-   setting (fixes must-fix #2); no `ignore_local_publications` change at all.
+1. **No relay flag — the topic lists are the routing table.** This is ROS 1
+   semantics restored: if remote B's `topics_list` contains topic X, B has
+   asked for X, and the hub delivers it whether X was published locally or
+   arrived from remote A. An earlier draft added a per-destination `relay`
+   opt-in defaulting off; it was removed as protection against nothing:
+
+   - The echo it guarded against cannot occur here. This design does **not**
+     touch `ignore_local_publications`, so a bridge still never hears its own
+     republish; and the loop rule independently refuses to send back to the
+     sender. A symmetric two-host pair is bit-for-bit unchanged.
+   - Relay only alters behaviour where a *second* remote lists the same
+     topic. Every config in the repo declares exactly one remote per bridge
+     (`config/example_params.yaml:33` `["robot_a"]`;
+     `test/bench/configs/three_path.yaml:30,56` `["boat"]`/`["operator"]`),
+     so a default-off flag would have been guarding configs in which relay
+     is unreachable regardless.
+   - Cost of keeping it: a new parameter across four docs, a threading path
+     through `addSubscriberConnection` that a dynamic `decodeSubscribeRequest`
+     could silently reset back to `false` (round-2 review finding 1), and an
+     extra filter in the rate-limiting helper whose ordering is easy to get
+     wrong (finding 2). Both findings disappear with the flag.
+
+   Consequence to state in the docs: adding a second remote that lists an
+   already-relayed topic now starts that traffic flowing. That is the
+   feature, and the topic list is the request — but it is a behaviour change
+   for any future multi-remote config, so `doc/relay_design.md` must say so.
 
 2. **Forwarding, called from `decodeData()`, not `callback()`.** Add
    `relayToOtherRemotes(topic, outer_message, source_info)`, called near the
@@ -50,7 +70,7 @@ granularity" decision is moot and dropped.
    assigns its own fresh sequence on forward, `send()` at 1540). It locks
    `subscribers_mutex_`, looks up `subscribers_[topic]`, and for each
    `remote_details` entry whose key **!= `source_info.node_name`** (the loop
-   rule — plain string compare) with `relay == true` on a connection, applies
+   rule — plain string compare), applies
    the same period/`last_sent_time` gating `callback()` already does
    (748-765) — extract that block into a shared private helper
    `selectRateLimitedConnections(remote_details, now, exclude_remote)` used
@@ -83,52 +103,61 @@ granularity" decision is moot and dropped.
 
 4. **Tests** (`test/`, `test_reorder_buffer.cpp`/`test_admission_control.cpp`
    style): three-node relay (A→hub→B, hub also locally subscribed — local
-   subscriber and B both get it); echo regression (symmetric pair, `relay:
-   true` both ways, A never gets its own message back); per-destination
-   opt-in isolation (two destinations on one source topic, only one `relay:
-   true` — replaces the old provenance-retention test, moot under this
-   design); rate-limit parity (a `period` on a relay destination throttles
-   identically to a local-origin destination with the same `period`,
-   exercising `selectRateLimitedConnections`).
+   subscriber and B both get it); echo regression (symmetric pair, A never
+   gets its own message back — this is the test that earns the deletion of
+   the relay flag, so it must fail if the loop rule is removed); routing-table
+   fidelity (a remote whose `topics_list` omits X receives no relayed X even
+   while a sibling remote receives it — relay follows the routing table and
+   nothing else); rate-limit parity (a `period` on a relay destination
+   throttles identically to a local-origin destination with the same
+   `period`, exercising `selectRateLimitedConnections`).
 
 5. **Docs** (same PR): new `doc/relay_design.md` (format of
-   `qos_design.md`/`admission_control_design.md`) — default-off rationale;
-   the exact loop rule and that it is direct-neighbor-only (`source_info.node_name`
-   is always the last hop, so a relay-enabled 3-node cycle A-B-C-A duplicates
-   indefinitely — star topology only, boat→hub→operators, cycles/mesh
-   unsupported); **Security** section cross-referencing open #53
-   (unauthenticated transport — a hub widens blast radius across 3+ parties).
-   `config/example_params.yaml`: commented `relay: false` near existing
-   `period`/`queue_size` (~85-93). `README.md`/`doc/conceptual_overview.md`:
-   describe the capability and star-only constraint. `.agents/README.md`
-   line 92: append `relay` (default `false`) to the per-topic list.
+   `qos_design.md`/`admission_control_design.md`) — why there is no relay
+   flag (the topic lists are the routing table; the flag would have guarded
+   an echo the loop rule already prevents, in configs where relay is
+   unreachable anyway) and the resulting behaviour change for any future
+   multi-remote config; the exact loop rule and that it is
+   direct-neighbor-only (`source_info.node_name` is always the last hop, so a
+   3-node cycle A-B-C-A duplicates indefinitely — star topology only,
+   boat→hub→operators, cycles/mesh unsupported); that relay precedes the
+   stale/reorder gate, so an upstream resend is forwarded downstream
+   (bounded by admission control, but stated); **Security** section
+   cross-referencing open #53 (unauthenticated transport — a hub widens blast
+   radius across 3+ parties). `README.md`/`doc/conceptual_overview.md`:
+   describe the capability and the star-only constraint.
+   `config/example_params.yaml`: no new parameter to document, but add a
+   commented second-remote example showing what now relays and what does not.
+   `.agents/README.md`: no new row (no new parameter) — but if the verified-
+   parameter table gains a "behaviour" note anywhere, relay belongs in it.
 
-Commit sequence (atomic): opt-in flag → `relay_queue_` scaffolding (unused) →
+Commit sequence (atomic): `relay_queue_` scaffolding (unused) →
 `relayToOtherRemotes` + helper extraction + wiring → tests → docs.
 
 ## Files to Change
 
 | File | Change |
 |------|--------|
-| `include/udp_bridge/types.h` | `bool relay = false;` on `ConnectionRateInfo` |
-| `include/udp_bridge/udp_bridge.h` | `relay` param on `addSubscriberConnection`; declare `relayToOtherRemotes`, `selectRateLimitedConnections`, `relay_queue_` |
+| `include/udp_bridge/udp_bridge.h` | Declare `relayToOtherRemotes`, `selectRateLimitedConnections`, `relay_queue_` |
 | `include/udp_bridge/relay_queue.h` | New: `RelayItem`/`RelayQueue`, mirrors `publish_queue.h` |
-| `src/udp_bridge.cpp` | `relay` param parsing; `addSubscriberConnection` stores it; extract `selectRateLimitedConnections`; add `relayToOtherRemotes`; call from `decodeData()`; `relay_queue_` lifecycle wiring |
-| `test/` (new) | Three-node relay, echo regression, opt-in isolation, rate-limit parity |
+| `src/udp_bridge.cpp` | Extract `selectRateLimitedConnections`; add `relayToOtherRemotes`; call from `decodeData()`; `relay_queue_` lifecycle wiring |
+| `test/` (new) | Three-node relay, echo regression, routing-table fidelity, rate-limit parity |
 | `doc/relay_design.md` | New design doc |
-| `config/example_params.yaml` | Document `relay` flag |
+| `config/example_params.yaml` | Commented second-remote example showing what relays |
 | `README.md`, `doc/conceptual_overview.md` | Describe relay + star-only scope |
-| `.agents/README.md` | Add `relay` to per-topic parameter list |
+
+No new parameter: `types.h` is untouched, `addSubscriberConnection` keeps its
+signature, and `.agents/README.md`'s verified-parameter table needs no row.
 
 ## Principles Self-Check
 
 | Principle | Consideration |
 |---|---|
-| Capture decisions | `doc/relay_design.md`: default-off, loop rule, why `PublishItem` provenance was rejected, star-only scope |
-| Consequences included | `example_params.yaml`, `README.md`, `conceptual_overview.md`, `.agents/README.md` all in this PR |
-| Test what breaks | Tests target opt-in leakage (must-fix #2) and drain-thread blocking (#10), plus echo/rate-limit parity |
-| Only what's needed | Default `relay: false` leaves every config byte-for-byte unaffected; no `ignore_local_publications` change |
-| Human control | Opt-in per destination connection via existing explicit config |
+| Capture decisions | `doc/relay_design.md`: why no relay flag, loop rule, why `PublishItem` provenance was rejected, star-only scope |
+| Consequences included | `example_params.yaml`, `README.md`, `conceptual_overview.md` all in this PR |
+| Test what breaks | Tests target echo (the loop rule is now the *only* thing preventing it), routing-table fidelity, drain-thread blocking (#10), rate-limit parity |
+| Only what's needed | No new parameter, no `types.h` change, no `ignore_local_publications` change; every existing config is single-remote, so behaviour is unchanged |
+| Human control | Routing stays explicit — the operator's `topics_list` is the routing table, exactly as in ROS 1 |
 | Improve incrementally | One PR, atomic commits |
 
 ## ADR Compliance
@@ -141,9 +170,9 @@ Commit sequence (atomic): opt-in flag → `relay_queue_` scaffolding (unused) �
 
 | If we change... | Also update... | Included? |
 |---|---|---|
-| `ConnectionRateInfo` gains `relay` | `BridgeInfo` diagnostics (~1801) could surface it | No — follow-up, not required for correctness |
 | New `relay_queue_` worker | Lifecycle wiring (configure/activate/deactivate/cleanup) | Yes |
-| New per-topic `relay` param | `example_params.yaml`, `README.md`, `conceptual_overview.md`, `.agents/README.md` | Yes |
+| Relay follows the topic lists with no opt-in | A future config adding a second remote that lists an already-carried topic starts relaying it | Documented in `doc/relay_design.md`; no existing config is multi-remote |
+| Relay precedes the stale/reorder gate | Upstream resends are forwarded downstream (bounded by admission control) | Documented in `doc/relay_design.md` |
 | Relay widens hub blast radius | `doc/relay_design.md` Security section, #53 | Yes |
 | `callback()`'s gating logic extracted into shared helper | `callback()` must keep identical behavior | Yes — existing tests + new parity test |
 
@@ -156,12 +185,14 @@ Commit sequence (atomic): opt-in flag → `relay_queue_` scaffolding (unused) �
 
 ## Open Questions
 
-- None. Both must-fix findings from the prior review are resolved by
-  construction: the loop check runs where provenance is already in hand (no
-  ROS round trip), and opt-in is enforced per destination connection at the
-  exact forwarding decision point.
+- None. Both round-1 must-fix findings are resolved by construction: the loop
+  check runs where provenance is already in hand (no ROS round trip), and the
+  opt-in leak is moot because there is no opt-in flag — relay follows the
+  topic lists, which are per-destination by definition. Round-2 findings 1
+  and 2 were both flag-plumbing concerns and disappeared with it; finding 3
+  (relay precedes the stale/reorder gate) is carried as a doc line.
 
 ## Estimated Scope
 
-Single PR, five atomic commits (opt-in flag → relay queue scaffolding →
-forwarding logic + refactor + wiring → tests → docs).
+Single PR, four atomic commits (relay queue scaffolding → forwarding logic +
+helper extraction + wiring → tests → docs).
