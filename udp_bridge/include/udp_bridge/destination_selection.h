@@ -77,10 +77,21 @@ struct DestinationConfig
 /// paying for a payload copy, so the two must agree. A symmetric two-host
 /// pair (each side listing only the other) always answers false — which is
 /// why relay changes nothing for every configuration in this repo.
+///
+/// An **empty** `source_node` answers false, always. The loop rule is a
+/// comparison against the sender's name, so an unnamed sender cannot be
+/// excluded from anything: relaying such a packet would send it to every
+/// remote listing the topic, the sender included. `node_name` is empty for
+/// any packet that did not pass through `unwrap()` — a bare, unwrapped Data
+/// packet, which on an unauthenticated transport (#53) anyone who can reach
+/// the port can inject. Refusing to relay it is the conservative answer:
+/// the packet is still published locally, exactly as before #51.
 inline bool hasRelayDestination(
   const std::map<std::string, RemoteDetails>& remote_details,
   const std::string& source_node)
 {
+  if(source_node.empty())
+    return false;
   for(const auto& remote: remote_details)
     if(remote.first != source_node)
       return true;

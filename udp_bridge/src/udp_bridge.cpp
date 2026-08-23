@@ -1054,6 +1054,15 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     if(get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
       return;
 
+    // The loop rule needs a sender to exclude. An empty source_node (a
+    // packet that never passed through unwrap(), so it carries no wrapped
+    // source_node) cannot be excluded from anything, so forwarding it would
+    // send it to every remote listing the topic — the sender included.
+    // hasRelayDestinations() already refuses these; this is the same rule
+    // restated at the sink, which is reachable independently of the probe.
+    if(item.source_node.empty())
+      return;
+
     auto now = get_clock()->now();
 
     RemoteConnectionsList destinations;

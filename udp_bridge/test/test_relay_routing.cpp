@@ -128,6 +128,27 @@ TEST(RelayRouting, EchoIsNeverSentBackToTheSender)
   EXPECT_TRUE(selected.empty());
 }
 
+// A packet that never passed through unwrap() carries no source_node, so the
+// loop rule has nothing to compare against and would exclude nobody. Such a
+// packet must not be relayed at all: on an unauthenticated transport (#53) a
+// bare injected Data packet would otherwise be fanned out to every remote
+// listing the topic. Fails if the empty-sender guard is removed from the
+// probe.
+TEST(RelayRouting, UnnamedSenderIsNeverRelayed)
+{
+  std::map<std::string, RemoteDetails> table;
+  table["boat"] = remote("/status", "wifi");
+  table["operator"] = remote("/status", "wifi");
+
+  EXPECT_FALSE(hasRelayDestination(table, ""))
+    << "a packet with no source_node has no loop rule and must not be relayed";
+
+  // The rate-limit state of every remote is likewise untouched: the probe
+  // said no, so no selection call is made for such a packet.
+  EXPECT_EQ(table["boat"].connection_rates["wifi"].last_sent_time.nanoseconds(), 0);
+  EXPECT_EQ(table["operator"].connection_rates["wifi"].last_sent_time.nanoseconds(), 0);
+}
+
 // Relay follows the routing table and nothing else: a remote is reached only
 // for the topics its own topics_list carries. Modelled the way the bridge
 // stores it — subscribers_ is keyed by source topic, and a remote that did
