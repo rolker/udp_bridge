@@ -333,6 +333,40 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       return result;
     });
 
+  // Remote-identity validation runs here, ahead of every resource this
+  // callback acquires: it needs only parameters, and a CallbackReturn::FAILURE
+  // leaves the node UNCONFIGURED *without* calling on_cleanup. Returning after
+  // the socket would leak the bound port, so the operator's natural remedy —
+  // fix `remotes.<label>.name` and re-configure — would hit EADDRINUSE on the
+  // bind below and exit(1). Keep every parameter-only failure path above the
+  // socket block for the same reason (issue #51).
+  declareIfMissing("remotes_list", std::vector<std::string>());
+  auto remotes_list = get_parameter("remotes_list").as_string_array();
+
+  // Resolve each remote's wire identity before anything is keyed by it
+  // (issue #51). `remotes_list` entries are labels — they spell parameter
+  // paths — while `remotes.<label>.name` is the name that remote calls
+  // itself on the wire. Everything a static config creates
+  // (remote_nodes_, subscribers_[topic].remote_details) must be keyed by
+  // the latter, because that is what arrives in WrappedPacket::source_node
+  // and what the relay loop rule compares against. See remote_identity.h.
+  std::vector<std::pair<std::string, std::string> > labels_and_names;
+  for(const auto& remote_label: remotes_list)
+  {
+    std::string name_param = "remotes." + remote_label + ".name";
+    declareIfMissing(name_param, std::string());
+    labels_and_names.emplace_back(remote_label, get_parameter(name_param).as_string());
+  }
+  std::string identity_error;
+  auto identity_by_label = resolveRemoteIdentities(labels_and_names, &identity_error);
+  if(!identity_error.empty())
+  {
+    // Fail loud: a duplicate identity silently overwrites a remote's
+    // connections and rate limits in every map keyed by it.
+    RCLCPP_ERROR_STREAM(get_logger(), "remote configuration: " << identity_error);
+    return CallbackReturn::FAILURE;
+  }
+
   //maximum_packet_size_subscriber_ = ros::NodeHandle("~").subscribe("maximum_packet_size", 1, &UDPBridge::maximumPacketSizeCallback, this);
 
   socket_ = socket(AF_INET, SOCK_DGRAM, 0);
@@ -428,32 +462,6 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   bridge_info_publisher_ = create_publisher<BridgeInfo>(node_name+"/bridge_info", latching_qos);
 
-  declareIfMissing("remotes_list", std::vector<std::string>());
-  auto remotes_list = get_parameter("remotes_list").as_string_array();
-
-  // Resolve each remote's wire identity before anything is keyed by it
-  // (issue #51). `remotes_list` entries are labels — they spell parameter
-  // paths — while `remotes.<label>.name` is the name that remote calls
-  // itself on the wire. Everything a static config creates
-  // (remote_nodes_, subscribers_[topic].remote_details) must be keyed by
-  // the latter, because that is what arrives in WrappedPacket::source_node
-  // and what the relay loop rule compares against. See remote_identity.h.
-  std::vector<std::pair<std::string, std::string> > labels_and_names;
-  for(const auto& remote_label: remotes_list)
-  {
-    std::string name_param = "remotes." + remote_label + ".name";
-    declareIfMissing(name_param, std::string());
-    labels_and_names.emplace_back(remote_label, get_parameter(name_param).as_string());
-  }
-  std::string identity_error;
-  auto identity_by_label = resolveRemoteIdentities(labels_and_names, &identity_error);
-  if(!identity_error.empty())
-  {
-    // Fail loud: a duplicate identity silently overwrites a remote's
-    // connections and rate limits in every map keyed by it.
-    RCLCPP_ERROR_STREAM(get_logger(), "remote configuration: " << identity_error);
-    return CallbackReturn::FAILURE;
-  }
   configured_remote_names_.clear();
   for(const auto& entry: identity_by_label)
     configured_remote_names_.insert(entry.second);
