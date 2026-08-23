@@ -80,6 +80,15 @@ TIER_DESTINATIONS = {
     'bulk': ('sensor_msgs/Image', '/operator/boat/bulk/image'),
 }
 
+# Tiers whose messages must actually ARRIVE for a range_degradation run to be
+# considered valid. Critical and Telemetry are small enough to fit in a single
+# packet, so the link delivering none of them across the whole walk means the
+# scenario broke. Bulk is deliberately excluded: post-#57 it is ~508 fragments
+# per message with all-or-nothing reassembly, so full shedding is an ordinary
+# outcome rather than a harness failure -- see the guard in main() for the
+# arithmetic. Every tier, Bulk included, must still PUBLISH.
+DELIVERY_REQUIRED_TIERS = ('critical', 'telemetry')
+
 # Sail-out-and-return trajectory applied to the WiFi path only (cell
 # and Starlink hold their CLEAN_PROFILE baselines). The phase names
 # are written into the phase log so `test_range_degradation.py` can
@@ -897,15 +906,41 @@ def main(argv: list[str] | None = None) -> None:
             # Pass condition for the orchestrator alone is "the run
             # completed and produced artifacts". Invariants are
             # evaluated by test_range_degradation.py.
-            # `all`, not `any`: range_degradation is documented and
-            # configured as a full three-tier run, so a Bulk or Telemetry
-            # process that died leaves the invariant tests reasoning about a
-            # tier that never flowed. Report which tier was empty rather than
-            # exiting 1 silently.
-            empty = [t for t, c in result['sub_counts'].items() if c <= 0]
+            # range_degradation is documented and configured as a full
+            # three-tier run, so a tier process that died leaves the invariant
+            # tests reasoning about traffic that never existed. What makes a
+            # tier "never flowed" is that it never PUBLISHED -- checked below
+            # for every tier.
+            #
+            # Delivery is a separate question, and only some tiers owe it
+            # (#57). Bulk is ~508 fragments per message and reassembly is
+            # all-or-nothing, so at ~0.5% fragment loss a message survives
+            # ~0.995^508 ~= 8% of the time, and the impaired phases deliver
+            # essentially none. Zero *delivered* Bulk is therefore an ordinary
+            # outcome of the honest #57 payload, not a broken scenario -- and
+            # the #57 invariants measure send-side OFFERED traffic precisely
+            # because of that. Before #57 the payload compressed to a single
+            # 488-byte packet that always survived, which is why requiring
+            # delivery from every tier went unnoticed for so long. Requiring
+            # it now would abort a valid run roughly half the time.
+            silent = [t for t, c in result['pub_counts'].items() if c <= 0]
+            undelivered = [t for t, c in result['sub_counts'].items()
+                           if c <= 0 and t in DELIVERY_REQUIRED_TIERS]
+            empty = sorted(set(silent) | set(undelivered))
             if empty:
-                print(f'BENCH_ERROR_EMPTY_TIERS={",".join(sorted(empty))}',
+                print(f'BENCH_ERROR_EMPTY_TIERS={",".join(empty)}',
                       file=sys.stderr)
+                if silent:
+                    print('BENCH_ERROR_DETAIL=never published: '
+                          f'{",".join(sorted(silent))}', file=sys.stderr)
+                if undelivered:
+                    print('BENCH_ERROR_DETAIL=published but nothing arrived: '
+                          f'{",".join(sorted(undelivered))}', file=sys.stderr)
+            bulk_sub = result['sub_counts'].get('bulk')
+            if bulk_sub == 0:
+                print('BENCH_NOTE_BULK_FULLY_SHED=1 (no Bulk message '
+                      'survived reassembly; expected under the #57 payload -- '
+                      'the Bulk invariants assert offered, not delivered)')
             ok = (
                 result['bag_dir'].exists()
                 and result['phase_log'].exists()

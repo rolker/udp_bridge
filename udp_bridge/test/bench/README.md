@@ -128,6 +128,19 @@ The two Bulk acceptance invariants ([#57](https://github.com/rolker/udp_bridge/i
 10. **Fragmentation exercised** — the boat send-side `average_fragment_count` for `/boat/bulk/image` stays ≥ `T_fragment_floor` in the clean in-range phase. With the incompressible 480 KB payload and a 1000-byte `maximum_packet_size`, an image fragments into ≥ 480 pieces (`floor(480000/1000)`; per-fragment headers push it higher), so the resend/reassembly machinery is exercised for real. The pre-#57 single-packet bug would drive this to ~1 and fail here. (#57 Acceptance criterion 2.)
 11. **Bulk wire rate** — the boat send-side per-topic Bulk *offered* rate (`send.success_bytes_per_second` + `send.dropped_bytes_per_second`) clears `W_wire_pct` × the ~4.8 MB/s nominal Bulk offered load in the clean in-range phase. Bulk is offered at ~4.8 MB/s (120% of the 4 MB/s WiFi budget) and the limiter is entitled to shed the excess toward the cap — so the invariant measures what the tier *presents*, not what survives; this catches a regression that silently drops Bulk back to the pre-#57 ~0.5 kB/s single-packet trickle. Sourced per-topic from `topic_statistics`, not the WiFi connection aggregate. (#57 Acceptance criterion 1.)
 
+**Harness validity guard.** Before any invariant is evaluated, the
+orchestrator checks the run actually happened: every tier must have
+**published**, and Critical and Telemetry must have **arrived**
+(`DELIVERY_REQUIRED_TIERS`). Bulk is deliberately exempt from the arrival
+half — post-#57 it is ~508 fragments per message with all-or-nothing
+reassembly, so at ~0.5% fragment loss a message survives ~8% of the time and
+the impaired phases deliver essentially none. Zero delivered Bulk is an
+ordinary outcome of the honest payload, which is exactly why the two Bulk
+invariants assert *offered* volume. A run that failed this guard reports
+`BENCH_ERROR_EMPTY_TIERS` plus a `BENCH_ERROR_DETAIL` saying whether the tier
+never published or published and never arrived; full Bulk shedding is noted
+(`BENCH_NOTE_BULK_FULLY_SHED`) but does not fail the run.
+
 Threshold values N/X/T/F/R/Y/G, the co-tenant K thresholds
 (`K_cotenant_delivery_pct`, `K_cotenant_p95_latency_s`,
 `K_cotenant_transient_drain_margin`), and the #57
