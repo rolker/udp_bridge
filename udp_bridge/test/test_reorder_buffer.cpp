@@ -17,7 +17,10 @@
 //     the first;
 //   - remote-restart detection clears the buffer alongside the high-water
 //     marks; and
-//   - the disabled path still routes through admitForPublish unchanged.
+//   - the disabled path still routes through admitForPublish unchanged; and
+//   - a packet's relay form (issue #51) rides through the buffer with it,
+//     so a held packet is relayed when — and only when — the gate releases
+//     it for publication.
 //
 // Time is injected (fake rclcpp::Time via t_at) exactly like
 // test_remote_node_resend.cpp, so the window-expiry cases carry no
@@ -58,6 +61,32 @@ udp_bridge::PublishItem makeItem(uint64_t packet_number,
   item.topic = topic;
   item.datatype = std::to_string(packet_number);
   return item;
+}
+
+// A PublishItem with a relay form attached (issue #51): the same tag is
+// stamped on the relay copy's source_topic, so a test can tell which relay
+// form came back with which released item.
+udp_bridge::PublishItem makeItemWithRelay(uint64_t packet_number,
+                                          const std::string& topic = "topicA")
+{
+  auto item = makeItem(packet_number, topic);
+  item.relay = std::make_unique<udp_bridge::RelayItem>();
+  item.relay->topic = topic;
+  item.relay->source_node = "boat";
+  item.relay->message.source_topic = std::to_string(packet_number);
+  return item;
+}
+
+// The relay tags of a to_publish / released vector, in order. A released
+// item with no relay form is reported as 0 — a relay silently dropped by
+// the buffer would show up here.
+std::vector<uint64_t> relayTags(const std::vector<udp_bridge::PublishItem>& items)
+{
+  std::vector<uint64_t> out;
+  out.reserve(items.size());
+  for(const auto& i : items)
+    out.push_back(i.relay ? std::stoull(i.relay->message.source_topic) : 0u);
+  return out;
 }
 
 // Extract the packet-number tags from a to_publish / released vector,
@@ -118,6 +147,13 @@ protected:
                                             const std::string& topic = "topicA")
   {
     return remote_->admitOrBuffer(topic, n, makeItem(n, topic), t_at(at));
+  }
+
+  // admitOrBuffer with a relay form attached to the item (issue #51).
+  udp_bridge::RemoteNode::AdmitResult admitWithRelay(
+    uint64_t n, double at = 1.0, const std::string& topic = "topicA")
+  {
+    return remote_->admitOrBuffer(topic, n, makeItemWithRelay(n, topic), t_at(at));
   }
 
   std::shared_ptr<rclcpp::Node> node_;
@@ -355,6 +391,53 @@ TEST_F(ReorderBufferFixture, ClearReorderBufferDiscardsHeldKeepsMark)
   auto r = admit(2, 2.000);
   EXPECT_EQ(r.decision, AdmitDecision::Admit);
   EXPECT_EQ(tags(r.to_publish), (std::vector<uint64_t>{2}));
+}
+
+// Relay is gated by the same decision as publication (issue #51). A stale
+// packet returns nothing to publish, so there is nothing to relay either —
+// the hub does not forward data it has itself judged superseded.
+TEST_F(ReorderBufferFixture, StalePacketReleasesNoRelay)
+{
+  ASSERT_EQ(admitWithRelay(2).decision, AdmitDecision::Admit);
+
+  auto r = admitWithRelay(1);  // below the mark
+  EXPECT_EQ(r.decision, AdmitDecision::Drop);
+  EXPECT_TRUE(r.to_publish.empty())
+    << "a dropped packet must hand back no item, hence no relay";
+}
+
+// A buffered packet is not relayed while it is held — it may still be
+// dropped — and it must not LOSE its relay form either: the buffer stores a
+// PublishItem, and the relay copy rides along inside it so the packet can be
+// forwarded at the moment the gap-filler releases it, in wire order.
+TEST_F(ReorderBufferFixture, BufferedPacketKeepsItsRelayFormUntilRelease)
+{
+  ASSERT_EQ(admitWithRelay(1).decision, AdmitDecision::Admit);
+
+  auto buffered = admitWithRelay(3);  // 2 is missing
+  ASSERT_EQ(buffered.decision, AdmitDecision::Buffer);
+  EXPECT_TRUE(buffered.to_publish.empty())
+    << "a held packet is not relayed while the gate may still drop it";
+
+  auto r = admitWithRelay(2);  // closes the gap, releasing 3 behind it
+  EXPECT_EQ(r.decision, AdmitDecision::Admit);
+  EXPECT_EQ(tags(r.to_publish), (std::vector<uint64_t>{2, 3}));
+  EXPECT_EQ(relayTags(r.to_publish), (std::vector<uint64_t>{2, 3}))
+    << "the held packet's relay form must survive the buffer, in wire order";
+}
+
+// Same for the other release path: window expiry publishes the held packet,
+// so the held packet is relayed then too.
+TEST_F(ReorderBufferFixture, ExpiredBufferReleaseKeepsItsRelayForm)
+{
+  ASSERT_EQ(admitWithRelay(1, 1.000).decision, AdmitDecision::Admit);
+  ASSERT_EQ(admitWithRelay(3, 1.000).decision, AdmitDecision::Buffer);
+
+  auto released = remote_->flushExpiredBuffer(
+    t_at(1.200), rclcpp::Duration::from_seconds(0.100));
+  ASSERT_EQ(tags(released), (std::vector<uint64_t>{3}));
+  EXPECT_EQ(relayTags(released), (std::vector<uint64_t>{3}))
+    << "a packet released by window expiry must still carry its relay form";
 }
 
 }  // namespace

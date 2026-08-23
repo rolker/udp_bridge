@@ -35,10 +35,18 @@ other remotes that carry the same topic:
    source_node)` takes `subscribers_mutex_` briefly and answers whether any
    remote *other than the sender* lists this topic. When false — every
    configuration in this repo today — relay costs one map lookup and no
-   payload copy.
-2. **Handoff.** When true, `decodeData()` pushes a `RelayItem` (topic,
-   sender's node name, the received `MessageInternal`) onto `relay_queue_`
-   and returns. See [Threading](#threading-why-a-worker).
+   payload copy. It also answers false for an **empty** `source_node` (a
+   packet that never passed through `unwrap()`): the loop rule is a
+   comparison against the sender's name, so an unnamed sender cannot be
+   excluded from anything, and forwarding such a packet would fan it out to
+   every remote listing the topic. On an unauthenticated transport (#53)
+   that is an injection point; see [Security](#security).
+2. **Handoff.** When true, the `RelayItem` (topic, sender's node name, the
+   received `MessageInternal`, moved rather than copied) is attached to the
+   `PublishItem` and handed to `relay_queue_` by `enqueuePublish()` — the
+   single point through which every packet the stale/reorder gate admits
+   passes. See [the gate ordering](#relay-follows-the-stalereorder-gate)
+   and [Threading](#threading-why-a-worker).
 3. **Selection (relay worker).** `relayToOtherRemotes()` looks up
    `subscribers_[topic].remote_details` — the routing table — and calls
    `selectRateLimitedConnections(remote_details, now, source_node)`, the
@@ -134,27 +142,54 @@ future deployment needs cycle tolerance, the mechanism is a hop counter or
 an origin stamp in `MessageInternal` — a wire-format change, deliberately
 out of scope here.
 
-## Relay precedes the stale/reorder gate
+## Relay follows the stale/reorder gate
 
-The relay push happens *before* the `drop_stale_packets` / reorder-buffer
-gate in `decodeData()`. Relaying is independent of this bridge's own
-publish/drop decision:
+**A message is relayed if and only if this bridge admits it for local
+publication.** Anything the `drop_stale_packets` gate or the reorder buffer
+(#35) drops as stale or superseded is not forwarded either.
 
-- The downstream bridge assigns **fresh** wrapped-packet sequence numbers
-  on forward and runs its own gate, so upstream sequencing tells it
-  nothing.
-- The gate's question is "have I already published something newer on this
-  topic *locally*" — a question about this hub's publishers, not about what
-  a downstream operator has seen.
+The reason is the downstream bridge's own gate. Forwarding assigns **fresh**
+wrapped-packet sequence numbers, so the upstream numbering — the only thing
+that says "this packet is older than one you already have" — does not
+survive the hop. A downstream operator receiving a relayed resend of a
+superseded message therefore has no way to recognise it as stale: it arrives
+with the newest sequence number on the link and republishes over newer data.
+Older data would land as newest, which is precisely the failure the gate
+exists to prevent, reintroduced one hop later.
 
-The consequence to be explicit about: **an upstream resend the hub would
-drop locally is still forwarded downstream.** That is deliberate — the
-downstream link may not have received the message the resend supersedes —
-but it means a lossy upstream link's resend traffic reaches the downstream
-links. It is bounded, not unbounded: every forwarded packet goes through
-`Connection::send()`, so the per-connection AIMD admission control
-(#43/#52) and the resend budget (#44) meter it exactly as they meter
-locally-originated traffic.
+Relaying only admitted packets keeps the hub's judgement and the operator's
+view consistent: what the hub publishes is what the hub forwards.
+
+### How a held packet keeps its relay form
+
+The reorder buffer holds a gap-opening packet as a `PublishItem`, releasing
+it later — when a gap-filler closes the gap, or when the hold window
+expires. Two things follow:
+
+- A held packet is **not** relayed at buffer time. It may still be dropped,
+  and forwarding it early would be exactly the behaviour above.
+- Its relay form must therefore survive the wait. `PublishItem` carries an
+  optional `std::unique_ptr<RelayItem>` (null whenever relay is
+  unreachable, which is every configuration in this repo today), so the
+  `MessageInternal` the relay needs travels with the buffered item rather
+  than being reconstructed — the payload is not held a third time, and the
+  buffer needs no knowledge of relay.
+
+`UDPBridge::enqueuePublish()` is the single point where an admitted item is
+handed to `publish_queue_` and its relay form, if any, to `relay_queue_`.
+Every admit path goes through it: `decodeData`'s immediate path, the items a
+gap-filler releases, and the items `flushExpiredBuffer` releases on window
+expiry — in wire order in each case. `clearReorderBuffer` (on deactivation)
+discards held packets without publishing them, so those are not relayed
+either.
+
+The cost of this ordering is that a downstream link which missed a message
+does not get a second chance at it from an upstream resend the hub itself
+discarded. The bridge's model is best-effort-with-loss-reduction
+(`doc/qos_design.md`), and the per-link resend protocol (#44) still covers
+loss on the hub→operator hop itself; what is not covered is loss downstream
+of a message the hub has already superseded locally — which, being
+superseded, is data the operator would be showing over newer data anyway.
 
 ## Threading: why a worker
 

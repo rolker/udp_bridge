@@ -25,7 +25,7 @@ dropping those exclusions.
 
 | Package | Language | Build targets (from CMakeLists.txt) |
 |---------|----------|-------------------------------------|
-| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 17 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`, `test_relay_routing`, `test_relay_queue`) |
+| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 18 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`, `test_relay_routing`, `test_relay_queue`, `test_relay_send`) |
 | `udp_bridge_interfaces` | rosidl | 13 messages + 3 services (`Subscribe`, `AddRemote`, `ListRemotes`) |
 
 `udp_bridge` depends on `rclcpp`, `rclcpp_lifecycle`, `diagnostic_updater`,
@@ -79,7 +79,12 @@ callback groups whose invariants are documented at the top of
   ~200 ms, which must not happen on the socket drain. Bounded by the
   compile-time `kRelayQueueMaxBytes` (64 MiB — deliberately not a parameter);
   drops oldest under back-pressure and reports them in the `relay queue`
-  diagnostic. See `doc/relay_design.md`.
+  diagnostic. Only messages the stale-packet / reorder gate ADMITS are
+  relayed: the relay form rides along inside the `PublishItem` (an optional
+  `RelayItem`, null when relay is unreachable) so a buffered packet is
+  forwarded when the buffer releases it, and never if it is dropped.
+  `UDPBridge::enqueuePublish()` is the single admit-to-publish point. See
+  `doc/relay_design.md`.
 
 Wire format: `Packet`/`WrappedPacket` (packet.h, wrapped_packet.h), zlib
 compression on send (`src/packet.cpp`), fragmentation above

@@ -12,7 +12,11 @@
 #include <thread>
 #include <utility>
 
+#include <memory>
+
 #include "rclcpp/serialized_message.hpp"
+
+#include "udp_bridge/relay_item.h"
 
 namespace udp_bridge
 {
@@ -33,14 +37,33 @@ struct PublishItem
   uint32_t history_depth = 0;
   rclcpp::SerializedMessage message;
 
+  /// The same message in the form the relay worker needs (issue #51), or
+  /// null when this message has nowhere to be relayed — which is every
+  /// configuration in this repo today, so the ordinary path allocates
+  /// nothing.
+  ///
+  /// It rides along with the PublishItem so that relay happens *only for
+  /// packets the stale/reorder gate admits*, including the buffered ones:
+  /// a packet the reorder buffer holds is stored as a PublishItem and
+  /// released later (by a gap-filler or by window expiry), and it must
+  /// carry its relay form with it — reconstructing a MessageInternal at
+  /// release time would mean keeping the payload twice over, and relaying
+  /// at buffer time would forward packets the gate may still drop.
+  /// UDPBridge::enqueuePublish() is the single place that hands it to
+  /// relay_queue_, on every path that publishes.
+  std::unique_ptr<RelayItem> relay;
+
   /// Approximate footprint for the queue's byte budget. The serialized
   /// payload dominates; the small string fields are included so an
-  /// empty-payload message still counts a nonzero amount.
+  /// empty-payload message still counts a nonzero amount. An attached
+  /// relay form is counted too — it is resident memory held by this item
+  /// (null, and so free, whenever relay is unreachable).
   size_t byte_size() const
   {
     return message.size()
       + topic.size() + datatype.size()
-      + reliability.size() + durability.size();
+      + reliability.size() + durability.size()
+      + (relay ? relay->byte_size() : 0u);
   }
 };
 

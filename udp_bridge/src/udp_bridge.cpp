@@ -737,7 +737,7 @@ void UDPBridge::spin_once()
         RCLCPP_INFO_STREAM(get_logger(), "Discarded " << discard_count << " incomplete packets from " << remote.first);
       if(reorder_enabled)
         for(auto& item: remote.second->flushExpiredBuffer(now, reorder_hold_window))
-          publish_queue_.push(std::move(item));
+          enqueuePublish(std::move(item));
     }
   }
   cleanupSentPackets();
@@ -922,27 +922,15 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   if(topic.empty())
     topic = outer_message.source_topic;
 
-  // Relay (issue #51): offer this message to every OTHER remote whose
-  // topics_list carries this topic. Done here, before the stale/reorder
-  // gate, because relaying is independent of this bridge's own
-  // publish/drop decision: a downstream bridge assigns its own fresh
-  // sequence numbers on forward (send(), below) and runs its own gate, so
-  // an upstream resend that we would drop locally is still worth
-  // forwarding. Bounded by admission control on each outgoing connection.
-  //
-  // Only the cheap routing-table probe runs on the socket-drain thread;
-  // the payload copy and the actual sendto happen on the relay worker
-  // (see relay_queue.h / issue #10). In the ordinary single-remote
-  // deployment hasRelayDestinations() is a brief map lookup that returns
-  // false, so relay costs one lock and no copy.
-  if(hasRelayDestinations(topic, source_info.node_name))
-  {
-    RelayItem relay_item;
-    relay_item.topic = topic;
-    relay_item.source_node = source_info.node_name;
-    relay_item.message = outer_message;
-    relay_queue_.push(std::move(relay_item));
-  }
+  // Relay (issue #51): is there any OTHER remote whose topics_list carries
+  // this topic? Only this cheap routing-table probe runs here on the
+  // socket-drain thread; the relay form is attached to the PublishItem
+  // below and handed to the relay worker by enqueuePublish() -- so a
+  // message is relayed if and only if the stale/reorder gate admits it for
+  // publication, and never from the drain thread (see relay_queue.h /
+  // issue #10). In the ordinary single-remote deployment this is a brief
+  // map lookup that returns false, so relay costs one lock and no copy.
+  const bool relay_wanted = hasRelayDestinations(topic, source_info.node_name);
 
   // Build the PublishItem the socket-drain thread hands to the publish
   // worker. Only the CPU-bound deserialize + payload copy runs here — no
@@ -964,6 +952,20 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     item.reliability = outer_message.reliability;
     item.durability = outer_message.durability;
     item.history_depth = outer_message.history_depth;
+
+    // Attach the relay form, when there is somewhere to relay to. The move
+    // is safe -- and is why this is not a plain copy of outer_message
+    // (which would duplicate the whole payload on the drain thread): the
+    // payload copy above has already been taken, this lambda is called at
+    // most once per decodeData call, and nothing reads outer_message
+    // afterwards.
+    if(relay_wanted)
+    {
+      item.relay = std::make_unique<RelayItem>();
+      item.relay->topic = topic;
+      item.relay->source_node = source_info.node_name;
+      item.relay->message = std::move(outer_message);
+    }
     return item;
   };
 
@@ -1002,7 +1004,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
           << stale_dropped_count_);
       }
       for(auto& out : result.to_publish)
-        publish_queue_.push(std::move(out));
+        enqueuePublish(std::move(out));
       return;
     }
 
@@ -1023,7 +1025,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     }
   }
 
-  publish_queue_.push(build_item());
+  enqueuePublish(build_item());
 }
 
 bool UDPBridge::hasRelayDestinations(const std::string& topic,
@@ -1152,6 +1154,26 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       "relay worker: dropping message for '" << item.topic
       << "' from '" << item.source_node << "': " << e.what());
   }
+}
+
+void UDPBridge::enqueuePublish(PublishItem&& item)
+{
+  // The single admit-to-publish point. Everything the stale/reorder gate
+  // lets through comes here -- the immediate path in decodeData, the items
+  // a gap-filler releases, and the items flushExpiredBuffer releases on
+  // window expiry -- and nothing the gate drops does.
+  //
+  // Relay (issue #51) is therefore gated exactly as local publication is: a
+  // packet the hub judges stale or superseded is never forwarded. It is not
+  // relayed at buffer time either, since a buffered packet can still be
+  // dropped; it waits, attached to its PublishItem, and goes out when (and
+  // only when) the buffer releases it, in the same wire order.
+  if(item.relay)
+  {
+    relay_queue_.push(std::move(*item.relay));
+    item.relay.reset();
+  }
+  publish_queue_.push(std::move(item));
 }
 
 void UDPBridge::publishItem(PublishItem&& item)

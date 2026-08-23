@@ -24,7 +24,7 @@ The core of the package is the `udp_bridge::UDPBridge` class, which runs as a `r
     -   Once all fragments for a message ID are received, the original packet is reconstructed.
 4.  **Deserialization**: The payload is deserialized back into a ROS 2 message.
 5.  **Publication**: The message is published to the local ROS 2 topic mapped to the remote source.
-6.  **Relay**: In parallel with publication, the message is offered to every *other* remote whose `topics_list` carries the same topic, and forwarded to those that do. See below.
+6.  **Relay**: Every message admitted for publication is also offered to every *other* remote whose `topics_list` carries the same topic, and forwarded to those that do. A message the stale-packet gate or the reorder buffer drops is not relayed either. See below.
 
 ### Relay (remote → remote)
 
@@ -34,9 +34,10 @@ Three properties define the behaviour:
 
 -   **The `topics_list` is the routing table.** There is no relay parameter. If a remote lists a topic, it receives that topic, whether the traffic originated locally or on another remote.
 -   **A message is never sent back to the remote it came from** (the loop rule). Because the bridge only knows the *last hop*, this protects against direct echo but not against cycles: configure star topologies only. `A → B → C → A` would circulate indefinitely.
+-   **Only admitted messages are relayed.** Relay follows the stale-packet / reorder gate, not precedes it: forwarding assigns fresh sequence numbers, so a downstream bridge cannot tell a relayed stale packet from fresh data and would republish older data as newest.
 -   **Forwarding happens on its own worker thread**, never on the socket-drain thread, and goes out through the normal send path — so fragmenting, sequencing, resends and the per-connection admission control apply to relayed traffic exactly as to locally published traffic.
 
-Full rationale, including why there is no relay flag, why relay precedes the stale-packet gate, and how a hub widens the blast radius of the unauthenticated transport, is in [`relay_design.md`](relay_design.md).
+Full rationale, including why there is no relay flag, why relay follows the stale-packet gate, and how a hub widens the blast radius of the unauthenticated transport, is in [`relay_design.md`](relay_design.md).
 
 ## Key Classes
 

@@ -119,6 +119,15 @@ private:
   /// call that can block on a single subscriber.
   void decodeData(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
+  /// The single admit-to-publish point: hands an item the stale/reorder
+  /// gate admitted to publish_queue_, and its attached relay form (issue
+  /// #51), if any, to relay_queue_. Every path that publishes a received
+  /// message goes through here — decodeData's immediate path, the items a
+  /// gap-filler releases, and the items flushExpiredBuffer releases on
+  /// window expiry — so relay is gated exactly as local publication is: a
+  /// packet judged stale or superseded is never forwarded.
+  void enqueuePublish(PublishItem&& item);
+
   /// publish_queue_ sink: runs on the publish worker thread. Finds or
   /// creates the destination GenericPublisher (first-arrival also triggers
   /// sendBridgeInfo) and publishes. Any blocking here (RELIABLE publish to a
