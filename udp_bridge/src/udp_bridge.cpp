@@ -2296,6 +2296,16 @@ void UDPBridge::addRemote(
       remote = remote_nodes_[request->name];
       if(!remote)
       {
+        // `name` here is the remote's own wire name — the same namespace
+        // remote_nodes_ is keyed by everywhere else (issue #51). An
+        // operator who passes their local *label* for the remote instead
+        // creates a phantom that matches no incoming packet: the same
+        // misconfiguration the unknown-sender WARN in unwrap() exists to
+        // catch, at the one entry point that cannot detect it, since any
+        // string is a legitimate new remote here.
+        RCLCPP_INFO_STREAM(get_logger(), "add_remote: creating remote '"
+          << request->name << "' — this must be the name that bridge calls "
+          "itself (its own `name` parameter), not a local label for it");
         remote = std::make_shared<RemoteNode>(request->name, name_, *this);
         remote_nodes_[request->name] = remote;
       }
