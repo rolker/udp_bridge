@@ -1053,9 +1053,18 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     // while the item waits in the reorder buffer -- see publish_queue.h.
     if(!relay_wanted)
     {
-      item.message.reserve(outer_message.data.size());
-      memcpy(item.message.get_rcl_serialized_message().buffer,
-             outer_message.data.data(), outer_message.data.size());
+      // Same empty-payload guard as materializePublishPayload: reserve(0)
+      // throws from the rcl uint8_array layer, and an empty payload is a
+      // legal message (std_msgs/msg/Empty) as well as something a sender
+      // can put on the wire. Without the guard the same packet would throw
+      // and be dropped here but publish normally on the relay path, i.e.
+      // the outcome would depend on unrelated remote configuration.
+      if(!outer_message.data.empty())
+      {
+        item.message.reserve(outer_message.data.size());
+        memcpy(item.message.get_rcl_serialized_message().buffer,
+               outer_message.data.data(), outer_message.data.size());
+      }
       item.message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
     }
 
