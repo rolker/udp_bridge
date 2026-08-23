@@ -398,3 +398,132 @@ extraction so forwarded traffic is rate-limited identically to local traffic.
 
 ### Open questions
 - [ ] No open questions — plan is implementation-ready.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-23 00:58 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Plan**: `.agent/work-plans/issue-51/plan.md` at `9244e9b`, kept in sync in-place
+**Branch**: feature/issue-51
+**Commits** (four atomic, in plan order):
+
+| SHA | Commit |
+|---|---|
+| `1b711b4` | relay: add the relay_queue_ scaffolding (#51) |
+| `374b8dc` | relay: forward received messages to the other remotes that ask for the topic (#51) |
+| `0c69bb6` | test: relay routing and relay-queue regression tests (#51) |
+| `47fb5db` | docs: document relay, its loop rule and its blast radius (#51) |
+
+Not pushed; no PR opened (host publishes).
+
+### What landed
+
+- `include/udp_bridge/relay_queue.h` — `RelayItem` / `RelayQueue`, the same
+  bounded drop-oldest single-worker component as `PublishQueue`, so
+  `Connection::send()`'s ~200 ms `sendto()` retry loop never runs on the
+  socket-drain thread (#10 on the send side). Separate from `publish_queue_`:
+  a stalled local subscriber and a stalled remote link are independent
+  failure domains.
+- `include/udp_bridge/destination_selection.h` — `selectRateLimitedConnections`
+  (callback()'s period/`last_sent_time` block moved verbatim, plus an
+  `exclude_remote` applied *before* any stamp), `hasRelayDestination` (the
+  read-only form of the same loop rule) and the shared `DestinationConfig`.
+- `src/udp_bridge.cpp` — `decodeData()` probes `hasRelayDestinations()` and,
+  only when some other remote lists the topic, pushes a `RelayItem` before
+  the stale/reorder gate; `relayToOtherRemotes()` (the queue sink) selects
+  destinations with the sender excluded and forwards through the existing
+  `send()` path; `relay_queue_` lifecycle mirrors `publish_queue_`;
+  `diagnoseRelayQueue()` registered in `on_configure`.
+- Tests: `test/test_relay_routing.cpp` (7 cases) and
+  `test/test_relay_queue.cpp` (4 cases), registered via `add_udp_bridge_gtest`.
+- Docs: new `doc/relay_design.md`; `README.md`, `doc/conceptual_overview.md`,
+  a commented second-remote block in `config/example_params.yaml`, and
+  `.agents/README.md` (relay worker in the threading overview, the two new
+  test targets, the design doc, and a no-parameter/no-cycle-protection
+  pitfall).
+
+Constraints held: no new config parameter (`types.h` untouched,
+`addSubscriberConnection` signature unchanged, `ignore_local_publications`
+unchanged); forwarding never runs on the drain thread; rate limiting is one
+shared implementation, not a parallel path.
+
+### Divergences from the plan (all recorded inline in plan.md, `374b8dc`)
+
+1. `selectRateLimitedConnections` is a **free function in a new header**
+   (`destination_selection.h`), not a private member of `UDPBridge`. It needs
+   no member state, and as a free function the routing decision — which is
+   all relay is — is unit-testable without a node or socket, matching the
+   `qos_resolution.h` / `giveup_diagnostic.h` / `subscriber_registry.h`
+   precedent in this repo. `DestinationConfig` (was local to `callback()`)
+   moved with it.
+2. `relayToOtherRemotes(RelayItem&& item)` takes the queue item (carrying
+   exactly the planned topic / outer_message / source_node) so it serves
+   directly as the queue sink, mirroring `publishItem`.
+3. Added `hasRelayDestinations` / `hasRelayDestination`: a cheap probe so the
+   drain thread skips the payload copy entirely when nothing can be relayed —
+   which is every configuration in this repo today.
+4. Added, beyond the plan: the relay queue's byte budget is the compile-time
+   `kRelayQueueMaxBytes` (64 MiB) rather than a ROS parameter (relay adds no
+   configuration surface), and a `relay queue` diagnostic task mirroring
+   `diagnosePublishQueue` — a relay drop is unrecoverable (the message never
+   reached a `Connection`, so the resend layer has nothing to retransmit).
+
+### Verification
+
+Build (`./build.sh udp_bridge`, exit code checked directly, not through a pipe):
+
+```
+BUILD_EXIT=0
+Summary: 1 package finished [39.9s]
+```
+
+Tests (`./test.sh udp_bridge` then `colcon test-result --verbose`):
+
+```
+TEST_EXIT=0
+Summary: 191 tests, 0 errors, 0 failures, 14 skipped
+```
+
+Relay suites specifically: `test_relay_routing.gtest.xml` — 7 tests, 0
+failures; `test_relay_queue.gtest.xml` — 4 tests, 0 failures.
+
+**Mutation check of the loop rule** (the deliverable required the echo test to
+fail if the loop rule is removed): with the `exclude_remote` filter deleted
+from `selectRateLimitedConnections` and the `source_node` comparison deleted
+from `hasRelayDestination`, the suite went to `191 tests, 0 errors, 5
+failures`, including `RelayRouting.EchoIsNeverSentBackToTheSender`. The
+mutation was reverted and the suite is green again.
+
+`pre-commit run --from-ref origin/jazzy --to-ref HEAD` (workspace `.venv`
+binary; `pre-commit` is not on PATH): all hooks Passed or Skipped
+(no-files-to-check).
+
+### Notes for review
+
+- The loop rule compares `SourceInfo::node_name` with the `remote_details`
+  key. Re-confirmed the same-namespace premise beyond the plan's citation:
+  `unwrap()` sets `node_name` from `wrapped_packet->source_node`
+  (`src/udp_bridge.cpp:1462`), `remote_nodes_` is keyed by it
+  (`:1474`/`:1486`), the config path keys remotes by their `remotes_list`
+  label (`:405`), and the dynamic subscribe path calls
+  `addSubscriberConnection(..., source_info.node_name, ...)` (`:1452`) — one
+  namespace, plain string compare.
+- Relayed traffic is added to the topic's `MessageStatistics` per destination,
+  as `callback()` does, so relayed bytes are visible in
+  `~/topic_statistics` / `BridgeInfo` rather than invisible.
+- The three-node deliverable's "hub also locally subscribed" half is covered
+  structurally rather than by an end-to-end assertion: relay is an additional
+  `relay_queue_` push in `decodeData()`, not a branch around the
+  `publish_queue_` push, and the test asserts the probe says "relay" for
+  exactly that configuration. A live three-node hub run belongs to the #18
+  bench harness (`test/bench/`), which is opt-in and needs `unshare -Urn`; not
+  attempted here.
+
+### Deferred / not done
+
+- No bench-harness scenario for a live three-node hub (see above).
+- Cycle tolerance (hop counter or origin stamp in `MessageInternal`) is a
+  wire-format change and stays out of scope; the star-only constraint is
+  documented instead.
+- Not pushed, no PR — per the handoff contract.
