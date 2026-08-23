@@ -351,3 +351,26 @@ Lifecycle: **Local Review** → address-findings (verdict changes-requested) →
 
 ### Next step
 Lifecycle: **Local Review** → push / open PR → triage-reviews. Ship: recommended — approved; the two suggestions can be applied pre-push or tracked as harness-robustness follow-ups.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-23 03:07 +00:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**PR**: #62 at `5a17237`
+**Sources**: 2 (Copilot @ `5a17237`, Local Review (Pre-Push) x3 @ `db937b2`/`fa7490a`/`6dd80a9`)
+**Cross-source confirmations**: 0
+**CI**: all-pass (build-and-test success; copilot-pull-request-reviewer success)
+
+Copilot verdict: approval recommended, no confirmed correctness regressions.
+
+### Findings
+- [ ] (suggestion, Copilot) `NETEM_QUEUE_PACKET_BYTES = 1000` hardcoded while its own comment documents it as "the bridge's `maximum_packet_size` from configs/three_path.yaml". A config change would silently skew the #61 transient drain ceiling -- too loose masks a latency regression, too tight invents failures. Fix by parsing the YAML at import, matching the lockstep discipline of `_phase_loss_rates`, `_phase_trajectory_rates_bps` and `_import_run_scenario_ready_timeout` -- `udp_bridge/test/bench/test_range_degradation.py:610`
+
+### Notes
+- Not a cross-source confirmation (different constants, different head SHAs), but the THIRD instance of one failure mode in this PR, each caught by a different source: README threshold rows vs the assertions (Local Review R1), `SCENARIO_TIMEOUT_S` vs `READY_TIMEOUT_S` (Local Review R3), and now `NETEM_QUEUE_PACKET_BYTES` vs `three_path.yaml` (Copilot). Every one is a value documented as derived and implemented as copied. Standing hazard in this harness, not three coincidences.
+- Governance: `.agents/README.md:87` already records `maximum_packet_size` = 1200 from #59. This PR changes only the bench config, not the shipped default, so the verified-parameter table needs no edit. Checked rather than assumed.
+- Prior Local Review findings all closed: R1 both (`992d1cb`, `3313b4a`), R2 all three (`4867bdf`, `f7327e0`), R3 both (`5a17237`).
+
+### False positives
+- None. The single Copilot comment is correct on the code as written.
