@@ -239,8 +239,21 @@ TEST(RelayRouting, UnnamedSenderIsNeverRelayed)
   EXPECT_FALSE(hasRelayDestination(table, ""))
     << "a packet with no source_node has no loop rule and must not be relayed";
 
-  // The rate-limit state of every remote is likewise untouched: the probe
-  // said no, so no selection call is made for such a packet.
+  // The probe answering false is what stops it, and this is why that
+  // matters: an empty exclude_remote excludes NOBODY, so had the packet
+  // reached the selector it would have been fanned out to every remote
+  // listing the topic -- the injected-packet amplification of #53. Run on
+  // a separate table so the assertion above stays about an untouched one.
+  std::map<std::string, RemoteDetails> unguarded;
+  unguarded["boat"] = remote("/status", "wifi");
+  unguarded["operator"] = remote("/status", "wifi");
+  auto would_be_selected = selectRateLimitedConnections(unguarded, kT0, "");
+  EXPECT_EQ(selectedRemotes(would_be_selected),
+            (std::vector<std::string>{"boat", "operator"}))
+    << "with no sender to exclude the selector reaches everyone, sender included";
+
+  // And because the probe refused, nothing in the real table was touched:
+  // no remote's last_sent_time was stamped on this packet's behalf.
   EXPECT_EQ(table["boat"].connection_rates["wifi"].last_sent_time.nanoseconds(), 0);
   EXPECT_EQ(table["operator"].connection_rates["wifi"].last_sent_time.nanoseconds(), 0);
 }

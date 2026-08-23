@@ -164,7 +164,7 @@ private:
       // only this worker thread, never push() or the socket-drain thread.
       //
       // The try/catch is a last-resort barrier so a throwing sink can never
-      // std::terminate the process. The sink (UDPBridge::relayItem) is
+      // std::terminate the process. The sink (UDPBridge::relayToOtherRemotes) is
       // expected to catch and log its own exceptions — it has the node
       // logger; this layer does not — but Connection::send() can throw
       // ConnectionException on socket errors, and a plain std::thread has no
