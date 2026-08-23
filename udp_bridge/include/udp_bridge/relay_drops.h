@@ -63,9 +63,12 @@ struct RelayDropCounters
          + topic_gone.load(std::memory_order_relaxed);
   }
 
-  /// A short "reason=count" breakdown for the diagnostic, omitting zeros.
-  /// Empty when nothing has been recorded.
-  std::string breakdown() const
+  /// A short "reason=count" breakdown of the **loss** reasons for the
+  /// diagnostic, omitting zeros. Empty when no loss has been recorded.
+  /// Deliberately excludes NoDestinationDue: it is reported on its own row
+  /// (`rate_limited`) so it never appears alongside a loss figure it is not
+  /// part of, and never lands in a WARN string whose trigger excludes it.
+  std::string lossBreakdown() const
   {
     std::string out;
     auto append = [&out](const char* name, uint64_t value)
@@ -80,8 +83,14 @@ struct RelayDropCounters
     };
     append("unnamed_sender", unnamed_sender.load(std::memory_order_relaxed));
     append("topic_gone", topic_gone.load(std::memory_order_relaxed));
-    append("rate_limited", no_destination_due.load(std::memory_order_relaxed));
     return out;
+  }
+
+  /// Items held back purely by the per-connection `period` rule. Visible,
+  /// but not loss — see NoDestinationDue.
+  uint64_t rateLimited() const
+  {
+    return no_destination_due.load(std::memory_order_relaxed);
   }
 
   void reset()

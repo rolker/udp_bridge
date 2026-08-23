@@ -2723,9 +2723,14 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   stat.add("dropped_since_last_tick", recent);
   stat.add("dropped_by_queue", dropped_by_queue);
   stat.add("dropped_by_sink", dropped_by_sink);
-  const auto breakdown = relay_drops_.breakdown();
+  const auto breakdown = relay_drops_.lossBreakdown();
   if(!breakdown.empty())
     stat.add("sink_drop_reasons", breakdown);
+  // Reported apart from the loss reasons above, and kept out of the WARN
+  // string below, because the rate limiter working as configured is not
+  // loss — mixing it in produced statuses like "relay dropping (1 since
+  // last tick; topic_gone=1, rate_limited=40321)".
+  stat.add("rate_limited", relay_drops_.rateLimited());
   stat.add("max_bytes", static_cast<uint64_t>(relay_queue_max_bytes_));
 
   // A relay drop is unrecoverable loss for the downstream remotes: the

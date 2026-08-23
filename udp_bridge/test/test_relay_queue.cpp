@@ -405,7 +405,7 @@ TEST(RelayDropCountersTest, SinkDropsAreCountedAsLoss)
 {
   udp_bridge::RelayDropCounters counters;
   EXPECT_EQ(counters.lost(), 0u);
-  EXPECT_TRUE(counters.breakdown().empty());
+  EXPECT_TRUE(counters.lossBreakdown().empty());
 
   counters.record(udp_bridge::RelayDropReason::UnnamedSender);
   counters.record(udp_bridge::RelayDropReason::TopicGone);
@@ -415,7 +415,7 @@ TEST(RelayDropCountersTest, SinkDropsAreCountedAsLoss)
   EXPECT_EQ(counters.unnamed_sender.load(), 1u);
   EXPECT_EQ(counters.topic_gone.load(), 2u);
 
-  const auto breakdown = counters.breakdown();
+  const auto breakdown = counters.lossBreakdown();
   EXPECT_NE(breakdown.find("unnamed_sender=1"), std::string::npos);
   EXPECT_NE(breakdown.find("topic_gone=2"), std::string::npos);
   EXPECT_EQ(breakdown.find("rate_limited"), std::string::npos)
@@ -434,12 +434,15 @@ TEST(RelayDropCountersTest, RateLimitedIsVisibleButNotLoss)
 
   EXPECT_EQ(counters.lost(), 0u) << "the rate limiter working is not relay loss";
   EXPECT_EQ(counters.no_destination_due.load(), 2u);
-  EXPECT_NE(counters.breakdown().find("rate_limited=2"), std::string::npos)
+  EXPECT_EQ(counters.rateLimited(), 2u)
     << "it must still be visible to an operator reading the diagnostic";
+  EXPECT_TRUE(counters.lossBreakdown().empty())
+    << "the rate limit must never appear in the loss breakdown or the WARN";
 
   counters.reset();
   EXPECT_EQ(counters.lost(), 0u);
-  EXPECT_TRUE(counters.breakdown().empty());
+  EXPECT_EQ(counters.rateLimited(), 0u);
+  EXPECT_TRUE(counters.lossBreakdown().empty());
 }
 
 int main(int argc, char **argv)

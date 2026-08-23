@@ -283,9 +283,11 @@ of the worker:
   (`include/udp_bridge/relay_drops.h`).
 
 An item held back only by the per-connection `period` rate limit is counted
-apart (`rate_limited`) and is **not** loss — it is the limit working as
-configured, and folding it into the loss total would leave the diagnostic
-permanently in WARN on any rate-limited topic.
+apart and is **not** loss — it is the limit working as configured, and
+folding it into the loss total would leave the diagnostic permanently in
+WARN on any rate-limited topic. It gets its own `rate_limited` field and is
+kept out of both `sink_drop_reasons` and the WARN string, so a large
+rate-limit count can never be read as accompanying a small loss figure.
 
 ## Statistics
 
