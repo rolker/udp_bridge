@@ -367,6 +367,28 @@ Relay widens the blast radius, and it is worth stating plainly:
   false for an empty sender, precisely because a rule that excludes by name
   excludes nobody when there is no name. Neither behaviour is
   authentication, and neither is a substitute for the tunnel.
+- **A spoofed subscribe request can *redirect* a feed, not merely cut it.**
+  `addSubscriberConnection` assigns `rd.destination_topic` unconditionally
+  (`src/udp_bridge.cpp:1520`), so a request naming an existing remote as its
+  `source_node` rewrites where that remote's copy of the topic is published
+  in the victim's ROS graph. The victim keeps receiving data, on a topic the
+  attacker chose — which can shadow an unrelated topic there, and is quieter
+  than a cut feed because nothing goes silent.
+- **Decompression is unbounded, and relay now points it outward.**
+  `uncompress()` (`src/packet.cpp:42-48`) allocates
+  `std::vector<uint8_t> ret(decomp_size)` from `uncompressed_size`, an
+  attacker-supplied `uint32_t` header field, with **no ratio or absolute
+  cap** — a small packet can demand a large allocation, and the expansion is
+  bounded only by what zlib will produce. This is pre-existing and #51 does
+  not introduce it; what #51 changes is its severity. Before relay, a
+  zip-bomb packet cost the receiving hub one local allocation. With relay,
+  the *expanded* payload is forwarded **outbound** to every other remote
+  listing that topic — and this repo's own bench data (480 kB of zeros
+  compressing to 488 B on the wire) puts the achievable ratio near 1000x,
+  so the same injected byte budget becomes a bandwidth amplifier aimed at
+  the boats' scarce links. A ratio/size cap in `uncompress()` belongs with
+  the trust-model work in
+  [#53](https://github.com/rolker/udp_bridge/issues/53), not here.
 - **Relayed packets occupy each `Connection`'s `sent_packets_` resend
   buffer.** Forwarding goes through the ordinary `send()` path, so a
   relayed message is tracked for retransmission on every outgoing
