@@ -805,22 +805,22 @@ All three round-2 must-fixes and all eleven suggestions were actioned, and the a
 
 ### Findings
 
-- [ ] (must-fix, cross-pass confirmed by both adversarial lenses and the lead) The new duplicate-identity `return CallbackReturn::FAILURE` sits after `socket()`/`bind()`, the parameter callback and all six services. A lifecycle FAILURE leaves the node UNCONFIGURED and does **not** call `on_cleanup`; nothing in the package ever closes `socket_`. So the operator's natural remedy — fix `remotes.<label>.name`, re-`configure` — re-enters `on_configure`, binds the same port with no `SO_REUSEADDR`, hits `EADDRINUSE` and calls `exit(1)`. A config typo becomes a killed process on the retry. The pre-existing FAILURE at `:213` returns before the socket, so this regresses that property. The block needs only parameters, so hoisting it above the socket block makes the failure as clean as `:213`'s — `src/udp_bridge.cpp:441-455` (socket `:338`, `:351`, `exit(1)` `:353`)
-- [ ] (must-fix) Two documentation sites now contradict the code. `.agents/README.md:182-184` still says "**`remotes.<label>.name` is not a real parameter** — the remote's name is the `remotes_list` label itself … claiming otherwise are stale", which this branch inverts; it is the pitfall list an agent reads first, and the verified-parameter table at `:108` has no entry for the parameter either. Separately, `src/udp_bridge.cpp:2680` and `doc/relay_design.md:272` both name "the node left ACTIVE" as a sink drop reason — that reason was removed in `e2615ce` and `RelayDropReason` has only `UnnamedSender`, `TopicGone`, `NoDestinationDue` — `.agents/README.md:108,182-184`, `src/udp_bridge.cpp:2680`, `doc/relay_design.md:272`
-- [ ] (must-fix, cross-pass confirmed by Lens A and the lead) The re-keying renames user-visible surfaces for any `label != name` config and no migration note says so: the ROS topics `~/remotes/<remote>/bridge_info` and `~/remotes/<remote>/topic_statistics`, `BridgeInfo.remotes[].name` and `BridgeInfo.topics[].remotes[].remote`, `TopicStatistics.destination_node`, the per-remote diagnostic task names, and the `remote` / `name` arguments of `remote_subscribe`, `remote_advertise`, `remove_subscribe`, `remove_advertise` and `add_remote`. Sharpest point: on `jazzy` the parameter was never declared, so a YAML `name:` key was silently inert — and the shipped `config/example_params.yaml` set `label: robot_a` with `name: "robot_a_bridge"`. Anyone who copied the example gets all of the above renamed on upgrade. The example was fixed to comment the key out; the note telling an upgrader to check for a stale `name:` is still missing — `doc/relay_design.md`, `udp_bridge/README.md`
-- [ ] (must-fix) The rewritten Security section is now the authoritative blast-radius statement, and it omits two consequences relay introduces or sharpens. (a) `uncompress()` allocates `std::vector<uint8_t> ret(decomp_size)` from the attacker-controlled `uncompressed_size` header field (`uint32_t`, unbounded, no ratio check) — pre-#51 a zip-bomb packet cost the hub one local allocation; post-#51 the expanded payload is relayed **outbound** to every other remote listing the topic, and this repo's own bench data (480 kB of zeros → 488 B on the wire) puts the achievable ratio near 1000×, which is a bandwidth amplifier aimed at the boats' scarce links. (b) `addSubscriberConnection` assigns `rd.destination_topic` unconditionally, so a spoofed subscribe request can *redirect* a victim remote's feed onto an arbitrary topic in the victim's ROS graph, not merely cut it as the section currently says — `doc/relay_design.md` Security, `src/packet.cpp:42-48`, `src/udp_bridge.cpp:1511`
-- [ ] (suggestion) `diagnostic_timer_` is not stopped in `on_deactivate` (only reset in `on_cleanup`), so the first tick after a deactivate reads the discarded backlog as fresh drops and reports "relay dropping (N since last tick) — outgoing link stalled?" when the cause was the operator. Snapshot `last_reported_*_drops_` in `on_deactivate`, or report the discard separately from overflow — `src/udp_bridge.cpp:671-694`, `include/udp_bridge/relay_queue.h:102`, `include/udp_bridge/publish_queue.h:193`
-- [ ] (suggestion, cross-pass confirmed) `breakdown()` includes `rate_limited`, which `relay_drops.h` explicitly excludes from loss, yet it is published as `sink_drop_reasons` and appended to a WARN whose trigger excludes it — a hub reads "relay dropping (1 since last tick; topic_gone=1, rate_limited=40321)". Give `rate_limited` its own `stat.add` and keep the WARN string to loss reasons — `src/udp_bridge.cpp:2696-2710`
-- [ ] (suggestion) `assert(!running_)` is compiled out under `NDEBUG` — the builds that run on the boats — and `sink_` / `max_bytes_` are assigned *outside* the locked block, so even in a debug build the check-then-assign is not atomic. Nothing reaches it today; either assign under `mutex_` or downgrade the comment, which currently claims a guarantee it does not provide — `include/udp_bridge/relay_queue.h:52-62`, `include/udp_bridge/publish_queue.h:135-147`
-- [ ] (suggestion) The header comment justifies the unlocked write to `configured_remote_names_` with "before any timer exists, so no reader can race the write". That is false on a re-configure: `on_cleanup` resets only `diagnostic_timer_`, so `spin_timer_`, `bridge_info_timer_`, `stats_report_timer_` and `subscription_update_timer_` survive and keep firing during the second `on_configure`. It is benign only because `spin_once` gates on ACTIVE — a different reason than the one given. Taking `remote_nodes_mutex_` costs nothing and makes the comment true — `include/udp_bridge/udp_bridge.h:461-469`, `src/udp_bridge.cpp:457-459`
-- [ ] (suggestion) The unknown-sender WARN sits inside `if(!remote)`, so it fires exactly once per unknown name for the process lifetime; the throttle can only suppress a *second* unknown sender within 10 s. `relay_design.md` calls it "a throttled WARN", implying a recurring signal an operator can find later. For a misconfiguration the doc describes as silently defeating the loop rule, a `DiagnosticStatus` row would be the findable surface — `src/udp_bridge.cpp:1671-1684`, `doc/relay_design.md:138`
-- [ ] (suggestion) `add_remote` keys `remote_nodes_[request->name]` from an operator-supplied string with no equivalent warning, so an operator who types the *label* creates a phantom remote matching nothing — the same misconfiguration the new WARN exists to catch, at the one entry point that lacks it — `src/udp_bridge.cpp:2269`
-- [ ] (suggestion) A repeated label in `remotes_list` (`["a","a"]`) is now a hard `on_configure` failure with a self-contradictory message: "remotes 'a' and 'a' both resolve to remote name 'a'". Previously it was processed twice, idempotently. Detect duplicate *labels* separately, or skip an already-seen label — `include/udp_bridge/remote_identity.h:63-77`
-- [ ] (suggestion) `subscribers_` keys are resolved topic names (`resolve_topic_or_service_name` at `:552`) but `decodeData`'s lookup key is the raw wire `destination_topic`, unresolved. A sender whose `destination:` is relative therefore publishes locally under the resolved name while the relay probe's key stays unresolved, and relay silently never matches. Pre-existing for `publishers_`, newly load-bearing for routing — `src/udp_bridge.cpp:988-991`
-- [ ] (suggestion) Empty-payload asymmetry: `materializePublishPayload` guards `reserve(0)` (which throws from the rcl uint8_array layer) but `build_item`'s non-relay branch still calls `reserve()` unconditionally. A wire `MessageInternal` with empty `data` — an attacker can send one — throws and is dropped when no relay destination exists, and publishes normally when one does. Same packet, different outcome depending on unrelated remote config; reuse the guard — `src/udp_bridge.cpp:1026-1030`
-- [ ] (suggestion) `relay_design.md`'s no-loopback argument ("Relay does not touch `ignore_local_publications`, so a bridge still never hears its own republish") is load-bearing for single delivery and is asserted, not verified: on a hub the relay match condition guarantees the hub also holds a forwarding subscription on the topic it is about to publish to, and only that rmw-dependent option separates the two paths. The empirical evidence that it currently holds is #51's own symptom — a hub does not relay today — but it deserves the sentence, and a hub single-delivery assertion in the #18 bench harness — `doc/relay_design.md:93-95`, `src/udp_bridge.cpp:1604`
-- [ ] (suggestion) `diagnoseRelayQueue` reads `dropped_count()` and `lost()` twice each and `breakdown()` a third time without a snapshot, so the worker can increment between reads and `dropped_by_queue + dropped_by_sink` can exceed `dropped_total` in the same status. Snapshot once into locals — `src/udp_bridge.cpp:2686-2696`
-- [ ] (suggestion) `RelayDropCounters::reset()` is dead code. Leave it uncalled or delete it — if it is ever wired into `on_cleanup`, `last_reported_relay_drops_` must be reset in the same place or `recent = dropped - last_reported_relay_drops_` underflows to ~2^64 and pins the diagnostic at WARN — `include/udp_bridge/relay_drops.h:87-92`, `src/udp_bridge.cpp:2688`
+- [x] (must-fix, cross-pass confirmed by both adversarial lenses and the lead) The new duplicate-identity `return CallbackReturn::FAILURE` sits after `socket()`/`bind()`, the parameter callback and all six services. A lifecycle FAILURE leaves the node UNCONFIGURED and does **not** call `on_cleanup`; nothing in the package ever closes `socket_`. So the operator's natural remedy — fix `remotes.<label>.name`, re-`configure` — re-enters `on_configure`, binds the same port with no `SO_REUSEADDR`, hits `EADDRINUSE` and calls `exit(1)`. A config typo becomes a killed process on the retry. The pre-existing FAILURE at `:213` returns before the socket, so this regresses that property. The block needs only parameters, so hoisting it above the socket block makes the failure as clean as `:213`'s — `src/udp_bridge.cpp:441-455` (socket `:338`, `:351`, `exit(1)` `:353`)
+- [x] (must-fix) Two documentation sites now contradict the code. `.agents/README.md:182-184` still says "**`remotes.<label>.name` is not a real parameter** — the remote's name is the `remotes_list` label itself … claiming otherwise are stale", which this branch inverts; it is the pitfall list an agent reads first, and the verified-parameter table at `:108` has no entry for the parameter either. Separately, `src/udp_bridge.cpp:2680` and `doc/relay_design.md:272` both name "the node left ACTIVE" as a sink drop reason — that reason was removed in `e2615ce` and `RelayDropReason` has only `UnnamedSender`, `TopicGone`, `NoDestinationDue` — `.agents/README.md:108,182-184`, `src/udp_bridge.cpp:2680`, `doc/relay_design.md:272`
+- [x] (must-fix, cross-pass confirmed by Lens A and the lead) The re-keying renames user-visible surfaces for any `label != name` config and no migration note says so: the ROS topics `~/remotes/<remote>/bridge_info` and `~/remotes/<remote>/topic_statistics`, `BridgeInfo.remotes[].name` and `BridgeInfo.topics[].remotes[].remote`, `TopicStatistics.destination_node`, the per-remote diagnostic task names, and the `remote` / `name` arguments of `remote_subscribe`, `remote_advertise`, `remove_subscribe`, `remove_advertise` and `add_remote`. Sharpest point: on `jazzy` the parameter was never declared, so a YAML `name:` key was silently inert — and the shipped `config/example_params.yaml` set `label: robot_a` with `name: "robot_a_bridge"`. Anyone who copied the example gets all of the above renamed on upgrade. The example was fixed to comment the key out; the note telling an upgrader to check for a stale `name:` is still missing — `doc/relay_design.md`, `udp_bridge/README.md`
+- [x] (must-fix) The rewritten Security section is now the authoritative blast-radius statement, and it omits two consequences relay introduces or sharpens. (a) `uncompress()` allocates `std::vector<uint8_t> ret(decomp_size)` from the attacker-controlled `uncompressed_size` header field (`uint32_t`, unbounded, no ratio check) — pre-#51 a zip-bomb packet cost the hub one local allocation; post-#51 the expanded payload is relayed **outbound** to every other remote listing the topic, and this repo's own bench data (480 kB of zeros → 488 B on the wire) puts the achievable ratio near 1000×, which is a bandwidth amplifier aimed at the boats' scarce links. (b) `addSubscriberConnection` assigns `rd.destination_topic` unconditionally, so a spoofed subscribe request can *redirect* a victim remote's feed onto an arbitrary topic in the victim's ROS graph, not merely cut it as the section currently says — `doc/relay_design.md` Security, `src/packet.cpp:42-48`, `src/udp_bridge.cpp:1511`
+- [x] (suggestion) `diagnostic_timer_` is not stopped in `on_deactivate` (only reset in `on_cleanup`), so the first tick after a deactivate reads the discarded backlog as fresh drops and reports "relay dropping (N since last tick) — outgoing link stalled?" when the cause was the operator. Snapshot `last_reported_*_drops_` in `on_deactivate`, or report the discard separately from overflow — `src/udp_bridge.cpp:671-694`, `include/udp_bridge/relay_queue.h:102`, `include/udp_bridge/publish_queue.h:193`
+- [x] (suggestion, cross-pass confirmed) `breakdown()` includes `rate_limited`, which `relay_drops.h` explicitly excludes from loss, yet it is published as `sink_drop_reasons` and appended to a WARN whose trigger excludes it — a hub reads "relay dropping (1 since last tick; topic_gone=1, rate_limited=40321)". Give `rate_limited` its own `stat.add` and keep the WARN string to loss reasons — `src/udp_bridge.cpp:2696-2710`
+- [x] (suggestion) `assert(!running_)` is compiled out under `NDEBUG` — the builds that run on the boats — and `sink_` / `max_bytes_` are assigned *outside* the locked block, so even in a debug build the check-then-assign is not atomic. Nothing reaches it today; either assign under `mutex_` or downgrade the comment, which currently claims a guarantee it does not provide — `include/udp_bridge/relay_queue.h:52-62`, `include/udp_bridge/publish_queue.h:135-147`
+- [x] (suggestion) The header comment justifies the unlocked write to `configured_remote_names_` with "before any timer exists, so no reader can race the write". That is false on a re-configure: `on_cleanup` resets only `diagnostic_timer_`, so `spin_timer_`, `bridge_info_timer_`, `stats_report_timer_` and `subscription_update_timer_` survive and keep firing during the second `on_configure`. It is benign only because `spin_once` gates on ACTIVE — a different reason than the one given. Taking `remote_nodes_mutex_` costs nothing and makes the comment true — `include/udp_bridge/udp_bridge.h:461-469`, `src/udp_bridge.cpp:457-459`
+- [x] (suggestion) The unknown-sender WARN sits inside `if(!remote)`, so it fires exactly once per unknown name for the process lifetime; the throttle can only suppress a *second* unknown sender within 10 s. `relay_design.md` calls it "a throttled WARN", implying a recurring signal an operator can find later. For a misconfiguration the doc describes as silently defeating the loop rule, a `DiagnosticStatus` row would be the findable surface — `src/udp_bridge.cpp:1671-1684`, `doc/relay_design.md:138`
+- [x] (suggestion) `add_remote` keys `remote_nodes_[request->name]` from an operator-supplied string with no equivalent warning, so an operator who types the *label* creates a phantom remote matching nothing — the same misconfiguration the new WARN exists to catch, at the one entry point that lacks it — `src/udp_bridge.cpp:2269`
+- [x] (suggestion) A repeated label in `remotes_list` (`["a","a"]`) is now a hard `on_configure` failure with a self-contradictory message: "remotes 'a' and 'a' both resolve to remote name 'a'". Previously it was processed twice, idempotently. Detect duplicate *labels* separately, or skip an already-seen label — `include/udp_bridge/remote_identity.h:63-77`
+- [x] (suggestion) `subscribers_` keys are resolved topic names (`resolve_topic_or_service_name` at `:552`) but `decodeData`'s lookup key is the raw wire `destination_topic`, unresolved. A sender whose `destination:` is relative therefore publishes locally under the resolved name while the relay probe's key stays unresolved, and relay silently never matches. Pre-existing for `publishers_`, newly load-bearing for routing — `src/udp_bridge.cpp:988-991`
+- [x] (suggestion) Empty-payload asymmetry: `materializePublishPayload` guards `reserve(0)` (which throws from the rcl uint8_array layer) but `build_item`'s non-relay branch still calls `reserve()` unconditionally. A wire `MessageInternal` with empty `data` — an attacker can send one — throws and is dropped when no relay destination exists, and publishes normally when one does. Same packet, different outcome depending on unrelated remote config; reuse the guard — `src/udp_bridge.cpp:1026-1030`
+- [x] (suggestion) `relay_design.md`'s no-loopback argument ("Relay does not touch `ignore_local_publications`, so a bridge still never hears its own republish") is load-bearing for single delivery and is asserted, not verified: on a hub the relay match condition guarantees the hub also holds a forwarding subscription on the topic it is about to publish to, and only that rmw-dependent option separates the two paths. The empirical evidence that it currently holds is #51's own symptom — a hub does not relay today — but it deserves the sentence, and a hub single-delivery assertion in the #18 bench harness — `doc/relay_design.md:93-95`, `src/udp_bridge.cpp:1604`
+- [x] (suggestion) `diagnoseRelayQueue` reads `dropped_count()` and `lost()` twice each and `breakdown()` a third time without a snapshot, so the worker can increment between reads and `dropped_by_queue + dropped_by_sink` can exceed `dropped_total` in the same status. Snapshot once into locals — `src/udp_bridge.cpp:2686-2696`
+- [x] (suggestion) `RelayDropCounters::reset()` is dead code. Leave it uncalled or delete it — if it is ever wired into `on_cleanup`, `last_reported_relay_drops_` must be reset in the same place or `recent = dropped - last_reported_relay_drops_` underflows to ~2^64 and pins the diagnostic at WARN — `include/udp_bridge/relay_drops.h:87-92`, `src/udp_bridge.cpp:2688`
 
 ### On the test-quality question the implementer raised
 
@@ -835,3 +835,206 @@ Plan is in sync. The five new headers are listed in Files-to-Change, and the sup
 ### Governance
 
 Consequences carried: `README.md`, `doc/conceptual_overview.md`, `doc/relay_design.md`, `.agents/README.md` (test-target list, architecture note, `relay_queue_max_bytes` row) all updated. The two gaps are must-fix 2 (the inverted `remotes.<label>.name` pitfall and its missing table row) and must-fix 3 (no migration note for the re-keying). Atomic commits throughout; agent identity correct on all 43; no issue-closing keywords.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-23 19:03 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-51 at `5b81bad`
+**Addressed**: `## Local Review (Pre-Push)` (round 3, 2026-08-23 18:51 -04:00, branch at `928b962`) — 4 must-fixes, 12 suggestions
+**Commits**: `6841e97`, `f3298ef`, `0fc9e03`, `0ff79fd`, `00d8edf`, `789695c`, `2a3ba8e`, `6d2d3d2`, `b5aa98a`, `344303b`, `5eaf9f3`, `0eb2150`, `2b30ea6`, `50fc387`, `98b6f0f`, `5b81bad`
+
+### Actions
+
+Must-fixes:
+
+- [x] Duplicate-identity FAILURE returned after `socket()`/`bind()` and the six
+  services — hoisted the whole parameter-only validation block (declare
+  `remotes_list`, declare each `remotes.<label>.name`, `resolveRemoteIdentities`,
+  the FAILURE return) above the socket block, with a comment stating the rule so
+  the next parameter check lands in the right place. `configured_remote_names_`
+  population and the `remote_nodes_` loop stay where they were — they need
+  `name_` and the node, not just parameters — `src/udp_bridge.cpp:336-368`
+  (`6841e97`).
+  **Scope check requested by the review**: `on_configure` has exactly two
+  `CallbackReturn::FAILURE` returns — the give-up-threshold check at `:213` and
+  this one. Both are now above every resource acquisition. Nothing else in
+  `on_configure` returns FAILURE after acquiring anything, so there was nothing
+  to fix silently beyond scope.
+  **No test added, and why**: the property is "this early return precedes the
+  socket", which is only observable by driving a real lifecycle transition — the
+  node would have to bind a UDP port and create six services, then be
+  re-configured after a deliberate config error to prove the port is still free.
+  That is the node harness the round-2 discussion already judged
+  disproportionate for this package. `resolveRemoteIdentities` itself (the thing
+  that decides *whether* to fail) is unit-tested; what is unpinned is one call
+  site's position in the function.
+- [x] `.agents/README.md` inverted pitfall + missing table row — the pitfall
+  bullet now says the parameter IS real as of #51, what it changes, and that a
+  pre-#51 `name:` key was inert; added a `remotes.<label>.name` row to the
+  verified-parameter table (default empty, duplicate names fail `on_configure`
+  before the socket opens). Stale "node left ACTIVE" sink drop reason removed
+  from both `src/udp_bridge.cpp` (the `diagnoseRelayQueue` comment) and
+  `doc/relay_design.md`, which now names the three real `RelayDropReason`
+  values and keeps `NoDestinationDue` out of the loss list — `.agents/README.md:108,183`,
+  `src/udp_bridge.cpp:2701`, `doc/relay_design.md:294` (`f3298ef`).
+- [x] Migration note for the rename — written as a blockquote callout under
+  `remotes.<remote_label>.name` in `udp_bridge/README.md` (an upgrader reading
+  the parameter reference is who needs it), listing all six renamed surfaces
+  (per-remote `bridge_info` / `topic_statistics` topics, the two `BridgeInfo`
+  fields, `TopicStatistics.destination_node`, diagnostic task names, the five
+  services' `remote`/`name` arguments), the "the parameter was inert on jazzy
+  and the shipped example set `name: robot_a_bridge`" trap, and both remedies
+  (delete the key to keep the old names, or accept the rename). A short
+  **Upgrading:** paragraph in `doc/relay_design.md`'s identity section points at
+  it, since that is where a reader arrives from the loop-rule explanation —
+  `README.md:85-115`, `doc/relay_design.md:169-176` (`0fc9e03`).
+- [x] Security section completed with both consequences, each tied to
+  [#53](https://github.com/rolker/udp_bridge/issues/53) — the unconditional
+  `rd.destination_topic` assignment as a *redirect* (a victim keeps receiving,
+  on an attacker-chosen topic, which is quieter than a cut feed), and
+  `uncompress()`'s unbounded `uncompressed_size` allocation, stated explicitly
+  as pre-existing and **not** introduced here, with relay changing its severity
+  (the expanded payload now fans outbound to the boats' links; the bench's
+  480 kB → 488 B figure gives the ~1000x) — `doc/relay_design.md:340-361`
+  (`0ff79fd`).
+  **Recommendation, not implemented here (as instructed)**: the ratio/absolute
+  cap in `uncompress()` is worth implementing, not just documenting. It is a
+  handful of lines (reject when `uncompressed_size` exceeds an absolute ceiling
+  or a fixed multiple of the compressed size) and it is the only bound on an
+  attacker's allocation on the drain thread. It belongs to #53: it changes what
+  the bridge accepts on the wire, so a too-tight cap silently drops legitimate
+  large images, and picking the number needs the real payload-size distribution
+  — its own blast radius, separate from relay.
+
+Suggestions:
+
+- [x] Diagnostic reports the deactivate discard as fresh loss — `on_deactivate`
+  now re-baselines `last_reported_publish_drops_` / `last_reported_relay_drops_`
+  after both `stop()` calls, with a comment on the (benign) interleave with
+  `periodic_group_`; both diagnose functions' "touched only here" comments
+  corrected — `src/udp_bridge.cpp:680-692` (`00d8edf`).
+- [x] `dropped_by_queue + dropped_by_sink` could exceed `dropped_total` —
+  every counter is read once into a local in `diagnoseRelayQueue` —
+  `src/udp_bridge.cpp:2704-2718` (`789695c`).
+- [x] `rate_limited` mixed into the loss breakdown and the WARN — `breakdown()`
+  became `lossBreakdown()` (loss reasons only) plus a `rateLimited()` accessor;
+  the diagnostic publishes `rate_limited` as its own field and the WARN string
+  carries only loss reasons. Tests updated to assert the separation —
+  `include/udp_bridge/relay_drops.h:66-90`, `src/udp_bridge.cpp:2721-2726`,
+  `test/test_relay_queue.cpp:404-441` (`2a3ba8e`).
+- [x] `assert(!running_)` compiled out under NDEBUG and the assignment outside
+  the lock — both queues' `configure()` now check and assign under `mutex_` in
+  one critical section, so the ordering rests on the lock (which also
+  happens-before the worker `start()` launches) rather than on the assert; the
+  comments say so instead of claiming a guarantee they did not provide —
+  `include/udp_bridge/relay_queue.h:46-62`, `include/udp_bridge/publish_queue.h:134-149`
+  (`6d2d3d2`).
+- [x] False justification for the unlocked `configured_remote_names_` write —
+  the write is now under `remote_nodes_mutex_` like every reader, and the header
+  comment states the real hazard (a re-configure leaves the other timers
+  running) instead of the untrue "before any timer exists" —
+  `src/udp_bridge.cpp:466-474`, `include/udp_bridge/udp_bridge.h:460-466`
+  (`b5aa98a`).
+- [x] "A throttled WARN" overstates the unknown-sender signal — `relay_design.md`
+  now says what it is: once per unknown name for the process lifetime, a
+  startup-time signal, with the throttle only collapsing a burst of *different*
+  unknown senders — `doc/relay_design.md:137-147` (`344303b`).
+  (partially deferred: the suggested `DiagnosticStatus` row is **not** added —
+  it is a new continuously-published surface, needing a tracked set of unknown
+  senders and a new task in `syncDiagnosticTasks`, which is feature work beyond
+  a review fix. The doc now names it as the follow-up rather than implying the
+  WARN already covers it.)
+- [x] `add_remote` keys `remote_nodes_[request->name]` with no namespace
+  warning — logs an INFO on creation saying the argument must be the name that
+  bridge calls itself, not a local label, and a comment explains why this entry
+  point cannot detect the mistake (any string is a legitimate new remote) —
+  `src/udp_bridge.cpp:2296-2310` (`5eaf9f3`).
+- [x] A repeated label in `remotes_list` failed `on_configure` with "remotes 'a'
+  and 'a' both resolve to 'a'" — `resolveRemoteIdentities` now skips an
+  already-seen label (one parameter block, one identity, configured twice
+  idempotently as before), while a genuine two-label collision still fails.
+  New test `RelayRouting.RepeatedLabelIsIdempotentNotACollision` covers both —
+  `include/udp_bridge/remote_identity.h:65-70`, `test/test_relay_routing.cpp:184-207`
+  (`0eb2150`).
+- [x] `subscribers_` keyed by resolved topic names vs `decodeData`'s raw wire
+  key — documented in `doc/relay_design.md`'s Mechanism section: write
+  hub-carried topic names absolutely on both sides, why a relative
+  `destination:` publishes but never relays, and that `publishers_` has always
+  been keyed this way — `doc/relay_design.md:41-54` (`2b30ea6`).
+  (partially deferred: resolving the key per packet is **not** done —
+  `resolve_topic_or_service_name` on the socket-drain thread runs on every data
+  packet and would be handed an attacker-supplied name that can throw from the
+  rcl layer, turning a malformed remote topic name into a caught-and-logged
+  decode error at a new place. Changing what the receive path accepts is not a
+  review-fix-sized change; the constraint is now stated instead.)
+- [x] Empty-payload asymmetry — `build_item`'s non-relay branch now uses the
+  same `!data.empty()` guard as `materializePublishPayload`, so a wire
+  `MessageInternal` with an empty payload behaves identically whether or not a
+  relay destination exists — `src/udp_bridge.cpp:1054-1069` (`50fc387`).
+- [x] The no-loopback argument was asserted, not verified — `relay_design.md`
+  now spells out that on a hub the relay match condition implies the hub also
+  holds a forwarding subscription on the topic it republishes, making
+  `ignore_local_publications` (`src/udp_bridge.cpp:1641`) the only separator;
+  states that the evidence is empirical; and recommends the three-bridge
+  single-delivery assertion in the #18 bench harness as the place to pin it —
+  `doc/relay_design.md:107-122` (`98b6f0f`).
+- [x] `RelayDropCounters::reset()` is dead code — deleted, with a comment in its
+  place recording why the counters are monotonic and what zeroing them without
+  zeroing `last_reported_relay_drops_` would do (underflow to ~2^64, diagnostic
+  pinned at WARN). Its only caller was a test assertion, removed with it —
+  `include/udp_bridge/relay_drops.h:92-98`, `test/test_relay_queue.cpp` (`5b81bad`).
+
+### Follow-ups recommended (not filed, not implemented)
+
+- A `uncompress()` ratio/size cap under [#53](https://github.com/rolker/udp_bridge/issues/53) — see must-fix 4 above.
+- A three-bridge hub scenario in the #18 bench harness, with `label != name` on
+  the hub: pins the `on_configure` call site, the `enqueuePublish` call site and
+  the single-delivery property in one test. This is the review's own
+  recommendation from the test-quality section, restated here so it is not lost.
+- A `DiagnosticStatus` row for unknown senders — see the suggestion above.
+
+### Verification (verbatim)
+
+```
+$ ./build.sh udp_bridge
+BUILD EXIT=0
+Finished <<< udp_bridge [24.1s]
+Summary: 1 package finished [24.5s]
+  1 package had stderr output: udp_bridge
+```
+
+(stderr is the pre-existing `-Wpedantic` flexible-array-member warnings from
+`packet.h`, unchanged by this pass.)
+
+```
+$ ./test.sh udp_bridge
+TEST EXIT=0
+$ colcon test-result --verbose
+RESULT EXIT=0
+Summary: 232 tests, 0 errors, 0 failures, 14 skipped
+```
+
+231 was the floor; 232 is 231 plus
+`RelayRouting.RepeatedLabelIsIdempotentNotACollision`. No test was weakened —
+`test_relay_queue.cpp`'s edits track the `breakdown()` → `lossBreakdown()` +
+`rateLimited()` split and the removal of `reset()`, and add an assertion that
+the rate limit never appears in the loss breakdown.
+
+```
+$ pre-commit run --from-ref origin/jazzy --to-ref HEAD
+trim trailing whitespace.................................................Passed
+fix end of files.........................................................Passed
+check yaml...............................................................Passed
+check xml............................................(no files to check)Skipped
+check for merge conflicts................................................Passed
+check that executables have shebangs.................(no files to check)Skipped
+mixed line ending........................................................Passed
+check for added large files..............................................Passed
+cmake-lint...............................................................Passed
+yamllint.................................................................Passed
+don't commit to branch...................................................Passed
+```
+
+Not pushed, no PR — per the dispatch contract.
