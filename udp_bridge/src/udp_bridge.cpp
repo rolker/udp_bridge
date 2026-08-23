@@ -1000,7 +1000,14 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   // publication, and never from the drain thread (see relay_queue.h /
   // issue #10). In the ordinary single-remote deployment this is a brief
   // map lookup that returns false, so relay costs one lock and no copy.
-  const bool relay_wanted = hasRelayDestinations(topic, source_info.node_name);
+  //
+  // Set by whichever path below reaches build_item(). It is deliberately
+  // NOT probed here: the reorder-disabled fast path runs its gate first so
+  // a dropped packet costs nothing (see below), and taking
+  // subscribers_mutex_ up here would make every dropped packet pay for the
+  // probe. The reorder path has to probe before building, because a
+  // Buffer decision stores the built item.
+  bool relay_wanted = false;
 
   // Build the PublishItem the socket-drain thread hands to the publish
   // worker. Only the CPU-bound deserialize + payload copy runs here — no
@@ -1061,6 +1068,10 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
 
     if(remote_node && reorder_hold_window_ms_ > 0.0)
     {
+      // Probe before building, because a Buffer decision stores the item
+      // and it must carry its relay form with it.
+      relay_wanted = hasRelayDestinations(topic, source_info.node_name);
+
       // Reorder buffer enabled (issue #35). The payload copy happens
       // BEFORE the admit call because a Buffer decision stores the item —
       // so the "gate before payload copy costs nothing" property of the
@@ -1086,8 +1097,9 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     }
 
     // Reorder buffer disabled (window == 0): the historical fast path.
-    // Runs the gate before the payload copy so a dropped packet costs
-    // nothing. Byte-for-byte identical to pre-#35 behaviour. See
+    // Runs the gate before the payload copy AND before the relay probe, so
+    // a dropped packet costs nothing -- no copy, and no subscribers_mutex_
+    // acquisition. Byte-for-byte identical to pre-#35 behaviour. See
     // RemoteNode::admitForPublish; the high-water marks live in the
     // RemoteNode so they reset with its sequence state on remote restart.
     if(remote_node && !remote_node->admitForPublish(topic, source_info.packet_number))
@@ -1102,6 +1114,7 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
     }
   }
 
+  relay_wanted = hasRelayDestinations(topic, source_info.node_name);
   enqueuePublish(build_item());
 }
 

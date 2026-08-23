@@ -35,7 +35,12 @@ other remotes that carry the same topic:
    source_node)` takes `subscribers_mutex_` briefly and answers whether any
    remote *other than the sender* lists this topic. When false — every
    configuration in this repo today — relay costs one map lookup and no
-   payload copy. It also answers false for an **empty** `source_node` (a
+   payload copy. On the reorder-disabled fast path the probe runs *after*
+   the stale-packet gate, preserving that path's property that a dropped
+   packet costs nothing: no payload copy and no `subscribers_mutex_`
+   acquisition. The reorder path must probe before building, because a
+   Buffer decision stores the built item and it has to carry its relay
+   form with it. It also answers false for an **empty** `source_node` (a
    packet that never passed through `unwrap()`): the loop rule is a
    comparison against the sender's name, so an unnamed sender cannot be
    excluded from anything, and forwarding such a packet would fan it out to
