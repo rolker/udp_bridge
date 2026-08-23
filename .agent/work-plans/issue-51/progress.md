@@ -555,20 +555,83 @@ binary; `pre-commit` is not on PATH): all hooks Passed or Skipped
 
 ### Findings
 
-- [ ] (must-fix) `relayToOtherRemotes` never rewrites `source_topic`, so with an empty per-destination `destination_topic` the downstream bridge resolves to the upstream publisher's topic instead of the hub-local topic — reachable via `remoteAdvertise` / `decodeSubscribeRequest`, which pass `destination_topic` through with no source fallback — `src/udp_bridge.cpp:1093`
-- [ ] (must-fix) `catch(const std::exception&)` cannot catch `ConnectionException` (no base class, `connection.h:22`), which `Connection::send()` throws on the ordinary Timeout path, so relay send failures are swallowed silently by RelayQueue's `catch(...)`; the single try also wraps the whole loop, so one stalled remote aborts the relay to all the others — `src/udp_bridge.cpp:1097`
-- [ ] (must-fix) The relay probe keys on `source_info.node_name`, empty for any packet that did not pass through `unwrap()`, so an injected bare Data packet is relayed to every remote listing the topic with the loop rule inert — including in single-remote configs the doc calls "bit-for-bit unchanged" — `src/udp_bridge.cpp:937`
-- [ ] (must-fix, needs operator decision) Relay before the stale gate plus fresh hub sequence numbers makes a superseded upstream resend undetectable downstream, so older data republishes as newest; `relay_design.md`'s first bullet states the mechanism but draws the opposite conclusion — `src/udp_bridge.cpp:937`
-- [ ] (suggestion) The two `///` blocks run together, so Doxygen attaches `selectRateLimitedConnections`'s `@param` text to `hasRelayDestination` — `include/udp_bridge/destination_selection.h:33`
-- [ ] (suggestion) `relay_item.message = outer_message;` is a full payload copy on the socket-drain thread, contradicting the comment and `relay_design.md` §Mechanism — `src/udp_bridge.cpp:942`
-- [ ] (suggestion) The same-period grouping doc claim is false: grouping is map-order dependent, and `SamePeriodConnectionsSendAsAGroup` only exercises the due-first ordering — `include/udp_bridge/destination_selection.h:53`
-- [ ] (suggestion) Probe and selector disagree: `hasRelayDestination` ignores `connection_rates`, so a `period < 0` remote still costs a copy, a queue slot and a wakeup — `include/udp_bridge/destination_selection.h:75`
-- [ ] (suggestion) Relayed bytes go into the topic's statistics with no received-size seed, conflating relayed and local-origin traffic in `topic_statistics` — `src/udp_bridge.cpp:1113`
-- [ ] (suggestion) Security section omits that `source_node` is an attacker-controllable wire field, and that relayed packets occupy each Connection's `sent_packets_` resend buffer — `doc/relay_design.md`
-- [ ] (suggestion) `kRelayQueueMaxBytes` is fixed while the sibling `publish_queue_max_bytes` is a tunable parameter, though the relay queue carries the hub's whole downstream fan-out — `include/udp_bridge/udp_bridge.h:533`
-- [ ] (suggestion) Missing the `test_publish_queue` parity cases most relevant here, notably `ThrowingSinkDoesNotKillWorker` — `test/test_relay_queue.cpp`
-- [ ] (suggestion) yamllint comment-spacing/indentation warnings in the new commented block — `config/example_params.yaml:97`
+- [x] (must-fix) `relayToOtherRemotes` never rewrites `source_topic`, so with an empty per-destination `destination_topic` the downstream bridge resolves to the upstream publisher's topic instead of the hub-local topic — reachable via `remoteAdvertise` / `decodeSubscribeRequest`, which pass `destination_topic` through with no source fallback — `src/udp_bridge.cpp:1093`
+- [x] (must-fix) `catch(const std::exception&)` cannot catch `ConnectionException` (no base class, `connection.h:22`), which `Connection::send()` throws on the ordinary Timeout path, so relay send failures are swallowed silently by RelayQueue's `catch(...)`; the single try also wraps the whole loop, so one stalled remote aborts the relay to all the others — `src/udp_bridge.cpp:1097`
+- [x] (must-fix) The relay probe keys on `source_info.node_name`, empty for any packet that did not pass through `unwrap()`, so an injected bare Data packet is relayed to every remote listing the topic with the loop rule inert — including in single-remote configs the doc calls "bit-for-bit unchanged" — `src/udp_bridge.cpp:937`
+- [x] (must-fix, needs operator decision) Relay before the stale gate plus fresh hub sequence numbers makes a superseded upstream resend undetectable downstream, so older data republishes as newest; `relay_design.md`'s first bullet states the mechanism but draws the opposite conclusion — `src/udp_bridge.cpp:937`
+- [x] (suggestion) The two `///` blocks run together, so Doxygen attaches `selectRateLimitedConnections`'s `@param` text to `hasRelayDestination` — `include/udp_bridge/destination_selection.h:33`
+- [x] (suggestion) `relay_item.message = outer_message;` is a full payload copy on the socket-drain thread, contradicting the comment and `relay_design.md` §Mechanism — `src/udp_bridge.cpp:942`
+- [x] (suggestion) The same-period grouping doc claim is false: grouping is map-order dependent, and `SamePeriodConnectionsSendAsAGroup` only exercises the due-first ordering — `include/udp_bridge/destination_selection.h:53`
+- [x] (suggestion) Probe and selector disagree: `hasRelayDestination` ignores `connection_rates`, so a `period < 0` remote still costs a copy, a queue slot and a wakeup — `include/udp_bridge/destination_selection.h:75`
+- [x] (suggestion) Relayed bytes go into the topic's statistics with no received-size seed, conflating relayed and local-origin traffic in `topic_statistics` — `src/udp_bridge.cpp:1113`
+- [x] (suggestion) Security section omits that `source_node` is an attacker-controllable wire field, and that relayed packets occupy each Connection's `sent_packets_` resend buffer — `doc/relay_design.md`
+- [x] (suggestion) `kRelayQueueMaxBytes` is fixed while the sibling `publish_queue_max_bytes` is a tunable parameter, though the relay queue carries the hub's whole downstream fan-out — `include/udp_bridge/udp_bridge.h:533`
+- [x] (suggestion) Missing the `test_publish_queue` parity cases most relevant here, notably `ThrowingSinkDoesNotKillWorker` — `test/test_relay_queue.cpp`
+- [x] (suggestion) yamllint comment-spacing/indentation warnings in the new commented block — `config/example_params.yaml:97`
 
 ### Plan adherence
 
 All eight planned files changed, four atomic commits in planned order, four recorded divergences accurate and independently verified. The three-node test's "hub also locally subscribed" half is structural rather than end-to-end; accepted — relay is an added `if` with no early return, so the local path is unchanged by construction and there is no unit-testable seam without a live node. It should be a filed follow-up issue against the #18 bench harness rather than only a progress.md note. Separately, nothing tests above the pure helper: `relayToOtherRemotes`'s field rewriting and the topic round trip are untested, which is exactly where must-fix 1 sits.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-23 17:42 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-51 at `7b9f708`
+**Addressed**: `## Local Review (Pre-Push)` of 2026-08-23 01:14 -04:00 (branch at `cb3f738`), verdict changes-requested — all 4 must-fix and all 9 suggestions
+**Commits** (twelve atomic, in the order below): `0be0a66`, `3932e85`, `a9d1447`, `b6dc656`, `f7b67c5`, `c7e7462`, `7cbef5f`, `b6b0a92`, `2a7a8a0`, `0bd1982`, `6cbee45`, `7b9f708`
+
+Not pushed; no PR opened (host publishes).
+
+### Actions
+
+Must-fix:
+
+- [x] `relayToOtherRemotes` never rewrites `source_topic` — `src/udp_bridge.cpp:1093` — **fixed** (`a9d1447`). Resolved *against* the old code comment: `source_topic` is now the hub-local topic. The receiver resolves `destination_topic`, falling back to `source_topic`, and an empty `destination_topic` is ordinary (`remoteAdvertise` / `decodeSubscribeRequest` pass it through), so the old behaviour sent that fallback to the upstream publisher's topic — two boats publishing `/nav`, remapped by the hub, collide back onto `/nav`. Rewriting also makes a relayed message identical in shape to a locally-originated one (`callback()` sets `source_topic` to the sending bridge's own topic), and provenance is unaffected: the immediate sender travels in the wrapped packet's `source_node`. Field rewriting extracted to `applyRelayDestination` (new `include/udp_bridge/relay_item.h`, which also now owns `RelayItem`); comment and `doc/relay_design.md` rewritten to match. Tests: `RelayRouting.RelayRewritesSourceTopicToTheHubTopic`, `RelayRouting.RelayAppliesPerDestinationTopicAndQos`.
+- [x] `catch(const std::exception&)` cannot catch `ConnectionException`; one stalled remote aborts relay to all — `src/udp_bridge.cpp:1097` — **fixed** (`3932e85`). New `include/udp_bridge/relay_send.h::sendToEachDestination` wraps each destination individually with `ConnectionException` / `std::exception` / `...` arms and reports through an error callback; the outer handler gained a `ConnectionException` arm for the selection phase. Tests: new `test/test_relay_send.cpp` (4 cases) — `ConnectionExceptionIsCaught`, `StdExceptionAndUnknownThrowsAreAlsoReported`, `OneFailingDestinationDoesNotCancelTheOthers`, `EveryDestinationIsSentToWhenNothingThrows`.
+- [x] Loop rule inert when `source_info.node_name` is empty — `src/udp_bridge.cpp:937` — **fixed** (`0be0a66`). `hasRelayDestination` returns false for an empty sender (a rule that excludes by name excludes nobody when there is no name), and `relayToOtherRemotes` restates the guard at the sink, which is reachable independently of the probe. The packet is still published locally, exactly as before #51. Test: `RelayRouting.UnnamedSenderIsNeverRelayed`; **mutation-checked** — deleting the guard fails it.
+- [x] Relay before the stale gate (needs operator decision) — `src/udp_bridge.cpp:937` — **fixed** (`b6dc656`) per the operator's decision: **relay only what the gate admits**. `decodeData()` now only probes; the relay form rides inside the `PublishItem` as an optional `RelayItem` (null whenever relay is unreachable — every configuration in this repo today, so the ordinary path allocates nothing), which is what lets the reorder buffer carry it: a held packet keeps its relay form and is forwarded when — and only when — the buffer releases it, in wire order, and never at buffer time (it can still be dropped). `UDPBridge::enqueuePublish()` is the single admit-to-publish point and the only place a relay item reaches `relay_queue_`; every admit path goes through it (`decodeData`'s immediate path, a gap-filler's release, `flushExpiredBuffer`'s window expiry). `clearReorderBuffer` discards held packets without publishing, so those are not relayed either. Docs corrected to the new behaviour — `relay_design.md`'s ordering section rewritten (it had stated the fresh-sequence-number mechanism and drawn the opposite conclusion from it), plus `conceptual_overview.md` and `.agents/README.md`. Tests: `ReorderBufferFixture.StalePacketReleasesNoRelay`, `BufferedPacketKeepsItsRelayFormUntilRelease`, `ExpiredBufferReleaseKeepsItsRelayForm`; **mutation-checked** — resetting `item.relay` when the buffer stores the item fails two of them.
+
+Suggestions:
+
+- [x] Doxygen blocks run together — `include/udp_bridge/destination_selection.h:33` — **fixed** (`f7b67c5`): `hasRelayDestination`'s doc and definition moved above `selectRateLimitedConnections`' doc block, so each block precedes its own function. Comment reordering only.
+- [x] `relay_item.message = outer_message;` is a full payload copy on the drain thread — `src/udp_bridge.cpp:942` — **fixed** (`b6dc656`, folded into the gate-ordering restructure, which is what made it possible): `outer_message` is moved into the relay form after the serialized payload copy has been taken, so the code now does what the comment and `relay_design.md` §Mechanism claimed. The lambda is called at most once per `decodeData` invocation and nothing reads `outer_message` afterwards; noted in the comment.
+- [x] Same-period grouping doc claim is false — `include/udp_bridge/destination_selection.h:53` — **fixed** (`c7e7462`): the comment now states the grouping is iteration-order dependent (a not-yet-due connection visited before the first due one with that period is skipped). The behaviour is pre-#51 and preserved verbatim; new `RelayRouting.SamePeriodGroupingFollowsIterationOrder` pins it, since the existing case only exercised the due-first ordering.
+- [x] Probe and selector disagree on `period < 0` — `include/udp_bridge/destination_selection.h:75` — **fixed** (`7cbef5f`): the probe now applies both of the selector's *structural* filters (loop rule, `period >= 0`), so a never-send remote (or one with no connections) no longer costs a copy, a queue slot and a wakeup. It deliberately does not apply the *temporal* part of the rate limit, which owns the clock and mutates `last_sent_time`: the probe is may-send, never must-send — stated in the doc block. Tests: `ProbeAgreesWithSelectorOnNeverSendRemotes`, `ProbeIgnoresRemotesWithNoConnections`, each asserting the selector's answer as the precondition.
+- [x] Relayed bytes conflated with local-origin in `topic_statistics` — `src/udp_bridge.cpp:1113` — **documented, not restructured** (`2a7a8a0`). New `## Statistics` section in `relay_design.md` plus a code comment: the two are summed per topic, the per-destination `send_results` breakdown still separates *where* traffic went, and separating *where it came from* needs a per-source dimension in `MessageStatistics` — a `TopicStatistics` wire-format change, out of scope for #51. Keeping relayed bytes visible-but-summed beats making them invisible.
+- [x] Security section omits the attacker-controllable `source_node` and the `sent_packets_` exposure — `doc/relay_design.md` — **fixed** (`2a7a8a0`): two bullets added — `source_node` is a sender-chosen wire field (an injected packet can claim any sender, suppressing relay to that one remote and reaching the rest; an unwrapped one claims none, which is why must-fix 3 refuses those outright), and relayed packets occupy every outgoing `Connection`'s `sent_packets_` resend buffer for `kSentPacketTTL`, so injected traffic consumes downstream resend state, not just bandwidth. Both tied to open #53.
+- [x] `kRelayQueueMaxBytes` fixed while the sibling is tunable — `include/udp_bridge/udp_bridge.h:533` — **fixed** (`6cbee45`): now the `relay_queue_max_bytes` parameter, same default (64 MiB) and same 1 MiB–2 GiB clamps as `publish_queue_max_bytes`, declared and clamped identically in `on_configure`, and reported by the relay-queue diagnostic. A fixed value was a capability limit on the one queue that carries a hub's whole downstream fan-out. Separate knob rather than a reuse of `publish_queue_max_bytes` because the two queues are independent failure domains. `.agents/README.md` parameter table and `doc/relay_design.md` updated. (This reverses a plan divergence — "relay adds no configuration surface" — recorded inline in `plan.md`.)
+- [x] `test_relay_queue` missing the `test_publish_queue` parity cases — `test/test_relay_queue.cpp` — **fixed** (`b6b0a92`): added `OversizeItemEnqueuedThenEvicted`, `StopWhileSinkBlockedJoinsAfterSinkReturns`, `ThrowingSinkDoesNotKillWorker`, plus a relay-specific `ConnectionExceptionInSinkDoesNotKillWorker` — the barrier exercised against the exception the relay sink actually throws (no base class, catchable only by `catch(...)`). 4 → 8 cases.
+- [x] yamllint warnings in the new commented block — `config/example_params.yaml:97` — **partly fixed, partly declined** (`0bd1982`). Fixed: both `too few spaces before comment` warnings (lines 40 and 97). Declined: the `comments-indentation` warning on the commented second-remote block — the block is a sibling of `robot_a:` at that indentation and is the last thing in the file, so yamllint compares it against the *preceding* content (indent 16). The only ways to silence it are to indent a copy-pasteable example deeper than the level it belongs at, or to move a ~50-line commented aside ahead of the real configuration; neither is worth it for a style warning (yamllint exits 0). Not suppressed with a disable comment.
+
+### Verification
+
+Build (`./build.sh udp_bridge`, exit code read directly):
+
+```
+BUILD_EXIT=0
+Summary: 1 package finished
+```
+
+Tests (`./test.sh udp_bridge` then `colcon test-result --verbose`):
+
+```
+TEST_EXIT=0
+Summary: 209 tests, 0 errors, 0 failures, 14 skipped
+```
+
+(191 before this pass → 209; the four relay suites in the XML: `test_relay_routing` 13/13, `test_relay_queue` 8/8, `test_relay_send` 4/4, `test_reorder_buffer` 17/17, all 0 failures.)
+
+`pre-commit run --from-ref origin/jazzy --to-ref HEAD` (workspace `.venv` binary; `pre-commit` is not on PATH): all hooks Passed or Skipped (no-files-to-check) — including yamllint and check-yaml.
+
+Mutation checks run and reverted (each new behavioural guard has a test that fails without it):
+
+- Empty-sender guard deleted from `hasRelayDestination` → `RelayRouting.UnnamedSenderIsNeverRelayed` FAILED.
+- `item.relay.reset()` inserted where the reorder buffer stores the item → `BufferedPacketKeepsItsRelayFormUntilRelease` and `ExpiredBufferReleaseKeepsItsRelayForm` FAILED.
+
+### Notes for the re-review
+
+- New headers: `include/udp_bridge/relay_item.h` (`RelayItem`, moved out of `relay_queue.h`, plus `applyRelayDestination`) and `include/udp_bridge/relay_send.h` (`sendToEachDestination`). `publish_queue.h` now includes `relay_item.h` for `PublishItem::relay`.
+- `PublishItem::byte_size()` counts an attached relay form, so the publish queue's byte budget accounts for memory it actually holds. Zero effect where relay is unreachable (the pointer is null), and `test_publish_queue`'s expectations are unchanged.
+- One review note was *not* a checkbox and is left for the host: the review suggested filing a follow-up issue against the #18 bench harness for the live three-node hub scenario, rather than leaving it as a progress.md note. No issue was filed from here (no push / no GitHub writes per the handoff contract).
