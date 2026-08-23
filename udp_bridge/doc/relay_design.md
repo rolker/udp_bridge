@@ -271,12 +271,16 @@ locally-originated traffic is (`~/topic_statistics`, `BridgeInfo`), so
 relayed bytes are visible rather than invisible. Two things to know when
 reading those numbers on a hub:
 
-- **Local-origin and relayed traffic are summed per topic.** The message
-  counts and sizes for a relayed topic mix the two, so a hub's
-  `topic_statistics` for `/boat_a/nav` is not a measure of what its own
-  publishers produced. The per-destination `send_results` breakdown *is*
-  per remote, so where the traffic went is still distinguishable; where it
-  came from is not.
+- **Local-origin and relayed traffic are summed per topic**, in the
+  aggregate row and the per-destination rows alike. Both senders seed the
+  empty `send_results[""][""]` pair once per message, which is what
+  produces the `destination_node == ""` row — the topic's message count,
+  independent of how many destinations the message reached. The message
+  counts and sizes for a relayed topic therefore mix the two sources, so a
+  hub's `topic_statistics` for `/boat_a/nav` is not a measure of what its
+  own publishers produced. The per-destination `send_results` breakdown
+  *is* per remote, so where the traffic went is still distinguishable;
+  where it came from is not.
 - `message_size` for a relayed message is the received payload size
   (`MessageInternal::data`), the same quantity `callback()` records for a
   locally published one.

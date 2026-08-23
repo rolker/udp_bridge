@@ -177,6 +177,11 @@ if(BUILD_TESTING)
   # isolation via an injected sink, mirroring test_publish_queue: forwarding
   # must never stall the socket-drain thread.
   add_udp_bridge_gtest(test_relay_queue test/test_relay_queue.cpp)
+  # test_message_statistics (issue #51) pins the aggregate ("", "")
+  # statistics row that both senders seed once per message — the row that
+  # makes relayed traffic visible in a topic's overall rate rather than
+  # only in its per-destination breakdown.
+  add_udp_bridge_gtest(test_message_statistics test/test_message_statistics.cpp)
   # test_relay_send (issue #51) exercises the per-destination failure
   # isolation of the relay fan-out: ConnectionException (which has no base
   # class) is caught, and one failing remote does not cancel the others.

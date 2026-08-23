@@ -1167,6 +1167,22 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
         dc.durability        = remote_details.second.durability;
         dc.history_depth     = remote_details.second.history_depth;
       }
+
+      // Seed the aggregate ("", "") statistics row, exactly as callback()
+      // does for a locally published message. That row is the per-message
+      // count for the topic: MessageStatistics::get() emits one
+      // TopicStatistics per (destination_node, connection_id) pair it
+      // sees, so without this seed a relayed message contributes only to
+      // the per-destination rows and the topic's aggregate
+      // messages_per_second counts local publications alone. Seeded here,
+      // under the same lock and before the rate-limit check, so a relayed
+      // message counts once whether or not any destination was due --
+      // again matching callback().
+      MessageSizeData relay_size_data;
+      relay_size_data.message_size = item.message.data.size();
+      relay_size_data.timestamp = now;
+      relay_size_data.send_results[""][""];
+      sub.statistics.add(relay_size_data);
     }
 
     if(destinations.empty())

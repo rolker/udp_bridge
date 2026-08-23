@@ -25,7 +25,7 @@ dropping those exclusions.
 
 | Package | Language | Build targets (from CMakeLists.txt) |
 |---------|----------|-------------------------------------|
-| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 18 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`, `test_relay_routing`, `test_relay_queue`, `test_relay_send`) |
+| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 20 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`, `test_relay_routing`, `test_relay_queue`, `test_relay_send`, `test_unaddressed_connection`, `test_message_statistics`) |
 | `udp_bridge_interfaces` | rosidl | 13 messages + 3 services (`Subscribe`, `AddRemote`, `ListRemotes`) |
 
 `udp_bridge` depends on `rclcpp`, `rclcpp_lifecycle`, `diagnostic_updater`,
