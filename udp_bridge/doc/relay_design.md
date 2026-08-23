@@ -197,8 +197,18 @@ expires. Two things follow:
   optional `std::unique_ptr<RelayItem>` (null whenever relay is
   unreachable, which is every configuration in this repo today), so the
   `MessageInternal` the relay needs travels with the buffered item rather
-  than being reconstructed — the payload is not held a third time, and the
-  buffer needs no knowledge of relay.
+  than being reconstructed, and the buffer needs no knowledge of relay.
+- **A held packet's payload is resident once, not twice.** While the relay
+  form is attached it is the sole holder of the payload:
+  `PublishItem::message` is left empty and materialized from it
+  (`materializePublishPayload`) in `enqueuePublish()`, immediately before
+  the relay form is handed to `relay_queue_`. This matters specifically on
+  a hub — the node that concentrates traffic — because the reorder buffer
+  holds one packet per topic per remote for up to
+  `reorder_hold_window_ms`; holding both forms would double those bytes,
+  and would pay for a payload copy on packets the gate then drops. The
+  copy is deferred, not added: it still happens on the same thread, once,
+  and only for a packet that is actually published.
 
 `UDPBridge::enqueuePublish()` is the single point where an admitted item is
 handed to `publish_queue_` and its relay form, if any, to `relay_queue_`.

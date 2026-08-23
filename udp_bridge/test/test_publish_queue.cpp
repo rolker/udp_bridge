@@ -9,6 +9,8 @@
 
 #include "udp_bridge/publish_queue.h"
 
+#include <cstring>
+#include <memory>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -309,6 +311,74 @@ TEST(PublishQueue, ThrowingSinkDoesNotKillWorker)
   std::lock_guard<std::mutex> lock(m);
   ASSERT_EQ(processed.size(), 1u);
   EXPECT_EQ(processed.front(), "after");
+}
+
+// A relaying item holds its payload in ONE place at a time (issue #51).
+//
+// A hub is the node that concentrates traffic, and the reorder buffer holds
+// one packet per topic per remote for up to reorder_hold_window_ms. Keeping
+// both the publish form and the relay form of the payload resident through
+// that window would double a hub's held bytes for no benefit -- and would
+// pay for a payload copy on packets the stale/reorder gate then drops.
+// So decodeData leaves PublishItem::message empty while a relay form is
+// attached, and enqueuePublish materializes it just before handing the
+// relay form to the relay queue.
+TEST(PublishItemTest, RelayingItemHoldsThePayloadOnce)
+{
+  const std::vector<uint8_t> payload{1, 2, 3, 4, 5, 6, 7, 8};
+
+  udp_bridge::PublishItem item;
+  item.topic = "/boat_a/nav";
+  item.datatype = "nav_msgs/msg/Odometry";
+  item.relay = std::make_unique<udp_bridge::RelayItem>();
+  item.relay->topic = item.topic;
+  item.relay->source_node = "boat_a";
+  item.relay->message.data = payload;
+
+  // Waiting in the reorder buffer, the payload lives only in the relay
+  // form -- so the publish form is empty and the byte budget counts the
+  // payload once.
+  EXPECT_EQ(item.message.size(), 0u)
+    << "the payload must not be resident in both forms while held";
+  const size_t held = item.byte_size();
+
+  udp_bridge::materializePublishPayload(item);
+
+  ASSERT_EQ(item.message.size(), payload.size());
+  EXPECT_EQ(memcmp(item.message.get_rcl_serialized_message().buffer,
+                   payload.data(), payload.size()), 0)
+    << "the publish form must be a faithful copy of the relayed payload";
+  EXPECT_EQ(item.byte_size(), held + payload.size())
+    << "materializing adds exactly one payload's worth to the footprint";
+}
+
+// No relay form: the payload was copied at construction and there is
+// nothing to materialize from. Must not clobber it.
+TEST(PublishItemTest, MaterializeIsANoOpWithoutARelayForm)
+{
+  udp_bridge::PublishItem item;
+  item.topic = "/local";
+  item.message.reserve(3);
+  const uint8_t bytes[3] = {9, 8, 7};
+  memcpy(item.message.get_rcl_serialized_message().buffer, bytes, 3);
+  item.message.get_rcl_serialized_message().buffer_length = 3;
+
+  udp_bridge::materializePublishPayload(item);
+
+  ASSERT_EQ(item.message.size(), 3u);
+  EXPECT_EQ(memcmp(item.message.get_rcl_serialized_message().buffer, bytes, 3), 0);
+}
+
+// An empty payload is a legal message; materializing it must not read from
+// a null data pointer or leave a stale length behind.
+TEST(PublishItemTest, EmptyRelayedPayloadMaterializesEmpty)
+{
+  udp_bridge::PublishItem item;
+  item.relay = std::make_unique<udp_bridge::RelayItem>();
+  item.relay->topic = "/empty";
+
+  udp_bridge::materializePublishPayload(item);
+  EXPECT_EQ(item.message.size(), 0u);
 }
 
 int main(int argc, char **argv)

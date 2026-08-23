@@ -1005,10 +1005,18 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
   // only after the gate.
   auto build_item = [&]() {
     PublishItem item;
-    item.message.reserve(outer_message.data.size());
-    memcpy(item.message.get_rcl_serialized_message().buffer,
-           outer_message.data.data(), outer_message.data.size());
-    item.message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
+    // Only the non-relay path copies the payload here. When a relay form is
+    // attached below it takes ownership of the whole MessageInternal, and
+    // item.message is materialized from it at enqueuePublish() time
+    // (materializePublishPayload) so the payload is never resident twice
+    // while the item waits in the reorder buffer -- see publish_queue.h.
+    if(!relay_wanted)
+    {
+      item.message.reserve(outer_message.data.size());
+      memcpy(item.message.get_rcl_serialized_message().buffer,
+             outer_message.data.data(), outer_message.data.size());
+      item.message.get_rcl_serialized_message().buffer_length = outer_message.data.size();
+    }
 
     item.topic = topic;
     item.datatype = outer_message.datatype;
@@ -1018,10 +1026,9 @@ void UDPBridge::decodeData(std::vector<uint8_t> const &message, const SourceInfo
 
     // Attach the relay form, when there is somewhere to relay to. The move
     // is safe -- and is why this is not a plain copy of outer_message
-    // (which would duplicate the whole payload on the drain thread): the
-    // payload copy above has already been taken, this lambda is called at
-    // most once per decodeData call, and nothing reads outer_message
-    // afterwards.
+    // (which would duplicate the whole payload on the drain thread): this
+    // lambda is called at most once per decodeData call, and nothing reads
+    // outer_message afterwards.
     if(relay_wanted)
     {
       item.relay = std::make_unique<RelayItem>();
@@ -1271,6 +1278,11 @@ void UDPBridge::enqueuePublish(PublishItem&& item)
   // only when) the buffer releases it, in the same wire order.
   if(item.relay)
   {
+    // The relay form has been the sole holder of the payload since
+    // decodeData built the item, so the publish copy is taken here -- once,
+    // on an admitted packet only, and never concurrently with the relay
+    // form sitting in the reorder buffer (see publish_queue.h).
+    materializePublishPayload(item);
     relay_queue_.push(std::move(*item.relay));
     item.relay.reset();
   }
