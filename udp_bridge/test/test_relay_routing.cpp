@@ -244,8 +244,8 @@ TEST(RelayRouting, NegativeAndZeroPeriodsPreserved)
 }
 
 // Also preserved: connections that share a period are sent as a group. Once
-// one connection with period P is due, every other connection with period P
-// goes out with it rather than skewing to its own schedule.
+// one connection with period P is due, later connections with period P go
+// out with it rather than skewing to their own schedule.
 TEST(RelayRouting, SamePeriodConnectionsSendAsAGroup)
 {
   std::map<std::string, RemoteDetails> table;
@@ -313,6 +313,32 @@ TEST(RelayRouting, RelayAppliesPerDestinationTopicAndQos)
   EXPECT_EQ(message.reliability, "best_effort");
   EXPECT_EQ(message.durability, "volatile");
   EXPECT_EQ(message.history_depth, 1u);
+}
+
+// ...and the grouping is order-dependent, which is worth pinning rather
+// than assuming away: a not-yet-due connection encountered BEFORE the first
+// due one with the same period is not pulled into the group. Same table as
+// the test above with the ids swapped, so iteration (by connection id)
+// reaches the recently-sent connection first.
+TEST(RelayRouting, SamePeriodGroupingFollowsIterationOrder)
+{
+  std::map<std::string, RemoteDetails> table;
+  RemoteDetails details;
+  details.destination_topic = "/status";
+  ConnectionRateInfo recent;
+  recent.period = 1.0f;
+  recent.last_sent_time = kT0;
+  ConnectionRateInfo due;
+  due.period = 1.0f;
+  due.last_sent_time = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  details.connection_rates["a"] = recent;  // visited first: not due, skipped
+  details.connection_rates["b"] = due;     // visited second: due, selected
+  table["operator"] = details;
+
+  auto selected = selectRateLimitedConnections(table, kT0);
+  ASSERT_EQ(selected.count("operator"), 1u);
+  EXPECT_EQ(selected["operator"], (std::vector<std::string>{"b"}))
+    << "grouping only pulls in connections visited after the first due one";
 }
 
 int main(int argc, char **argv)

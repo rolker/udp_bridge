@@ -80,10 +80,17 @@ inline bool hasRelayDestination(
 ///   - period == 0 means "no rate limit".
 ///   - Otherwise a connection is due when it has never been sent to
 ///     (last_sent_time == 0) or `now - last_sent_time > period`.
-///   - `periods` groups connections that share a period: once ANY
-///     connection with period P has been selected in this call, every other
-///     connection with the same P is selected too, so a message fans out to
-///     same-rate connections as one group rather than skewing between them.
+///   - `periods` groups connections that share a period: once a connection
+///     with period P has been selected in this call, every LATER connection
+///     (in `connection_rates` iteration order, i.e. by connection id) with
+///     the same P is selected too, so same-rate connections fan out
+///     together rather than skewing between them.
+///
+///     The grouping is deliberately described as order-dependent, because
+///     it is: a not-yet-due connection encountered *before* the first due
+///     one with the same period is skipped, and only the connections after
+///     it join the group. Pre-#51 behaviour, preserved verbatim — noted
+///     here so the asymmetry is not mistaken for a guarantee.
 ///   - Every selected connection's last_sent_time is set to `now`.
 ///
 /// @param remote_details the routing table for one topic
