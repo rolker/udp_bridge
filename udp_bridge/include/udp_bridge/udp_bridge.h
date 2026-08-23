@@ -534,12 +534,17 @@ private:
   // Same, for the relay queue (issue #51).
   uint64_t last_reported_relay_drops_ {0};
 
-  // Byte budget for relay_queue_. A constant, not a parameter: relay adds
-  // no configuration surface (the per-remote topics_list is the whole
-  // routing table). Sized like the publish queue's default — one
-  // reassembled image is large, and the queue must absorb a link stall of a
-  // few seconds without discarding a burst.
-  static constexpr size_t kRelayQueueMaxBytes = 64u * 1024u * 1024u;
+  // Byte budget for relay_queue_ (issue #51). A ROS parameter for the same
+  // reason publish_queue_max_bytes is one: it is the memory this node may
+  // hold when an outgoing link stalls, and on a hub the relay queue carries
+  // the whole downstream fan-out, so the right size depends on the
+  // deployment — a fixed constant would be a capability limit no operator
+  // could lift without a rebuild. Same default and the same clamps as the
+  // publish queue (see kDefaultPublishQueueMaxBytes); relay drops are
+  // unrecoverable, so the budget wants headroom for a link stall of a few
+  // seconds rather than a tight fit. Set once per configure, read by
+  // relay_queue_.configure().
+  size_t relay_queue_max_bytes_ {kDefaultPublishQueueMaxBytes};
 
   // Decouples the rmw-touching tail of decodeData from the socket-drain
   // thread (issue #10). configure()'d in on_configure, start()'ed in

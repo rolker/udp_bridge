@@ -212,8 +212,13 @@ a stalled local subscriber and a stalled remote link are independent
 failure domains; sharing one worker would put `Connection::send()`'s retry
 loop in front of local republishes.
 
-Its byte budget is the compile-time constant `kRelayQueueMaxBytes` (64 MiB)
-rather than a parameter — relay adds no configuration surface. Drops are
+Its byte budget is the `relay_queue_max_bytes` parameter (default 64 MiB,
+clamped 1 MiB–2 GiB — the same default and clamps as
+`publish_queue_max_bytes`). It is a parameter, not a constant, for the same
+reason its sibling is: it bounds the memory this node holds when a consumer
+stalls, and on a hub the relay queue carries the whole downstream fan-out,
+so the right size is a deployment question. The two are separate knobs
+because the queues are separate failure domains. Drops are
 visible: the `relay queue` diagnostic task reports depth and drop totals and
 WARNs on drops since the previous tick. A relay drop is **unrecoverable** —
 the message never reached a `Connection`, so the resend layer has nothing

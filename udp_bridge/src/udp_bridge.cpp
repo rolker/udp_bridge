@@ -251,6 +251,36 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   RCLCPP_INFO_STREAM(get_logger(),
     "publish_queue_max_bytes: " << publish_queue_max_bytes_);
 
+  // Relay-queue byte budget (issue #51). Same shape, same clamps and the
+  // same default as publish_queue_max_bytes above -- the two queues are the
+  // same component bounding the same kind of exposure (memory held while a
+  // consumer stalls), but they are independent failure domains and a hub
+  // sizes its downstream fan-out separately from its local republishing.
+  declareIfMissing("relay_queue_max_bytes",
+    static_cast<int64_t>(kDefaultPublishQueueMaxBytes));
+  {
+    int64_t configured = get_parameter("relay_queue_max_bytes").as_int();
+    if(configured < static_cast<int64_t>(kMinPublishQueueMaxBytes))
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "relay_queue_max_bytes " << configured << " is below "
+        << kMinPublishQueueMaxBytes << "; clamping to "
+        << kMinPublishQueueMaxBytes);
+      configured = static_cast<int64_t>(kMinPublishQueueMaxBytes);
+    }
+    else if(configured > static_cast<int64_t>(kMaxPublishQueueMaxBytes))
+    {
+      RCLCPP_WARN_STREAM(get_logger(),
+        "relay_queue_max_bytes " << configured << " is above "
+        << kMaxPublishQueueMaxBytes << "; clamping to "
+        << kMaxPublishQueueMaxBytes);
+      configured = static_cast<int64_t>(kMaxPublishQueueMaxBytes);
+    }
+    relay_queue_max_bytes_ = static_cast<size_t>(configured);
+  }
+  RCLCPP_INFO_STREAM(get_logger(),
+    "relay_queue_max_bytes: " << relay_queue_max_bytes_);
+
   on_set_parameters_handle_ = add_on_set_parameters_callback(
     [this](const std::vector<rclcpp::Parameter>& params)
         -> rcl_interfaces::msg::SetParametersResult
@@ -575,13 +605,12 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   // Configure the relay worker (issue #51) on the same terms: it forwards
   // only while ACTIVE, so it is started in on_activate and stopped in
-  // on_deactivate. Its byte budget is a compile-time constant rather than
-  // a parameter -- relay adds no configuration surface; the routing table
-  // is the per-remote topics_list and nothing else (see
+  // on_deactivate. Its byte budget is its own parameter: a hub's downstream
+  // fan-out is sized independently of its local republishing (see
   // doc/relay_design.md).
   relay_queue_.configure(
     [this](RelayItem&& item){ relayToOtherRemotes(std::move(item)); },
-    kRelayQueueMaxBytes);
+    relay_queue_max_bytes_);
 
   return LifecycleNode::on_configure(state);
 }
@@ -2509,7 +2538,7 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   stat.add("queued_items", depth);
   stat.add("dropped_total", dropped);
   stat.add("dropped_since_last_tick", recent);
-  stat.add("max_bytes", static_cast<uint64_t>(kRelayQueueMaxBytes));
+  stat.add("max_bytes", static_cast<uint64_t>(relay_queue_max_bytes_));
 
   // A relay drop is unrecoverable loss for the downstream remotes: the
   // message was never handed to a Connection, so the resend layer has

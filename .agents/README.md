@@ -77,7 +77,7 @@ callback groups whose invariants are documented at the top of
   carries the same topic, for hub topologies (`boat → hub → operators`).
   Same reason for the thread: `Connection::send()`'s `sendto()` can retry for
   ~200 ms, which must not happen on the socket drain. Bounded by the
-  compile-time `kRelayQueueMaxBytes` (64 MiB — deliberately not a parameter);
+  `relay_queue_max_bytes` (default 64 MiB, clamped 1 MiB–2 GiB);
   drops oldest under back-pressure and reports them in the `relay queue`
   diagnostic. Only messages the stale-packet / reorder gate ADMITS are
   relayed: the relay form rides along inside the `PublishItem` (an optional
@@ -104,6 +104,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 | `reorder_hold_window_ms` | `0.0` | Reorder/jitter buffer hold window (ms), global (#35); `0.0` = disabled. When > 0 (and `drop_stale_packets` on), a gap-opening packet is held up to this window so an out-of-order gap-filler publishes first; clamped 0–500 ms |
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
+| `relay_queue_max_bytes` | 64 MiB | Byte budget for the relay worker queue (#51); clamped 1 MiB–2 GiB, same default and clamps as `publish_queue_max_bytes` |
 | `remotes_list` | `[]` | Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
 
 See `config/example_params.yaml` for the nested structure.
