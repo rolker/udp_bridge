@@ -163,6 +163,39 @@ not re-derives them.
   path-segment constraint documented (steps 1, 7), unknown-sender WARN fixed
   (step 4).
 
+## Implementation Divergences (kept in sync during implementation)
+
+The plan was followed as written. Five things it did not name were needed
+and are in the commits:
+
+1. **`resolveRemoteIdentities` collapses repeats in its return value.** The
+   plan said "return `std::vector<std::string>` (valid labels)" without
+   saying what a repeated entry yields. It returns first-seen order with
+   repeats collapsed — the same shape the old `identity_by_label` map had —
+   so `configured_remote_names_` and the remote-construction loop are
+   unchanged in behaviour. `RepeatedLabelIsIdempotentNotACollision` now
+   asserts the collapse explicitly.
+2. **Two stale cross-references to the deleted collision check** had to be
+   fixed outside the plan's file list: `include/udp_bridge/packet.h` (~56)
+   and `test/test_node_name_limits.cpp`'s header comment both said
+   truncation would reopen "the collision `resolveRemoteIdentities` exists
+   to reject". Both now state the hazard without naming a check that is
+   gone. `.agents/README.md` and `doc/relay_design.md` carried the same
+   sentence and are fixed in the doc commit.
+3. **A second new test, `AbsentRemoteNameParameterIsSilent`.** The plan
+   asked only for `StaleRemoteNameParameterWarns`. Asserting the counter is
+   1 when the key is set proves nothing unless something also pins that it
+   is 0 when the key is absent — otherwise an unconditional increment
+   passes. The negative case is what makes the accessor a real assertion.
+4. **The stale-key WARN counter is reset at the top of `on_configure`**,
+   not merely incremented, so a re-configure reports the current config
+   rather than an accumulating total.
+5. **`README.md`'s empty/self-name paragraph (~164)** also described the
+   rejection in terms of "an empty `remotes_list` entry with no `name`
+   set". The plan named the `remotes.<remote_label>.name` description, the
+   #51 upgrade note and the node-name-length note; this fourth passage
+   needed the same retargeting.
+
 ## Estimated Scope
 
 Single PR — one coherent reversal (2 source files, 2 test files, 4 docs);
