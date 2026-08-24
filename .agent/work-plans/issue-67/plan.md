@@ -76,9 +76,18 @@ not re-derives them.
      `.remote("robot_a", kOtherAtLimit)`.
    - Add `StaleRemoteNameParameterWarns`: `.remote("robot_a",
      "some_stale_name").configure()` still returns `kInactive` (WARN, not
-     FAILURE); assert a WARN log mentioning `robot_a` and
-     `remotes.robot_a.name` fires (check `test_stale_packet_gate.cpp` for
-     this repo's existing WARN-assertion pattern before picking a method).
+     FAILURE).
+
+     **Do not assert on log text.** No test in this package captures log
+     content, and the one logging-adjacent test does the opposite — it
+     *silences* the logger and asserts through an accessor instead
+     (`test_remote_node_resend.cpp:838-852`, whose own comment reads: "the
+     cap-enforcement assertion uses `dispatchMissWarnedIdCountForTest`, not
+     log inspection"). Follow that convention: expose a small
+     `staleRemoteNameKeyCountForTest()` (or equivalently-named accessor)
+     incremented where the WARN is emitted, and assert on it. That is
+     stable against wording changes, needs no stderr capture, and matches
+     how this repo already tests "did we notice X".
 7. **Docs** (Issue Review confirmed all four are in-scope, deeper than a
    one-line fix):
    - `doc/relay_design.md` — rewrite the identity-namespace section
@@ -90,9 +99,14 @@ not re-derives them.
      real parameter as of #51" → declared-but-unread, WARN on non-empty)
      and the parameter table row (108).
    - `README.md` — rewrite the `remotes.<remote_label>.name` description
-     (~88) and its #51 upgrade note (~97–120); leave the node-name-length
-     upgrade note (~122–129) as-is (unaffected) but confirm it doesn't name
-     `resolveRemoteIdentity`.
+     (~88) and its #51 upgrade note (~97–120). The node-name-length upgrade
+     note (~122–129) is **also affected**, contrary to an earlier draft of
+     this plan: it states that an over-long `remotes.<label>.name` fails the
+     configure transition, which stops being true once that key is read only
+     to warn about. Rewrite it so the rejection is described where it still
+     applies — the node's own `name`, the `remotes_list` label, and the
+     `add_remote` service — and so a stale over-long `.name` is described as
+     warned-about, not rejected.
    - `config/example_params.yaml` — remove the commented `# name: "robot_a"`
      example (~63) and the "identity on the wire is `remotes.<label>.name`"
      prose (~34); generalize the existing operator_1 note (~158) into the
