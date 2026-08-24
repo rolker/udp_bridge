@@ -478,13 +478,14 @@ private:
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
 
-  /// Wire identities of the statically-configured remotes (issue #51) —
-  /// `remotes.<label>.name` where set, else the `remotes_list` label; see
+  /// Wire identities of the statically-configured remotes (issues #51,
+  /// #67) — the `remotes_list` labels, which ARE the wire names; see
   /// remote_identity.h. Used only to recognise, and warn about, traffic
   /// from a sender that matches no configured remote: on a static config
-  /// that is the visible symptom of a label/`name` mismatch, which makes
-  /// the relay loop rule compare two different namespaces and lets the hub
-  /// echo a remote's own traffic back to it. Populated in on_configure,
+  /// that is the visible symptom of a label that is not what the peer
+  /// calls itself, which makes the relay loop rule compare two different
+  /// strings and lets the hub echo a remote's own traffic back to it.
+  /// Populated in on_configure,
   /// cleared in on_cleanup, and read on the socket-drain path — all three
   /// under remote_nodes_mutex_. The write is *not* race-free by timing: on
   /// a re-configure only diagnostic_timer_ was reset in on_cleanup, so the

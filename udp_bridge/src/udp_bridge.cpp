@@ -337,37 +337,106 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       return result;
     });
 
-  // Remote-identity validation runs here, ahead of every resource this
-  // callback acquires: it needs only parameters, and a CallbackReturn::FAILURE
-  // leaves the node UNCONFIGURED *without* calling on_cleanup. Returning after
-  // the socket would leak the bound port, so the operator's natural remedy —
-  // fix `remotes.<label>.name` and re-configure — would hit EADDRINUSE on the
-  // bind below and exit(1). Keep every parameter-only failure path above the
-  // socket block for the same reason (issue #51).
+  // Remote-identity validation runs here, ahead of the socket: it needs only
+  // parameters, and a CallbackReturn::FAILURE leaves the node UNCONFIGURED
+  // *without* calling on_cleanup. Returning after the socket would leak the
+  // bound port, so the operator's natural remedy — fix the `remotes_list`
+  // entry and re-configure — would hit EADDRINUSE on the bind below and
+  // exit(1). Keep every parameter-only failure path above the socket block
+  // for the same reason (issue #51).
+  //
+  // "Ahead of the socket", not ahead of everything: on_set_parameters_handle_
+  // is already acquired at :288 (on_cleanup resets it), and a mistyped YAML
+  // scalar can still throw out of the connections/topics loops after the bind
+  // — rclcpp_lifecycle swallows that exception, so it is not an explicit
+  // failure path and this ordering does not protect it.
   declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
 
-  // Resolve each remote's wire identity before anything is keyed by it
-  // (issue #51). `remotes_list` entries are labels — they spell parameter
-  // paths — while `remotes.<label>.name` is the name that remote calls
-  // itself on the wire. Everything a static config creates
-  // (remote_nodes_, subscribers_[topic].remote_details) must be keyed by
-  // the latter, because that is what arrives in WrappedPacket::source_node
-  // and what the relay loop rule compares against. See remote_identity.h.
-  std::vector<std::pair<std::string, std::string> > labels_and_names;
+  // A `remotes_list` entry IS the name that remote calls itself on the
+  // wire (issue #67): it spells the remote's parameter paths AND keys
+  // everything a static config creates (remote_nodes_,
+  // subscribers_[topic].remote_details), which is what must match the
+  // arriving WrappedPacket::source_node for the relay loop rule to work.
+  // Validate the labels before anything is keyed by them. See
+  // remote_identity.h.
+  //
+  // `remotes.<label>.name` is retired but still DECLARED: rclcpp surfaces a
+  // YAML override only for a declared parameter (this node does not set
+  // automatically_declare_parameters_from_overrides), so declaring it is
+  // the only way to SEE a stale key left in a config written before #67.
+  // Its value is never used for identity — and a non-empty one now fails
+  // the transition rather than merely warning.
+  //
+  // Rejecting is not tidiness. Warning would leave exactly one config shape
+  // — a stale value that differs from its label — announced and then
+  // ignored, and that shape is the #51 echo bug: the hub keys the routing
+  // table by the label, the peer stamps the other string into
+  // WrappedPacket::source_node, the relay loop rule's string compare never
+  // matches, and the hub relays that remote's own traffic back to it. Every
+  // other identity error below fails; this one is no different. There is
+  // also no carve-out for a stale value that happens to EQUAL its label:
+  // the parameter is removed and unsupported, so setting it at all is a
+  // configuration error, and one uniform rule is what an operator can hold
+  // in their head.
+  //
+  // An explicitly empty value (`name: ""`) is indistinguishable from an
+  // absent key, because the declared default is the empty string. Non-empty
+  // is what "present" means here.
+  //
+  // Report EVERY offending key, not just the first, so a hub carrying three
+  // stale keys does not cost three edit-and-retry cycles to discover three
+  // lines of YAML.
+  //
+  // Note this failure returns before socket()/bind() below, so recovery IS
+  // just edit-and-reconfigure — no restart needed. (An earlier version of
+  // this comment claimed a restart was required, borrowing the EADDRINUSE
+  // note from the message below. That note is about RENAMING an entry on an
+  // already-configured node, which is a different situation: there the
+  // socket is already bound. Keep every parameter-only check above the
+  // socket so that stays true.)
+  std::string retired_keys;
   for(const auto& remote_label: remotes_list)
   {
     std::string name_param = "remotes." + remote_label + ".name";
     declareIfMissing(name_param, std::string());
-    labels_and_names.emplace_back(remote_label, get_parameter(name_param).as_string());
+    auto retired_name = get_parameter(name_param).as_string();
+    if(retired_name.empty())
+      continue;
+    if(!retired_keys.empty())
+      retired_keys += ", ";
+    retired_keys += name_param + " = '" + retired_name + "'";
   }
+  if(!retired_keys.empty())
+  {
+    RCLCPP_ERROR_STREAM(get_logger(), "config sets " << retired_keys
+      << " but remotes.<label>.name was REMOVED in issue #67 and is no"
+         " longer supported: a remotes_list entry is itself the name that"
+         " remote calls itself on the wire. Delete every key listed above,"
+         " and make each remote's remotes_list entry the name that peer"
+         " calls itself — renaming its remotes.<label>.* parameter paths"
+         " with it. Fixing this error itself needs only a re-configure —"
+         " this check runs before the socket is created. But a RENAME on an"
+         " already-configured node takes effect only in a fresh process:"
+         " nothing ever closes the bound socket, so on a fixed (non-zero)"
+         " port a deactivate/cleanup/configure cycle re-binds the same port,"
+         " gets EADDRINUSE and exit(1)s at the bind (issue #66). With"
+         " port: 0 the kernel picks a fresh ephemeral port and the cycle"
+         " succeeds, but every peer must then be told the new port. Under"
+         " the shipped launch file (respawn=True) the process comes back on"
+         " its own, so on a fixed port the outcome is an unplanned restart"
+         " rather than a graceful rename.");
+    return CallbackReturn::FAILURE;
+  }
+
   std::string identity_error;
-  auto identity_by_label = resolveRemoteIdentities(labels_and_names, name_,
+  auto remote_identities = resolveRemoteIdentities(remotes_list, name_,
                                                    &identity_error);
   if(!identity_error.empty())
   {
-    // Fail loud: a duplicate identity silently overwrites a remote's
-    // connections and rate limits in every map keyed by it.
+    // Fail loud: an unrepresentable identity puts the relay loop rule to
+    // sleep for that remote, and a remote keyed by our own name lets the
+    // receive path accept our own packets as a peer's.
     RCLCPP_ERROR_STREAM(get_logger(), "remote configuration: " << identity_error);
     return CallbackReturn::FAILURE;
   }
@@ -473,17 +542,20 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     configured_remote_names_.clear();
-    for(const auto& entry: identity_by_label)
-      configured_remote_names_.insert(entry.second);
+    configured_remote_names_.insert(remote_identities.begin(),
+                                    remote_identities.end());
   }
 
-  for(auto remote_name: remotes_list)
+  // Iterate the RESOLVED identities, not the raw remotes_list: a repeated
+  // entry would otherwise construct and update the same RemoteNode twice
+  // (two DDS publishers created and then discarded when the second
+  // assignment replaces the first, plus a duplicate getaddrinfo). The end
+  // state was already correct either way, but "a repeated entry is
+  // idempotent" should be true of the work as well as the result.
+  for(auto remote_name: remote_identities)
   {
     Remote remote_info;
-    remote_info.name = identity_by_label.at(remote_name);
-    if(remote_info.name != remote_name)
-      RCLCPP_INFO_STREAM(get_logger(), "remote '" << remote_name
-        << "' is known on the wire as '" << remote_info.name << "'");
+    remote_info.name = remote_name;
     // Insert under remote_nodes_mutex_, matching every reader (spin_once,
     // decode, sendBridgeInfo, the diagnostics). Benign on a first
     // configure, a data race on a re-configure: on_cleanup resets only
@@ -1776,11 +1848,11 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
           return;
         }
         // Loud on the misconfiguration that silently defeats the relay
-        // loop rule (issue #51): a statically-configured remote whose own
-        // `name` differs from the hub's `remotes_list` label for it
-        // arrives here as an unrecognised sender, gets a second
+        // loop rule (issues #51, #67): a statically-configured remote
+        // whose own name differs from the hub's `remotes_list` entry for
+        // it arrives here as an unrecognised sender, gets a second
         // RemoteNode of its own, and — because subscribers_ keyed that
-        // remote by the *label* — is excluded from nothing when its
+        // remote by the *entry* — is excluded from nothing when its
         // traffic is relayed, so the hub echoes it straight back. A
         // genuinely dynamic remote (CONNECT / add_remote / a subscribe
         // request from an unconfigured host) also lands here and is
@@ -1791,7 +1863,7 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
           RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 10000,
             "packet from '" << source_node
             << "' which matches no configured remote. If this is a remote in"
-               " remotes_list, set remotes.<label>.name to '"
+               " remotes_list, rename its remotes_list entry to '"
             << source_node
             << "' — otherwise relayed traffic can be sent back to it.");
         remote = std::make_shared<RemoteNode>(source_node, name_, *this);

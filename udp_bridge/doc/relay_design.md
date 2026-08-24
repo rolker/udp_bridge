@@ -156,43 +156,114 @@ stamps into every `WrappedPacket::source_node`). `remote_nodes_` is keyed
 by it, and every routing-table key a static config creates is keyed by it
 too.
 
-`remotes_list` entries are **labels**, not identities — they exist to spell
-parameter paths (`remotes.<label>.connections_list`). The identity of a
-configured remote is `remotes.<label>.name`, falling back to the label when
-unset (see `include/udp_bridge/remote_identity.h`). Two labels resolving to
-the same name fail `on_configure`, so does a remote resolving to the
-bridge's **own** name (that entry would install a `RemoteNode` for
-ourselves, and `unwrap()`'s refusal of our own packets only runs when the
-lookup misses — a successful one walks past it; `RemoteNode`'s own guard is
-an `assert`, compiled out of release builds), and the first sequenced packet
-from a sender that matches no configured remote logs a WARN naming the
-parameter to set.
+A `remotes_list` entry **is** that name (see
+`include/udp_bridge/remote_identity.h`). It is simultaneously the label
+that spells the remote's parameter paths
+(`remotes.<label>.connections_list`) and the identity everything a static
+config creates is keyed by. So the constraint that was always implicit is
+the whole rule: **your label for a peer must be the name that peer calls
+itself.** A remote whose entry equals the bridge's **own** name fails
+`on_configure` (that entry would install a `RemoteNode` for ourselves, and
+`unwrap()`'s refusal of our own packets only runs when the lookup misses —
+a successful one walks past it; `RemoteNode`'s own guard is an `assert`,
+compiled out of release builds), and the first sequenced packet from a
+sender that matches no configured remote logs a WARN naming the entry to
+rename.
 
 Note what that WARN is and is not. The branch it sits in runs only while
 the sender has no `RemoteNode`, so it fires **once per unknown name for the
 process lifetime** — it is a startup-time signal, not a recurring one, and
 an operator who missed it (or whose logs have rolled) will not see it
 again. The throttle on it only collapses a burst of *different* unknown
-senders. Making the condition continuously visible would mean a
+senders. It is also **skipped entirely when no remote is statically
+configured** (`configured_remote_names_` empty): with nothing to compare
+against, every sender is unknown, so a purely dynamic bridge — one whose
+remotes all arrive by CONNECT, `add_remote` or an inbound subscribe
+request — would warn about every peer it has. So the absence of the WARN
+is not evidence that identities agree; it is only meaningful on a config
+that lists remotes. Making the condition continuously visible would mean a
 `DiagnosticStatus` row for it; that is deliberately left as a follow-up
 rather than added here.
 
 This is worth stating because it was wrong until it was fixed as part of
 #51: `on_configure` keyed everything by the label and never read
-`remotes.<label>.name`, so a remote whose own name differed from the hub's
-label for it matched nothing in the loop rule and had its traffic relayed
-straight back to it — with a **single** remote configured, the shape relay
-is supposed to leave inert. If you are reading this to check whether relay
-can perturb an existing deployment, that invariant (label == the remote's
-own `name`, or `name` set explicitly) is the thing to verify.
+`remotes.<label>.name` — documented as the remote's wire name — so a remote
+whose own name differed from the hub's label for it matched nothing in the
+loop rule and had its traffic relayed straight back to it, with a
+**single** remote configured, the shape relay is supposed to leave inert.
+If you are reading this to check whether relay can perturb an existing
+deployment, that invariant (every entry equals the remote's own `name`) is
+the thing to verify.
 
-**Upgrading:** because `remotes.<label>.name` was never declared before
-#51, a `name:` key in an existing params file was inert — and the shipped
-example set one. Where that key differs from the label, #51 renames every
-surface keyed by the remote (per-remote topics, `BridgeInfo` /
-`TopicStatistics` fields, diagnostic task names, and the `remote` / `name`
-service arguments). See the upgrade note under `remotes.<remote_label>.name`
-in [`README.md`](../README.md#parameters) before upgrading a live config.
+**Where the second namespace came from, and why it is gone (#67).** The
+ROS 1 bridge had no labels: `remotes` was a nested parameter dictionary
+iterated directly, a remote's name was the dictionary KEY, and a `name:`
+member inside the block could override it. ROS 2's parameter model is flat,
+so the port had to manufacture `remotes_list` plus `remotes.<label>.*`
+paths to express the same shape; the label is that artefact, and the
+override rode along with it. #51 made the override authoritative to close
+the echo bug above; #67 retired it instead, because the split was never
+wanted. This is the deliberate retirement of a working ROS 1 feature, not
+the repair of an accident — a `name:` key in an old config did once do
+something.
+
+**What retirement costs.** An entry is now both a wire identity (at most
+23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2 uses `.` to
+separate segments. A peer whose wire name contains a `.` is **still
+configurable**, but only by nesting its parameters as if the dot were a
+level boundary:
+
+```yaml
+remotes_list: ["boat.one"]
+remotes:
+  boat:
+    one:                 # not `boat.one:` — the dot is a path separator
+      connections_list: ["link"]
+```
+
+That resolves `remotes.boat.one.connections_list` correctly (verified), but
+the file then reads as a nested structure rather than as one peer named
+`boat.one`. Before #67 such a name could be given flatly via
+`remotes.<label>.name`. No known configuration uses one; prefer names
+without `.` so the config says what it means.
+
+**Upgrading:** `remotes.<label>.name` is still *declared* — rclcpp surfaces
+a YAML override only for a declared parameter, and that is the only way a
+config still carrying the key can be seen at all — but it is never read for
+identity, and a non-empty value **fails `on_configure`**. The failure
+returns before the socket is opened, alongside the other identity
+rejections, so a refused config leaks no bound port.
+
+Rejection rather than a warning is deliberate. A warning would leave one
+config shape running: a value that *differs* from its label. That shape is
+the echo bug above, reintroduced silently at the moment of upgrade — the
+hub keys the routing table by the label while the peer stamps the other
+string into `source_node`. There is no carve-out for a value that equals
+its label either: the parameter is removed and unsupported, so its presence
+is the error, not its effect.
+
+A config that set it and relied on #51's behaviour must delete the key and
+rename the `remotes_list` entry (and its `remotes.<label>.*` paths) to the
+peer's wire name; that renames every surface keyed by the remote (per-remote
+topics, `BridgeInfo` / `TopicStatistics` fields, diagnostic task names, and
+the `remote` / `name` service arguments).
+
+**A rename takes effect only in a fresh process — restart the node.**
+Nothing ever closes the bound socket — `on_cleanup` does not touch
+`socket_`, there is no destructor, and `SO_REUSEADDR` is never set — so on a
+fixed port (which is every deployed config) a deactivate→cleanup→configure
+cycle re-binds the same port, gets `EADDRINUSE` and `exit(1)`s at the bind,
+before any of the renamed state is built. The shipped
+`launch/udp_bridge_launch.py` runs the node with `respawn=True,
+respawn_delay=2`, so the process returns by itself: the practical result of
+re-configuring instead of restarting is an unplanned restart, not a graceful
+rename. Closing the socket in `on_cleanup` is issue
+[#66](https://github.com/rolker/udp_bridge/issues/66); pruning the stale
+`remote_nodes_` / `subscribers_` entries there is the other half of the same
+follow-up, and neither is something the current code does.
+
+See the upgrade note under `remotes.<remote_label>.name` in
+[`README.md`](../README.md#parameters) before upgrading a live config.
 
 ### The identity must be *representable*, so over-long names are rejected
 
@@ -207,8 +278,8 @@ all. That is what manufactured the mismatch — two things that are supposed
 to be equal were made unequal, the loop rule went inert, and the operator
 found out by watching the hub echo. Truncating *both* sides would not have
 been enough either: it would leave two configured names differing only
-after character 23 collapsing onto one wire identity, which is exactly the
-collision `resolveRemoteIdentities` exists to reject.
+after character 23 collapsing onto one wire identity, silently merging two
+remotes' connections and rate limits in every map keyed by it.
 
 So an over-long name is now **rejected, never shortened**, at every path a
 name enters by:
@@ -216,7 +287,7 @@ name enters by:
 | path | behaviour |
 |---|---|
 | the `name` parameter (`setName`) | `on_configure` returns `FAILURE` |
-| `remotes.<label>.name`, or the label when it is unset | `on_configure` returns `FAILURE` |
+| a `remotes_list` entry (the remote's identity) | `on_configure` returns `FAILURE` |
 | the `add_remote` service | refused with an ERROR; no remote is created |
 | `WrappedPacket`'s constructor | still clamps — a last line of defence a validated config can no longer reach |
 
@@ -245,8 +316,8 @@ cannot mean what the config says it means:
 
 | identity | why it is refused |
 |---|---|
-| **this bridge's own name** | it installs a `RemoteNode` for ourselves in `remote_nodes_`, and `unwrap()`'s self-packet refusal only runs when the lookup *misses* — so once the entry exists the bridge accepts its own traffic as a peer's. `RemoteNode`'s constructor asserts, but asserts are compiled out of the release build this would be met in |
-| **the empty string** | `""` is a reserved sentinel on the send path, where an empty remote name marks a connection request rather than a message to a named remote. A remote filed under it is silently unroutable, and no arriving packet can match it either, since the wire always carries the sender's real name |
+| **this bridge's own name** (a `remotes_list` entry equal to the `name` parameter) | it installs a `RemoteNode` for ourselves in `remote_nodes_`, and `unwrap()`'s self-packet refusal only runs when the lookup *misses* — so once the entry exists the bridge accepts its own traffic as a peer's. `RemoteNode`'s constructor asserts, but asserts are compiled out of the release build this would be met in |
+| **the empty string** (an empty `remotes_list` entry) | `""` is a reserved sentinel on the send path, where an empty remote name marks a connection request rather than a message to a named remote. A remote filed under it is silently unroutable, and no arriving packet can match it either, since the wire always carries the sender's real name |
 
 Both fail `on_configure` (`resolveRemoteIdentities`). The self-name rule is
 also enforced by the `add_remote` service, which refuses with an ERROR and

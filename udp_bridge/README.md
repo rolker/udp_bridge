@@ -82,27 +82,54 @@ ros2 run udp_bridge udp_bridge_node --ros-args --params-file src/udp_bridge/udp_
 -   `maximum_packet_size`: (integer, 256–65500, default **1200**) Maximum packet size used when sending data. The default is sized for a tunnelled link rather than the IPv4/UDP maximum: WireGuard over cellular commonly runs MTU 1280, leaving 1252 bytes of usable UDP payload, and 1200 fits with headroom. Anything larger is IP-fragmented by the kernel before it reaches the link — and IP fragments are not individually recoverable, so udp_bridge's resend machinery cannot repair one: a single lost IP fragment discards the entire datagram. Let the bridge fragment instead. Raise this only for a path whose end-to-end MTU has been verified.
 
     > **Behavior change (#58):** the unconfigured default dropped from `65500` to `1200`. This is strictly safer (avoids unrecoverable IP fragmentation) and affects only deployments that relied on the implicit default — every in-workspace deployment already sets this explicitly and is unaffected. Raise it back in your own config if you have a verified larger end-to-end MTU.
--   `remotes_list`: (string array) List of labels for initial remote nodes.
+-   `remotes_list`: (string array) List of initial remote nodes. Each entry
+    is both the label spelling that remote's parameter paths below **and**
+    the name that remote calls *itself* on the wire, so: **your label for a
+    peer must be the name that peer calls itself** (its own `name`
+    parameter, which it stamps into every packet it sends). An entry that is
+    empty, longer than 23 characters, or equal to this bridge's own `name`
+    fails `on_configure`, validated before the socket is opened; a repeated
+    entry is idempotent, as it always was.
 
 For each remote in `remotes_list`:
--   `remotes.<remote_label>.name`: (string, default empty) The name that
-    remote calls *itself* on the wire — its own `name` parameter, which it
-    stamps into every packet it sends. Leave it unset (the default) when the
-    `remotes_list` label already equals that name, which is the usual case;
-    set it when your local label for a remote differs from the name that
-    remote uses. Two remotes resolving to the same name fail `on_configure`
-    (validated before the socket is opened). The resolved name — not the
-    label — is what the bridge keys remotes by; see the upgrade note below.
+-   `remotes.<remote_label>.name`: **removed (#67), and setting it for a
+    remote listed in `remotes_list` is a configuration error.** A non-empty
+    value fails `on_configure` with one ERROR listing every offending key and
+    its value — all of them, not just the first, since recovery costs a
+    process restart. Only the labels in
+    `remotes_list` are checked — a `remotes.<label>.name` under a block that
+    `remotes_list` does not name is never declared and never read, and that
+    whole block is inert for the same reason. The parameter is still
+    *declared* — rclcpp surfaces a YAML override only for a parameter the
+    node declares, so declaring it is the only way a config still carrying
+    the key can be detected at all — but it is never read for identity. Delete it from your config; the
+    `remotes_list` entry is the remote's wire name. (An explicitly empty
+    value, `name: ""`, is indistinguishable from an absent key — the
+    declared default is the empty string — so it configures normally.)
 
-    > **Upgrade note (#51) — check for a stale `name:` key before upgrading.**
-    > Before #51 this parameter was never declared, so a `name:` key in a
-    > params file was silently ignored and the `remotes_list` label was used
-    > everywhere. The shipped `config/example_params.yaml` set
-    > `label: robot_a` with `name: "robot_a_bridge"`, so a config copied from
-    > it carries an inert key that #51 makes live. **If any of your remotes
-    > has a `remotes.<label>.name` whose value differs from the label**, then
-    > on upgrade everything keyed by that remote is renamed from the label to
-    > the `name:` value:
+    > **Upgrade note (#67) — the second identity namespace is gone.** Two
+    > ways of naming a remote (the `remotes_list` label for parameter paths,
+    > `remotes.<label>.name` for the wire) were an artefact of porting ROS
+    > 1's nested `remotes` dictionary — where the dictionary key *was* the
+    > name, with an optional `name:` override inside the block — onto ROS
+    > 2's flat parameter model, which had to manufacture a label to spell
+    > `remotes.<label>.*` paths. #51 made the override authoritative to fix
+    > the echo bug below; #67 retires it, so there is one string per remote
+    > again. This is a deliberate retirement of a working feature, not the
+    > repair of an accident.
+    >
+    > **If any remote in your `remotes_list` sets `remotes.<label>.name` at
+    > all**, the bridge refuses to configure until you delete the key —
+    > including when the value happens to equal its label and would have
+    > changed nothing. The parameter is removed and unsupported; it is
+    > rejected on presence, not on whether it would have altered an
+    > identity. It is a hard failure rather than a warning because the one
+    > shape a warning would leave running — a value *differing* from its label — is precisely the echo
+    > bug below, silently reintroduced on upgrade.
+    >
+    > Where the old value was the peer's real wire name, rename the
+    > `remotes_list` entry (and its `remotes.<label>.*` paths) to it, which
+    > renames everything keyed by that remote:
     >
     > - the per-remote topics `~/remotes/<remote>/bridge_info` and
     >   `~/remotes/<remote>/topic_statistics`;
@@ -113,11 +140,38 @@ For each remote in `remotes_list`:
     >   `remote_advertise`, `remove_subscribe`, `remove_advertise` and
     >   `add_remote`.
     >
+    > **Restart the node after a rename — do not re-configure a running
+    > one.** Nothing in the package ever closes the bound socket
+    > (`on_cleanup` does not touch `socket_`, there is no destructor, and
+    > `SO_REUSEADDR` is never set), so on every fixed-port deployment a
+    > deactivate→cleanup→configure cycle re-binds the same port, gets
+    > `EADDRINUSE` and `exit(1)`s at the bind — before the rename can reach
+    > the routing table at all (issue
+    > [#66](https://github.com/rolker/udp_bridge/issues/66)). The shipped
+    > `launch/udp_bridge_launch.py` sets `respawn=True, respawn_delay=2`,
+    > so the process does come back; the outcome is an unplanned restart
+    > rather than a graceful re-configure. A fresh process starts from an
+    > empty table, which is what the rename needs.
+    >
     > Anything that consumes those (dashboards, scripts, launch-time service
-    > calls) must use the new name. If you did **not** intend the rename,
-    > delete or comment out the `name:` key and the label is used as before.
-    > If the key was correct all along, note that the loop rule and relay
-    > routing now actually work for that remote — that is the fix #51 shipped.
+    > calls) must use the entry. A remote left under the wrong entry is the
+    > #51 bug again: the relay loop rule compares the wire `source_node`
+    > against the configured identity, matches nothing, and the hub can
+    > relay that remote's own traffic back to it. The bridge WARNs on the
+    > first sequenced packet from a sender matching no configured remote —
+    > but only when `remotes_list` is non-empty, since on a purely dynamic
+    > bridge every sender is unknown by definition. See
+    > [`doc/relay_design.md`](doc/relay_design.md).
+    >
+    > **What is retired with it.** An entry is now both a wire identity
+    > (≤23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2 uses `.`
+    > to separate segments. A peer whose wire name contains a `.` is still
+    > configurable, but only by nesting its parameters as if the dot were a
+    > level boundary — `remotes_list: ["boat.one"]` with `remotes: boat:
+    > one: …`, which resolves correctly but reads as a nested structure
+    > rather than one name. Before #67 it could be given flatly via
+    > `remotes.<label>.name`. No known configuration uses such a name;
+    > prefer names without `.`.
 
     > **Upgrade note (#51) — node names longer than 23 characters now fail
     > `on_configure`.** The on-wire `source_node` field is 24 bytes, so 23
@@ -126,11 +180,14 @@ For each remote in `remotes_list`:
     > leaving configured remote names untruncated — which is what made the two
     > unequal, put the relay loop rule to sleep, and let the hub echo. An
     > over-long name is now **rejected, not shortened**, wherever one can be
-    > supplied: the `name` parameter and any `remotes.<label>.name` (or a
-    > `remotes_list` label used as the identity) fail the configure transition
-    > with a message naming the parameter, the value, its length and the limit;
-    > the `add_remote` service refuses the request with an ERROR and creates no
-    > remote. A config that previously started with a truncation warning will
+    > supplied: the `name` parameter and any `remotes_list` entry fail the
+    > configure transition with a message naming the parameter, the value,
+    > its length and the limit; the `add_remote` service refuses the request
+    > with an ERROR and creates no remote. (A `remotes.<label>.name` key is
+    > not among them since #67 — whatever its length, it is refused on
+    > *presence*, because the parameter is removed rather than merely
+    > length-checked.) A config that previously
+    > started with a truncation warning will
     > now refuse to configure — that config only ever worked if you had
     > hand-truncated the peer's name to match. Shorten the name on both bridges.
     > Names arriving *from the wire* are not rejected (a long one arrives
@@ -138,13 +195,12 @@ For each remote in `remotes_list`:
     > read with an explicit length bound instead.
     >
     > Two further names are refused for the same reason — they cannot mean
-    > what the config says they mean. A remote resolving to **this bridge's
-    > own name** fails `on_configure`, and is refused by `add_remote` with an
-    > ERROR: it would install this bridge in `remote_nodes_` as its own peer.
-    > An **empty** resolved name (an empty `remotes_list` entry with no
-    > `name` set) fails `on_configure` too: the empty name is reserved on the
-    > send path to mark a connection request, so such a remote could never be
-    > routed to.
+    > what the config says they mean. A `remotes_list` entry equal to **this
+    > bridge's own name** fails `on_configure`, and is refused by
+    > `add_remote` with an ERROR: it would install this bridge in
+    > `remote_nodes_` as its own peer. An **empty** entry fails
+    > `on_configure` too: the empty name is reserved on the send path to
+    > mark a connection request, so such a remote could never be routed to.
 -   `remotes.<remote_label>.connections_list`: (string array) List of named connections.
 
 For each connection in `connections_list`:
