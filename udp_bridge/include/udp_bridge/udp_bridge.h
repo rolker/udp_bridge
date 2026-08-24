@@ -76,6 +76,21 @@ public:
   /// called when a packet is received.
   void spin_once();
 
+  /// How many `remotes.<label>.name` keys `on_configure` found set to a
+  /// non-empty value and warned about (issue #67). The key is retired: it
+  /// is still declared, because rclcpp only surfaces a YAML override for a
+  /// declared parameter, but it is read only to produce that warning.
+  ///
+  /// Exposed for tests. Nothing in this package asserts on log content —
+  /// the one logging-adjacent test silences the logger and asserts through
+  /// an accessor instead (see `RemoteNode::dispatchMissWarnedIdCountForTest`
+  /// and test_remote_node_resend.cpp) — so the stale-key warning is pinned
+  /// the same way, which is stable against wording changes.
+  std::size_t staleRemoteNameKeyCountForTest() const
+  {
+    return stale_remote_name_key_count_;
+  }
+
 private:
   /// Sets the node name as seen by other udp_bridge nodes.
   ///
@@ -478,18 +493,25 @@ private:
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
 
-  /// Wire identities of the statically-configured remotes (issue #51) —
-  /// `remotes.<label>.name` where set, else the `remotes_list` label; see
+  /// Wire identities of the statically-configured remotes (issues #51,
+  /// #67) — the `remotes_list` labels, which ARE the wire names; see
   /// remote_identity.h. Used only to recognise, and warn about, traffic
   /// from a sender that matches no configured remote: on a static config
-  /// that is the visible symptom of a label/`name` mismatch, which makes
-  /// the relay loop rule compare two different namespaces and lets the hub
-  /// echo a remote's own traffic back to it. Populated in on_configure,
+  /// that is the visible symptom of a label that is not what the peer
+  /// calls itself, which makes the relay loop rule compare two different
+  /// strings and lets the hub echo a remote's own traffic back to it.
+  /// Populated in on_configure,
   /// cleared in on_cleanup, and read on the socket-drain path — all three
   /// under remote_nodes_mutex_. The write is *not* race-free by timing: on
   /// a re-configure only diagnostic_timer_ was reset in on_cleanup, so the
   /// other timers survive and keep firing while on_configure runs.
   std::set<std::string> configured_remote_names_;
+
+  /// Count of non-empty, retired `remotes.<label>.name` keys seen by the
+  /// most recent on_configure (issue #67). Written only there, before any
+  /// worker thread that could read it exists; see
+  /// staleRemoteNameKeyCountForTest().
+  std::size_t stale_remote_name_key_count_ = 0;
 
   // Per-remote diagnostic state for the resend-give-up rate
   // computation (issue #22). Guarded by remote_nodes_mutex_ —

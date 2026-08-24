@@ -52,8 +52,8 @@ inline std::string truncate_connection_id(const std::string& id)
 // and silently shortening one of them makes them unequal, which puts the
 // relay loop rule to sleep and makes the hub echo. Truncation also lets two
 // configured names that differ only after this many characters collapse to
-// one wire identity, which is precisely the collision
-// `resolveRemoteIdentities` exists to reject. Every path a name enters the
+// one wire identity, silently merging two remotes' connections and rate
+// limits in every map keyed by it. Every path a name enters the
 // bridge by therefore REJECTS an over-long name loudly (on_configure fails,
 // the add_remote service refuses) rather than shortening it, so the
 // remaining truncation in `WrappedPacket`'s constructor is a last-line-of-

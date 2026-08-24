@@ -11,8 +11,8 @@
 // things that are supposed to be equal unequal — the rule went inert and
 // the hub echoed a sender's own traffic back to it. Truncating BOTH sides
 // would not have been enough either: two configured names differing only
-// after character 23 would then collapse onto one wire identity, which is
-// exactly the collision `resolveRemoteIdentities` exists to reject.
+// after character 23 would then collapse onto one wire identity, silently
+// merging two remotes' connections and rate limits.
 //
 // So an over-long name is rejected, loudly, and never shortened. These
 // tests drive the real lifecycle transition rather than the predicates
@@ -71,10 +71,15 @@ public:
     return *this;
   }
 
-  Bridge& remote(const std::string& label, const std::string& wire_name)
+  // `label` is the remote's identity: since #67 a remotes_list entry IS
+  // the name that remote calls itself on the wire. `stale_name` sets the
+  // retired `remotes.<label>.name` key, which on_configure declares only so
+  // rclcpp surfaces the override and it can warn the key is inert. Pass ""
+  // for every test that is not specifically about that warning.
+  Bridge& remote(const std::string& label, const std::string& stale_name)
   {
     labels_.push_back(label);
-    node_->declare_parameter("remotes." + label + ".name", wire_name);
+    node_->declare_parameter("remotes." + label + ".name", stale_name);
     return *this;
   }
 
@@ -108,16 +113,9 @@ TEST(NodeNameLimits, OverLongLocalNameFailsToConfigure)
 }
 
 // A configured remote identity. Untruncated before #51, so it could never
-// equal the (truncated) name arriving on the wire from that remote.
-TEST(NodeNameLimits, OverLongRemoteNameFailsToConfigure)
-{
-  Bridge bridge("over_long_remote_name");
-  EXPECT_EQ(bridge.name("hub").remote("robot_a", kTooLong).configure(),
-            kUnconfigured);
-}
-
-// A `remotes_list` label is the identity when no `name` is set, so it is
-// bounded by the same limit.
+// equal the (truncated) name arriving on the wire from that remote. Since
+// #67 the `remotes_list` entry is the only way to spell that identity, so
+// this one test covers the whole configure-time path.
 TEST(NodeNameLimits, OverLongRemoteLabelFailsToConfigure)
 {
   Bridge bridge("over_long_remote_label");
@@ -129,7 +127,7 @@ TEST(NodeNameLimits, OverLongRemoteLabelFailsToConfigure)
 TEST(NodeNameLimits, MaximumLengthNamesConfigure)
 {
   Bridge bridge("maximum_length_names");
-  EXPECT_EQ(bridge.name(kAtLimit).remote("robot_a", kOtherAtLimit).configure(),
+  EXPECT_EQ(bridge.name(kAtLimit).remote(kOtherAtLimit, "").configure(),
             kInactive)
     << "a name at the limit is representable and must be accepted";
 }
@@ -139,20 +137,44 @@ TEST(NodeNameLimits, MaximumLengthNamesConfigure)
 // refusal (which only runs when the lookup misses) stopped protecting us.
 // RemoteNode's constructor asserts on it -- and asserts are compiled out of
 // release builds, so the field build was the one without the guard. It now
-// fails the transition instead.
-TEST(NodeNameLimits, RemoteWithOurOwnNameFailsToConfigure)
-{
-  Bridge bridge("remote_with_our_own_name");
-  EXPECT_EQ(bridge.name("hub").remote("robot_a", "hub").configure(),
-            kUnconfigured)
-    << "a bridge must not be configured as its own remote";
-}
-
-// The same, via a `remotes_list` label used as the identity.
+// fails the transition instead. Since #67 the `remotes_list` entry is the
+// only way to spell a remote's identity, so this one test covers the whole
+// configure-time path.
 TEST(NodeNameLimits, RemoteLabelMatchingOurOwnNameFailsToConfigure)
 {
   Bridge bridge("remote_label_matching_our_name");
-  EXPECT_EQ(bridge.name("hub").remote("hub", "").configure(), kUnconfigured);
+  EXPECT_EQ(bridge.name("hub").remote("hub", "").configure(), kUnconfigured)
+    << "a bridge must not be configured as its own remote";
+}
+
+// `remotes.<label>.name` is retired (#67) but still declared, because
+// rclcpp surfaces a YAML override only for a declared parameter. A config
+// written before #67 therefore still carries it, and the bridge must come
+// up -- warning that the key is inert -- rather than fail or, worse,
+// silently honour it.
+//
+// The assertion goes through staleRemoteNameKeyCountForTest(), not the log.
+// Nothing in this package captures log content; the one logging-adjacent
+// test silences the logger and asserts through an accessor for exactly this
+// reason (test_remote_node_resend.cpp, dispatchMissWarnedIdCountForTest).
+// An accessor is also stable against wording changes.
+TEST(NodeNameLimits, StaleRemoteNameParameterWarns)
+{
+  Bridge bridge("stale_remote_name_parameter");
+  ASSERT_EQ(bridge.name("hub").remote("robot_a", "some_stale_name")
+              .configure(),
+            kInactive)
+    << "a stale name key is inert, not a configuration failure";
+  EXPECT_EQ(bridge.node()->staleRemoteNameKeyCountForTest(), 1u)
+    << "a non-empty remotes.<label>.name must be warned about";
+}
+
+// The counterpart: an unset key is the normal case and must say nothing.
+TEST(NodeNameLimits, AbsentRemoteNameParameterIsSilent)
+{
+  Bridge bridge("absent_remote_name_parameter");
+  ASSERT_EQ(bridge.name("hub").remote("robot_a", "").configure(), kInactive);
+  EXPECT_EQ(bridge.node()->staleRemoteNameKeyCountForTest(), 0u);
 }
 
 // `add_remote` is the one path that creates a remote at runtime from an

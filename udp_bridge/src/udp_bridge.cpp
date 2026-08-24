@@ -341,33 +341,51 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // callback acquires: it needs only parameters, and a CallbackReturn::FAILURE
   // leaves the node UNCONFIGURED *without* calling on_cleanup. Returning after
   // the socket would leak the bound port, so the operator's natural remedy —
-  // fix `remotes.<label>.name` and re-configure — would hit EADDRINUSE on the
-  // bind below and exit(1). Keep every parameter-only failure path above the
-  // socket block for the same reason (issue #51).
+  // fix the `remotes_list` entry and re-configure — would hit EADDRINUSE on
+  // the bind below and exit(1). Keep every parameter-only failure path above
+  // the socket block for the same reason (issue #51).
   declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
 
-  // Resolve each remote's wire identity before anything is keyed by it
-  // (issue #51). `remotes_list` entries are labels — they spell parameter
-  // paths — while `remotes.<label>.name` is the name that remote calls
-  // itself on the wire. Everything a static config creates
-  // (remote_nodes_, subscribers_[topic].remote_details) must be keyed by
-  // the latter, because that is what arrives in WrappedPacket::source_node
-  // and what the relay loop rule compares against. See remote_identity.h.
-  std::vector<std::pair<std::string, std::string> > labels_and_names;
+  // A `remotes_list` entry IS the name that remote calls itself on the
+  // wire (issue #67): it spells the remote's parameter paths AND keys
+  // everything a static config creates (remote_nodes_,
+  // subscribers_[topic].remote_details), which is what must match the
+  // arriving WrappedPacket::source_node for the relay loop rule to work.
+  // Validate the labels before anything is keyed by them. See
+  // remote_identity.h.
+  //
+  // `remotes.<label>.name` is retired but still DECLARED: rclcpp surfaces a
+  // YAML override only for a declared parameter (this node does not set
+  // automatically_declare_parameters_from_overrides), so declaring it is
+  // the only way to see — and warn about — a stale key left in a config
+  // written before #67. Its value is never used for identity.
+  stale_remote_name_key_count_ = 0;
   for(const auto& remote_label: remotes_list)
   {
     std::string name_param = "remotes." + remote_label + ".name";
     declareIfMissing(name_param, std::string());
-    labels_and_names.emplace_back(remote_label, get_parameter(name_param).as_string());
+    auto stale_name = get_parameter(name_param).as_string();
+    if(stale_name.empty())
+      continue;
+    ++stale_remote_name_key_count_;
+    RCLCPP_WARN_STREAM(get_logger(), name_param << " is set to '" << stale_name
+      << "' but is no longer read (issue #67): a remotes_list entry is"
+         " itself the name that remote calls itself on the wire. This"
+         " remote is being configured as '" << remote_label << "'. If '"
+      << stale_name << "' is what it calls itself, rename the remotes_list"
+         " entry (and its remotes.<label>.* parameter paths) to '"
+      << stale_name << "'; otherwise delete the stale name key.");
   }
+
   std::string identity_error;
-  auto identity_by_label = resolveRemoteIdentities(labels_and_names, name_,
+  auto remote_identities = resolveRemoteIdentities(remotes_list, name_,
                                                    &identity_error);
   if(!identity_error.empty())
   {
-    // Fail loud: a duplicate identity silently overwrites a remote's
-    // connections and rate limits in every map keyed by it.
+    // Fail loud: an unrepresentable identity puts the relay loop rule to
+    // sleep for that remote, and a remote keyed by our own name lets the
+    // receive path accept our own packets as a peer's.
     RCLCPP_ERROR_STREAM(get_logger(), "remote configuration: " << identity_error);
     return CallbackReturn::FAILURE;
   }
@@ -473,17 +491,14 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   {
     std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
     configured_remote_names_.clear();
-    for(const auto& entry: identity_by_label)
-      configured_remote_names_.insert(entry.second);
+    configured_remote_names_.insert(remote_identities.begin(),
+                                    remote_identities.end());
   }
 
   for(auto remote_name: remotes_list)
   {
     Remote remote_info;
-    remote_info.name = identity_by_label.at(remote_name);
-    if(remote_info.name != remote_name)
-      RCLCPP_INFO_STREAM(get_logger(), "remote '" << remote_name
-        << "' is known on the wire as '" << remote_info.name << "'");
+    remote_info.name = remote_name;
     // Insert under remote_nodes_mutex_, matching every reader (spin_once,
     // decode, sendBridgeInfo, the diagnostics). Benign on a first
     // configure, a data race on a re-configure: on_cleanup resets only
@@ -1776,11 +1791,11 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
           return;
         }
         // Loud on the misconfiguration that silently defeats the relay
-        // loop rule (issue #51): a statically-configured remote whose own
-        // `name` differs from the hub's `remotes_list` label for it
-        // arrives here as an unrecognised sender, gets a second
+        // loop rule (issues #51, #67): a statically-configured remote
+        // whose own name differs from the hub's `remotes_list` entry for
+        // it arrives here as an unrecognised sender, gets a second
         // RemoteNode of its own, and — because subscribers_ keyed that
-        // remote by the *label* — is excluded from nothing when its
+        // remote by the *entry* — is excluded from nothing when its
         // traffic is relayed, so the hub echoes it straight back. A
         // genuinely dynamic remote (CONNECT / add_remote / a subscribe
         // request from an unconfigured host) also lands here and is
@@ -1791,7 +1806,7 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
           RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 10000,
             "packet from '" << source_node
             << "' which matches no configured remote. If this is a remote in"
-               " remotes_list, set remotes.<label>.name to '"
+               " remotes_list, rename its remotes_list entry to '"
             << source_node
             << "' — otherwise relayed traffic can be sent back to it.");
         remote = std::make_shared<RemoteNode>(source_node, name_, *this);
