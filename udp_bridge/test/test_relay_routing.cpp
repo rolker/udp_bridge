@@ -252,6 +252,15 @@ TEST(RelayRouting, RepeatedLabelIsIdempotentNotACollision)
   EXPECT_EQ(identities[1], "operator_1");
 
   // The repeat is collapsed, not carried twice, so downstream keys it once.
+  //
+  // on_configure's remote-construction loop iterates THIS return value, not
+  // the raw remotes_list it was given — otherwise a repeated entry builds and
+  // updates the same RemoteNode twice (two DDS publishers created and then
+  // discarded, plus a duplicate getaddrinfo) before the second assignment
+  // collapses the state. The end state is correct either way, which is why
+  // that ran unnoticed until Copilot flagged it on PR #68; keep the loop on
+  // the collapsed list so idempotence holds for the work, not just the
+  // result. No node-level harness exists to pin the loop itself.
   error.clear();
   auto repeated_only = resolveRemoteIdentities({"robot_a", "robot_a"}, "",
                                                &error);

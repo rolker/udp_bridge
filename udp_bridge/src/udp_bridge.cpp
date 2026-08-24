@@ -535,7 +535,13 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
                                     remote_identities.end());
   }
 
-  for(auto remote_name: remotes_list)
+  // Iterate the RESOLVED identities, not the raw remotes_list: a repeated
+  // entry would otherwise construct and update the same RemoteNode twice
+  // (two DDS publishers created and then discarded when the second
+  // assignment replaces the first, plus a duplicate getaddrinfo). The end
+  // state was already correct either way, but "a repeated entry is
+  // idempotent" should be true of the work as well as the result.
+  for(auto remote_name: remote_identities)
   {
     Remote remote_info;
     remote_info.name = remote_name;
