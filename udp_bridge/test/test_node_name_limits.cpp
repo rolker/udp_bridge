@@ -72,14 +72,15 @@ public:
   }
 
   // `label` is the remote's identity: since #67 a remotes_list entry IS
-  // the name that remote calls itself on the wire. `stale_name` sets the
-  // retired `remotes.<label>.name` key, which on_configure declares only so
-  // rclcpp surfaces the override and it can warn the key is inert. Pass ""
-  // for every test that is not specifically about that warning.
-  Bridge& remote(const std::string& label, const std::string& stale_name)
+  // the name that remote calls itself on the wire. `retired_name` sets the
+  // removed `remotes.<label>.name` key, which on_configure declares only so
+  // rclcpp surfaces the override and it can REFUSE a config that still
+  // carries it. Pass "" for every test that is not specifically about that
+  // refusal -- an empty value is indistinguishable from an absent key.
+  Bridge& remote(const std::string& label, const std::string& retired_name)
   {
     labels_.push_back(label);
-    node_->declare_parameter("remotes." + label + ".name", stale_name);
+    node_->declare_parameter("remotes." + label + ".name", retired_name);
     return *this;
   }
 
@@ -147,34 +148,62 @@ TEST(NodeNameLimits, RemoteLabelMatchingOurOwnNameFailsToConfigure)
     << "a bridge must not be configured as its own remote";
 }
 
-// `remotes.<label>.name` is retired (#67) but still declared, because
-// rclcpp surfaces a YAML override only for a declared parameter. A config
-// written before #67 therefore still carries it, and the bridge must come
-// up -- warning that the key is inert -- rather than fail or, worse,
-// silently honour it.
+// `remotes.<label>.name` was REMOVED in #67. It is still declared, because
+// rclcpp surfaces a YAML override only for a declared parameter -- which is
+// the only way a config that still carries the key can be detected at all.
+// A non-empty value fails the transition: warning would leave the one shape
+// that reintroduces the #51 echo (a value differing from its label) merely
+// announced, while every other identity error refuses to come up.
 //
-// The assertion goes through staleRemoteNameKeyCountForTest(), not the log.
-// Nothing in this package captures log content; the one logging-adjacent
-// test silences the logger and asserts through an accessor for exactly this
-// reason (test_remote_node_resend.cpp, dispatchMissWarnedIdCountForTest).
-// An accessor is also stable against wording changes.
-TEST(NodeNameLimits, StaleRemoteNameParameterWarns)
+// These drive the real lifecycle transition. The refusal is directly
+// observable in the state the node lands in, so no test accessor is needed
+// (the earlier warn-only behaviour needed one, since nothing in this
+// package captures log content).
+TEST(NodeNameLimits, RetiredRemoteNameParameterFailsToConfigure)
 {
-  Bridge bridge("stale_remote_name_parameter");
-  ASSERT_EQ(bridge.name("hub").remote("robot_a", "some_stale_name")
+  Bridge bridge("retired_remote_name_param");
+  EXPECT_EQ(bridge.name("hub").remote("robot_a", "some_other_name")
               .configure(),
-            kInactive)
-    << "a stale name key is inert, not a configuration failure";
-  EXPECT_EQ(bridge.node()->staleRemoteNameKeyCountForTest(), 1u)
-    << "a non-empty remotes.<label>.name must be warned about";
+            kUnconfigured)
+    << "a removed, unsupported parameter must fail the transition, not be"
+       " honoured or ignored";
 }
 
-// The counterpart: an unset key is the normal case and must say nothing.
-TEST(NodeNameLimits, AbsentRemoteNameParameterIsSilent)
+// No carve-out for the redundant case. A stale value equal to its label
+// changes no identity, but the parameter is removed and unsupported, so
+// setting it at all is a configuration error -- and one uniform rule is
+// what an operator can hold in their head.
+TEST(NodeNameLimits, RetiredRemoteNameMatchingItsLabelStillFailsToConfigure)
+{
+  Bridge bridge("retired_name_equals_label");
+  EXPECT_EQ(bridge.name("hub").remote("robot_a", "robot_a").configure(),
+            kUnconfigured)
+    << "the retired key is rejected on presence, not on whether it would"
+       " have changed the identity";
+}
+
+// The counterpart, and the reason the rejection is a real assertion: an
+// absent key is the normal case and must configure cleanly. An explicitly
+// empty value is indistinguishable from an absent one -- the declared
+// default is the empty string -- so this covers both.
+TEST(NodeNameLimits, AbsentRemoteNameParameterConfiguresCleanly)
 {
   Bridge bridge("absent_remote_name_parameter");
-  ASSERT_EQ(bridge.name("hub").remote("robot_a", "").configure(), kInactive);
-  EXPECT_EQ(bridge.node()->staleRemoteNameKeyCountForTest(), 0u);
+  EXPECT_EQ(bridge.name("hub").remote("robot_a", "").configure(), kInactive)
+    << "a config that does not set the retired key must come up";
+}
+
+// The third member of the entry-validation family (over-long and self-name
+// have had lifecycle tests since #51). An empty entry is the one input that
+// makes on_configure declare `"remotes..name"` before validating, so the
+// step is worth driving through the real transition rather than only
+// through resolveRemoteIdentities in test_relay_routing.cpp.
+TEST(NodeNameLimits, EmptyRemoteLabelFailsToConfigure)
+{
+  Bridge bridge("empty_remote_label");
+  EXPECT_EQ(bridge.name("hub").remote("", "").configure(), kUnconfigured)
+    << "the empty name is a send-path sentinel; a remote filed under it"
+       " could never be routed to";
 }
 
 // `add_remote` is the one path that creates a remote at runtime from an

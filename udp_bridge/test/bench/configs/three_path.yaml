@@ -30,7 +30,6 @@ operator_bridge:
     remotes_list: ["boat"]
     remotes:
       boat:
-        name: "boat"
         connections_list: ["wifi", "cell", "starlink"]
         connections:
           wifi:
@@ -56,7 +55,6 @@ boat_bridge:
     remotes_list: ["operator"]
     remotes:
       operator:
-        name: "operator"
         connections_list: ["wifi", "cell", "starlink"]
         connections:
           wifi:

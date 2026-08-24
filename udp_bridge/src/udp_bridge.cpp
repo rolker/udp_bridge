@@ -358,24 +358,43 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // `remotes.<label>.name` is retired but still DECLARED: rclcpp surfaces a
   // YAML override only for a declared parameter (this node does not set
   // automatically_declare_parameters_from_overrides), so declaring it is
-  // the only way to see — and warn about — a stale key left in a config
-  // written before #67. Its value is never used for identity.
-  stale_remote_name_key_count_ = 0;
+  // the only way to SEE a stale key left in a config written before #67.
+  // Its value is never used for identity — and a non-empty one now fails
+  // the transition rather than merely warning.
+  //
+  // Rejecting is not tidiness. Warning would leave exactly one config shape
+  // — a stale value that differs from its label — announced and then
+  // ignored, and that shape is the #51 echo bug: the hub keys the routing
+  // table by the label, the peer stamps the other string into
+  // WrappedPacket::source_node, the relay loop rule's string compare never
+  // matches, and the hub relays that remote's own traffic back to it. Every
+  // other identity error below fails; this one is no different. There is
+  // also no carve-out for a stale value that happens to EQUAL its label:
+  // the parameter is removed and unsupported, so setting it at all is a
+  // configuration error, and one uniform rule is what an operator can hold
+  // in their head.
+  //
+  // An explicitly empty value (`name: ""`) is indistinguishable from an
+  // absent key, because the declared default is the empty string. Non-empty
+  // is what "present" means here.
   for(const auto& remote_label: remotes_list)
   {
     std::string name_param = "remotes." + remote_label + ".name";
     declareIfMissing(name_param, std::string());
-    auto stale_name = get_parameter(name_param).as_string();
-    if(stale_name.empty())
+    auto retired_name = get_parameter(name_param).as_string();
+    if(retired_name.empty())
       continue;
-    ++stale_remote_name_key_count_;
-    RCLCPP_WARN_STREAM(get_logger(), name_param << " is set to '" << stale_name
-      << "' but is no longer read (issue #67): a remotes_list entry is"
-         " itself the name that remote calls itself on the wire. This"
-         " remote is being configured as '" << remote_label << "'. If '"
-      << stale_name << "' is what it calls itself, rename the remotes_list"
-         " entry (and its remotes.<label>.* parameter paths) to '"
-      << stale_name << "'; otherwise delete the stale name key.");
+    RCLCPP_ERROR_STREAM(get_logger(), name_param << " is set to '"
+      << retired_name << "' but the parameter was REMOVED in issue #67 and"
+         " is no longer supported: a remotes_list entry is itself the name"
+         " that remote calls itself on the wire. Delete the '" << name_param
+      << "' key, and make the remotes_list entry for this remote (currently '"
+      << remote_label << "') the name that peer calls itself"
+         " — renaming its remotes.<label>.* parameter paths with it. A"
+         " rename only takes effect on a fresh process: restart the node"
+         " rather than re-configuring a running one, which leaves the old"
+         " remote resident and sends everything to that peer twice.");
+    return CallbackReturn::FAILURE;
   }
 
   std::string identity_error;

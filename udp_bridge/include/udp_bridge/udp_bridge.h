@@ -76,21 +76,6 @@ public:
   /// called when a packet is received.
   void spin_once();
 
-  /// How many `remotes.<label>.name` keys `on_configure` found set to a
-  /// non-empty value and warned about (issue #67). The key is retired: it
-  /// is still declared, because rclcpp only surfaces a YAML override for a
-  /// declared parameter, but it is read only to produce that warning.
-  ///
-  /// Exposed for tests. Nothing in this package asserts on log content —
-  /// the one logging-adjacent test silences the logger and asserts through
-  /// an accessor instead (see `RemoteNode::dispatchMissWarnedIdCountForTest`
-  /// and test_remote_node_resend.cpp) — so the stale-key warning is pinned
-  /// the same way, which is stable against wording changes.
-  std::size_t staleRemoteNameKeyCountForTest() const
-  {
-    return stale_remote_name_key_count_;
-  }
-
 private:
   /// Sets the node name as seen by other udp_bridge nodes.
   ///
@@ -506,12 +491,6 @@ private:
   /// a re-configure only diagnostic_timer_ was reset in on_cleanup, so the
   /// other timers survive and keep firing while on_configure runs.
   std::set<std::string> configured_remote_names_;
-
-  /// Count of non-empty, retired `remotes.<label>.name` keys seen by the
-  /// most recent on_configure (issue #67). Written only there, before any
-  /// worker thread that could read it exists; see
-  /// staleRemoteNameKeyCountForTest().
-  std::size_t stale_remote_name_key_count_ = 0;
 
   // Per-remote diagnostic state for the resend-give-up rate
   // computation (issue #22). Guarded by remote_nodes_mutex_ —
