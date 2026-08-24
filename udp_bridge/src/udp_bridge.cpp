@@ -337,13 +337,19 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       return result;
     });
 
-  // Remote-identity validation runs here, ahead of every resource this
-  // callback acquires: it needs only parameters, and a CallbackReturn::FAILURE
-  // leaves the node UNCONFIGURED *without* calling on_cleanup. Returning after
-  // the socket would leak the bound port, so the operator's natural remedy —
-  // fix the `remotes_list` entry and re-configure — would hit EADDRINUSE on
-  // the bind below and exit(1). Keep every parameter-only failure path above
-  // the socket block for the same reason (issue #51).
+  // Remote-identity validation runs here, ahead of the socket: it needs only
+  // parameters, and a CallbackReturn::FAILURE leaves the node UNCONFIGURED
+  // *without* calling on_cleanup. Returning after the socket would leak the
+  // bound port, so the operator's natural remedy — fix the `remotes_list`
+  // entry and re-configure — would hit EADDRINUSE on the bind below and
+  // exit(1). Keep every parameter-only failure path above the socket block
+  // for the same reason (issue #51).
+  //
+  // "Ahead of the socket", not ahead of everything: on_set_parameters_handle_
+  // is already acquired at :288 (on_cleanup resets it), and a mistyped YAML
+  // scalar can still throw out of the connections/topics loops after the bind
+  // — rclcpp_lifecycle swallows that exception, so it is not an explicit
+  // failure path and this ordering does not protect it.
   declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
 
