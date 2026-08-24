@@ -203,7 +203,12 @@ there works today.
     Do not add it back as an identity input; see the upgrade note in
     `udp_bridge/README.md`. It briefly *was* authoritative, between #51 and
     #67 — a `name:` in an old config is not a typo, it is a removed
-    feature, and the node will tell the operator so by refusing to start.
+    feature. Note what the operator actually sees: the transition fails but
+    `main()` spins on, and `diagnostic_updater_` is created only *after*
+    this failure point, so there is no `/diagnostics` row, no `bridge_info`
+    and no heartbeat — the sole signal is one ERROR line on stderr, from the
+    node that *is* the telemetry link. That is the same symptom as the
+    pre-existing over-long-name failure, not something new here.
   - **A rename does not survive a live re-configure.** Nothing ever closes
     the bound socket (no `close()`, no destructor, `on_cleanup` does not
     touch `socket_`, no `SO_REUSEADDR`), so on a fixed port — every
