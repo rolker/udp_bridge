@@ -182,6 +182,24 @@ TEST(NodeNameLimits, RetiredRemoteNameMatchingItsLabelStillFailsToConfigure)
        " have changed the identity";
 }
 
+// Every offending key is reported in one ERROR, so a hub carrying several
+// stale keys is not a restart-per-key discovery loop. Only the state is
+// observable from here (nothing in this package captures log content), so
+// what this pins is that the accumulate-then-fail loop still refuses a
+// config with more than one offender -- the shape a first-offender `return`
+// inside the loop would also satisfy, but a broken accumulator would not.
+TEST(NodeNameLimits, SeveralRetiredRemoteNameParametersFailToConfigure)
+{
+  Bridge bridge("several_retired_name_params");
+  EXPECT_EQ(bridge.name("hub")
+              .remote("robot_a", "some_other_name")
+              .remote("robot_b", "yet_another_name")
+              .configure(),
+            kUnconfigured)
+    << "a config carrying more than one removed key must fail the"
+       " transition";
+}
+
 // The counterpart, and the reason the rejection is a real assertion: an
 // absent key is the normal case and must configure cleanly. An explicitly
 // empty value is indistinguishable from an absent one -- the declared

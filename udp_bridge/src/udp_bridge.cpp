@@ -383,6 +383,12 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // An explicitly empty value (`name: ""`) is indistinguishable from an
   // absent key, because the declared default is the empty string. Non-empty
   // is what "present" means here.
+  //
+  // Report EVERY offending key, not just the first. Recovery from this
+  // failure costs a process restart (see the EADDRINUSE note in the message
+  // below), so a hub carrying three stale keys would otherwise cost three
+  // restarts to discover three lines of YAML.
+  std::string retired_keys;
   for(const auto& remote_label: remotes_list)
   {
     std::string name_param = "remotes." + remote_label + ".name";
@@ -390,16 +396,21 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     auto retired_name = get_parameter(name_param).as_string();
     if(retired_name.empty())
       continue;
-    RCLCPP_ERROR_STREAM(get_logger(), name_param << " is set to '"
-      << retired_name << "' but the parameter was REMOVED in issue #67 and"
-         " is no longer supported: a remotes_list entry is itself the name"
-         " that remote calls itself on the wire. Delete the '" << name_param
-      << "' key, and make the remotes_list entry for this remote (currently '"
-      << remote_label << "') the name that peer calls itself"
-         " — renaming its remotes.<label>.* parameter paths with it. A"
-         " rename only takes effect on a fresh process: restart the node"
-         " rather than re-configuring a running one. Nothing ever closes"
-         " the bound socket, so a deactivate/cleanup/configure cycle"
+    if(!retired_keys.empty())
+      retired_keys += ", ";
+    retired_keys += name_param + " = '" + retired_name + "'";
+  }
+  if(!retired_keys.empty())
+  {
+    RCLCPP_ERROR_STREAM(get_logger(), "config sets " << retired_keys
+      << " but remotes.<label>.name was REMOVED in issue #67 and is no"
+         " longer supported: a remotes_list entry is itself the name that"
+         " remote calls itself on the wire. Delete every key listed above,"
+         " and make each remote's remotes_list entry the name that peer"
+         " calls itself — renaming its remotes.<label>.* parameter paths"
+         " with it. A rename only takes effect on a fresh process: restart"
+         " the node rather than re-configuring a running one. Nothing ever"
+         " closes the bound socket, so a deactivate/cleanup/configure cycle"
          " re-binds the same port, gets EADDRINUSE and exit(1)s at the"
          " bind (issue #66). Under the shipped launch file (respawn=True)"
          " the process comes back on its own, so the outcome is an"

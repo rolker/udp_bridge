@@ -94,8 +94,9 @@ ros2 run udp_bridge udp_bridge_node --ros-args --params-file src/udp_bridge/udp_
 For each remote in `remotes_list`:
 -   `remotes.<remote_label>.name`: **removed (#67), and setting it for a
     remote listed in `remotes_list` is a configuration error.** A non-empty
-    value fails `on_configure` with an ERROR naming the parameter, the
-    `remotes_list` entry actually in use and the value. Only the labels in
+    value fails `on_configure` with one ERROR listing every offending key and
+    its value — all of them, not just the first, since recovery costs a
+    process restart. Only the labels in
     `remotes_list` are checked — a `remotes.<label>.name` under a block that
     `remotes_list` does not name is never declared and never read, and that
     whole block is inert for the same reason. The parameter is still
