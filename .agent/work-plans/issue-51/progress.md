@@ -1247,16 +1247,171 @@ All seven Integrated Review fixes were checked against source and hold: the 23/2
 Both untested fixes are acceptable as shipped. The `remote_nodes_mutex_` correction has no observable behaviour to assert and no thread-sanitizer harness exists (same limitation already recorded in `test_giveup_diagnostic.cpp`); the WARN/ERROR severity change alters only log level with no log-capture harness. Neither is a must-fix. The severity change does, however, carry a false justification comment — finding 2 below.
 
 ### Findings
-- [ ] (must-fix) `add_remote` service rejects an over-long name but not `request->name == name_`, so it still installs a `RemoteNode` under our own name — the exact hazard the configure-time check was added to close, since `unwrap`'s self-packet guard sits in the lookup-missed branch and `RemoteNode`'s `assert` is compiled out in release. Cross-confirmed by both adversarial lenses independently. Mirror the `resolveRemoteIdentities` rejection here — `src/udp_bridge.cpp:2373`
-- [ ] (must-fix) The relay worker's failure comment added by this pass asserts "the drop is already counted in the relay diagnostic" — it is not: `RelayDropCounters` has no send-failure reason and the `on_error` lambda records nothing, so a relayed message lost past `send()`'s per-connection isolation is counted nowhere while the ERROR that used to surface it is now a throttled WARN. Minimum fix is correcting the comment; the right fix is a `RelayDropReason::SendFailed` recorded there, which flows into `lost()`, `lossBreakdown()` and the deactivate baseline for free — `src/udp_bridge.cpp:1351`
-- [ ] (suggestion) `std::make_shared<RemoteNode>` runs inside the `remote_nodes_mutex_` guard and its constructor creates two transient-local publishers (DDS entity creation), while the comment directly above says "Only the map write needs the lock". Construct outside, insert under the lock. Cross-confirmed by both lenses — `src/udp_bridge.cpp:497`
-- [ ] (suggestion) `wire_field_to_string`'s bound is memory-safe but leaves decode asymmetric with encode: a field with no NUL yields a 24-char `source_node` (one past `maximum_node_name_length`, then used as a `remote_nodes_`/`subscribers_` key and a topic component) and a non-canonical 8-byte `connection_id` that walks `newConnection`'s truncation-WARN path. Cross-confirmed by both lenses — `src/udp_bridge.cpp:1736`, `src/remote_node.cpp:345`
-- [ ] (suggestion) `resolveRemoteIdentities` rejects over-long and self-named identities but not the empty one; `""` is a reserved sentinel in the send path (`udp_bridge.cpp:2014` treats an empty remote name as a connection request) and `allRemotes()` feeds it straight there, so `remotes_list: [""]` yields a silently unroutable remote — the same unrepresentable-identity class this commit set out to close — `include/udp_bridge/remote_identity.h:97`
-- [ ] (suggestion, pre-existing — file as a follow-up, not a merge blocker) `on_cleanup` releases neither `socket_` (never `close()`d anywhere) nor `spin_timer_`/`stats_report_timer_`/`bridge_info_timer_`/`subscription_update_timer_`, so a CLEANUP->CONFIGURE cycle re-binds the same port and `exit(1)`s on EADDRINUSE. This also means the re-configure scenario several comments added by this pass cite as their justification is currently unreachable — `src/udp_bridge.cpp:740`, `:390`
-- [ ] (suggestion) `history_depth` is described as "a uint32 inside the struct this method is a member of"; it is inside `MessageInternal`, not `RelayItem`. The conclusion is still correct — `include/udp_bridge/relay_item.h:53`
+- [x] (must-fix) `add_remote` service rejects an over-long name but not `request->name == name_`, so it still installs a `RemoteNode` under our own name — the exact hazard the configure-time check was added to close, since `unwrap`'s self-packet guard sits in the lookup-missed branch and `RemoteNode`'s `assert` is compiled out in release. Cross-confirmed by both adversarial lenses independently. Mirror the `resolveRemoteIdentities` rejection here — `src/udp_bridge.cpp:2373`
+- [x] (must-fix) The relay worker's failure comment added by this pass asserts "the drop is already counted in the relay diagnostic" — it is not: `RelayDropCounters` has no send-failure reason and the `on_error` lambda records nothing, so a relayed message lost past `send()`'s per-connection isolation is counted nowhere while the ERROR that used to surface it is now a throttled WARN. Minimum fix is correcting the comment; the right fix is a `RelayDropReason::SendFailed` recorded there, which flows into `lost()`, `lossBreakdown()` and the deactivate baseline for free — `src/udp_bridge.cpp:1351`
+- [x] (suggestion) `std::make_shared<RemoteNode>` runs inside the `remote_nodes_mutex_` guard and its constructor creates two transient-local publishers (DDS entity creation), while the comment directly above says "Only the map write needs the lock". Construct outside, insert under the lock. Cross-confirmed by both lenses — `src/udp_bridge.cpp:497`
+- [x] (suggestion) `wire_field_to_string`'s bound is memory-safe but leaves decode asymmetric with encode: a field with no NUL yields a 24-char `source_node` (one past `maximum_node_name_length`, then used as a `remote_nodes_`/`subscribers_` key and a topic component) and a non-canonical 8-byte `connection_id` that walks `newConnection`'s truncation-WARN path. Cross-confirmed by both lenses — `src/udp_bridge.cpp:1736`, `src/remote_node.cpp:345`
+- [x] (suggestion) `resolveRemoteIdentities` rejects over-long and self-named identities but not the empty one; `""` is a reserved sentinel in the send path (`udp_bridge.cpp:2014` treats an empty remote name as a connection request) and `allRemotes()` feeds it straight there, so `remotes_list: [""]` yields a silently unroutable remote — the same unrepresentable-identity class this commit set out to close — `include/udp_bridge/remote_identity.h:97`
+- [x] (deferred: pre-existing, held out of scope for this PR — the host is filing it separately; nothing in this round touches `on_cleanup`) (suggestion, pre-existing — file as a follow-up, not a merge blocker) `on_cleanup` releases neither `socket_` (never `close()`d anywhere) nor `spin_timer_`/`stats_report_timer_`/`bridge_info_timer_`/`subscription_update_timer_`, so a CLEANUP->CONFIGURE cycle re-binds the same port and `exit(1)`s on EADDRINUSE. This also means the re-configure scenario several comments added by this pass cite as their justification is currently unreachable — `src/udp_bridge.cpp:740`, `:390`
+- [x] (suggestion) `history_depth` is described as "a uint32 inside the struct this method is a member of"; it is inside `MessageInternal`, not `RelayItem`. The conclusion is still correct — `include/udp_bridge/relay_item.h:53`
 
 ### Notes
 - Governance: clean. No new ROS parameter this round, so the `.agents/README.md` verified-parameter table needed no new row — but the `name` and `remotes.<label>.name` rows were correctly amended for the new 23-character rejection, the pitfalls list gained an entry, and the behaviour change carries upgrade notes in `udp_bridge/README.md` and `doc/relay_design.md`. Verified against source, not taken from the Implementation entry.
 - Plan drift: none. `plan.md` gained a "Revision (post-PR review, Copilot round)" section whose as-built table matches the diff file for file.
 - The end-to-end wiring test gap (#64) was held out of scope as instructed and is not re-raised here.
 - Environment: the dev host root filesystem is at 99% (22G free on `/dev/nvme0n1p2`). The build and test run completed cleanly, but this is worth the operator's attention independently of this branch.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-23 22:26 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**PR**: #63 at `0658ae8`
+**Addressed**: `## Local Review (Pre-Push)` (complete, 2026-08-23 22:23 -04:00, branch `feature/issue-51` at `f2b51d0`, round 4, verdict changes-requested)
+**Commits**: `d8a14f0`, `3edd8bf`, `decb72b`, `f8fffbb`, `5186996`, `71008bb`, `0658ae8`
+
+### Actions
+- [x] (must-fix) `add_remote` refuses a request naming this bridge itself — `src/udp_bridge.cpp:2373` (`d8a14f0`)
+- [x] (must-fix) Relay send failures are counted, so the WARN downgrade's justification is now true — `src/udp_bridge.cpp:1351`, `include/udp_bridge/relay_drops.h` (`3edd8bf`)
+- [x] (suggestion) `RemoteNode` is constructed outside `remote_nodes_mutex_` — `src/udp_bridge.cpp:497` (`decb72b`)
+- [x] (suggestion) `wire_field_to_string` decodes as the exact inverse of the encode — `include/udp_bridge/packet.h`, `src/udp_bridge.cpp:1736`, `src/remote_node.cpp:345` (`f8fffbb`)
+- [x] (suggestion) The empty resolved identity is rejected at configure — `include/udp_bridge/remote_identity.h:97` (`5186996`)
+- [x] (deferred: pre-existing, held out of scope for this PR at the operator's instruction — the host is filing it separately) `on_cleanup` releases neither the socket nor the timers — `src/udp_bridge.cpp:740`, `:390`
+- [x] (suggestion) `history_depth` comment names `MessageInternal`, not `RelayItem` — `include/udp_bridge/relay_item.h:53` (`71008bb`)
+
+### Must-fix 1 — `add_remote` self-name
+
+The refusal mirrors `resolveRemoteIdentities` and takes the same shape as
+the length rejection already at that site: an ERROR naming the collision,
+no remote created, early return, because `AddRemote.srv` has no field to
+report failure through. Guarded on a non-empty name so the existing
+empty-name path (which creates nothing and only sends bridge info) is
+unchanged when this bridge has no name either.
+
+The test drives the **real services** — `add_remote` to attempt the
+insertion, `list_remotes` to observe `remote_nodes_` from outside the
+class — with an ordinary remote added first as a control, so the asserted
+absence is a refusal and not a broken fixture. Without the fix it aborts
+on `RemoteNode`'s `assert(remote_name != local_name)`, which is precisely
+the guard that is compiled out of the release build this would be met in:
+
+```
+add_remote: creating remote 'hub' — this must be the name that bridge calls itself ...
+test_node_name_limits: .../src/remote_node.cpp:17: udp_bridge::RemoteNode::RemoteNode(...):
+  Assertion `remote_name != local_name' failed.
+```
+
+### Must-fix 2 — the real fix, not the comment fix
+
+The review was right that the comment was false: `RelayDropCounters` had no
+send-failure reason and the error lambda recorded nothing, so downgrading
+that log to a throttled WARN made relay send failures invisible — one line
+every five seconds and no drop figure anywhere.
+
+`RelayDropReason::SendFailed` is now recorded in that handler, before the
+log. It flows for free into `lost()`, `lossBreakdown()`, `dropped_by_sink`,
+`sink_drop_reasons`, the relay-queue diagnostic's WARN string and the
+`on_deactivate` baseline.
+
+It reads as **loss**, not beside `rate_limited`, per the review's question:
+the message was never handed to a `Connection`, so unlike a rate-limit skip
+nothing can retransmit it — it is exactly the class of drop the loss total
+exists to show. It is counted **per failing destination**, not per item,
+because the fan-out isolates failures per remote (`relay_send.h`); one item
+failing to two remotes records two. That is stated in the enum's doc
+comment, in `doc/relay_design.md` and in the test, so the figure is not
+misread as an item count.
+
+Two tests, neither of which compiles without the fix:
+`RelayDropCountersTest.SendFailuresAreCountedAsLoss` pins the accounting
+(loss total, breakdown string, and that it does *not* land in
+`rateLimited()`), and `RelaySend.EachFailingDestinationIsCountedAsRelayLoss`
+wires the error handler the way `relayToOtherRemotes` wires it and asserts
+two failing destinations of three produce two counts.
+
+### Suggestions
+
+- **Lock narrowing** — taken rather than the comment fix. The insert is an
+  unconditional assignment, so hoisting `make_shared<RemoteNode>` (two
+  transient-local publishers, i.e. DDS entity creation) above the guard
+  needs no re-check under the lock and makes the code do what the comment
+  already claimed.
+- **`wire_field_to_string`** — decided in favour of applying the bound. The
+  scan now stops one byte short of the field, because the trailing byte is
+  the terminator, which makes decode the exact inverse of encode. An
+  unterminated field can no longer yield a 24-character `source_node` (one
+  over the limit `on_configure` rejects) used as a `remote_nodes_` /
+  `subscribers_` key and a topic-name component, nor an 8-byte connection id
+  that walks `newConnection`'s truncation-WARN path. Memory safety was
+  already there; this closes the asymmetry. The two existing
+  unterminated-field expectations were updated to the canonical bound — the
+  behaviour they pinned changed deliberately, and the memory-safety property
+  they exist for is unchanged.
+- **Empty identity** — rejected at configure alongside over-long and
+  self-name, with a message that says why (`""` is the send path's
+  connection-request sentinel, so such a remote is unroutable and matches no
+  arriving packet). An empty *label* with a real `name` is still fine and is
+  pinned as such.
+- **`history_depth` comment** — corrected.
+- **`on_cleanup` socket/timer leak** — deferred as instructed. Nothing in
+  this round touches `on_cleanup` or the bind, so there is no interaction to
+  report. It remains the reason the re-configure scenario several comments
+  cite is currently unreachable.
+
+Docs updated with the behaviour changes: `README.md` (the #51 upgrade note
+gains the two further refused identities), `doc/relay_design.md` (a "Two
+more identities a remote may not have" subsection, the decode-bound
+paragraph, and `SendFailed` in the drop-reason list) and
+`.agents/README.md` (the `remotes.<label>.name` parameter row and a new
+pitfalls entry). No new ROS parameter this round, so the verified-parameter
+table needed no new row.
+
+### Build / test — verbatim
+
+```
+$ ./build.sh udp_bridge
+Finished <<< udp_bridge [19.4s]
+
+Summary: 1 package finished [19.6s]
+  1 package had stderr output: udp_bridge
+BUILD_EXIT=0
+
+$ ./test.sh udp_bridge
+Summary: 1 package finished [32.4s]
+Summary: 253 tests, 0 errors, 0 failures, 14 skipped
+TEST_EXIT=0
+
+$ colcon test-result --verbose
+Summary: 253 tests, 0 errors, 0 failures, 14 skipped
+RESULT_EXIT=0
+```
+
+253 tests, up from the 249 floor (+4: the `add_remote` self-name service
+test, the two `SendFailed` tests, and the empty-identity rejection).
+
+```
+$ pre-commit run --from-ref origin/jazzy --to-ref HEAD
+trim trailing whitespace.................................................Passed
+fix end of files.........................................................Passed
+check yaml...............................................................Passed
+check xml............................................(no files to check)Skipped
+check for merge conflicts................................................Passed
+check that executables have shebangs.................(no files to check)Skipped
+mixed line ending........................................................Passed
+check for added large files..............................................Passed
+cmake-lint...............................................................Passed
+yamllint.................................................................Passed
+don't commit to branch...................................................Passed
+EXIT=0
+```
+
+(`pre-commit` is not on `PATH` on this host; run as
+`/home/roland/project11/.venv/bin/pre-commit`. The per-commit hooks ran
+normally on every commit above.)
+
+### Environment note
+
+The dev host root filesystem is still at 99% (22G free on
+`/dev/nvme0n1p2`). Nothing failed for disk space this round, but the
+condition persists and is worth the operator's attention independently of
+this branch.
