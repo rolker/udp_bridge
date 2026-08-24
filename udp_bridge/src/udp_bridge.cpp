@@ -484,8 +484,21 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     if(remote_info.name != remote_name)
       RCLCPP_INFO_STREAM(get_logger(), "remote '" << remote_name
         << "' is known on the wire as '" << remote_info.name << "'");
-    remote_nodes_[remote_info.name] = std::make_shared<RemoteNode>(remote_info.name, name_, *this);
-    remote_nodes_[remote_info.name]->update(remote_info);
+    // Insert under remote_nodes_mutex_, matching every reader (spin_once,
+    // decode, sendBridgeInfo, the diagnostics). Benign on a first
+    // configure, a data race on a re-configure: on_cleanup resets only
+    // diagnostic_timer_, so spin_timer_ and friends are still firing while
+    // this loop rewrites the map. Only the map write needs the lock — the
+    // RemoteNode is then driven through the local shared_ptr, because
+    // update() does per-connection work (getaddrinfo among it) that must
+    // not be done while holding a mutex the socket-drain path takes.
+    std::shared_ptr<RemoteNode> remote_node;
+    {
+      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+      remote_node = std::make_shared<RemoteNode>(remote_info.name, name_, *this);
+      remote_nodes_[remote_info.name] = remote_node;
+    }
+    remote_node->update(remote_info);
 
 
     std::string connections_list_param = "remotes."+remote_name+".connections_list";
@@ -531,7 +544,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       double link_headroom_fraction = get_parameter(link_headroom_fraction_param).as_double();
 
       remote_info.connections.push_back(connection);
-      remote_nodes_[remote_info.name]->update(remote_info);
+      remote_node->update(remote_info);
 
       // These tunables are applied to the live Connection after
       // update() creates/refreshes it — `connection` above is a
@@ -544,7 +557,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // kDefaultLinkHeadroomFraction); the parameters here are the only
       // non-default source (see doc/resend_budget_design.md and
       // doc/admission_control_design.md).
-      if(auto live_connection = remote_nodes_[remote_info.name]->connection(connection_name))
+      if(auto live_connection = remote_node->connection(connection_name))
       {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
         live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
