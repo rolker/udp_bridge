@@ -109,6 +109,9 @@ and instead run three plain bridges over loopback in the single namespace
    bridge_hub's connection to `"boat_b"`. Both must report ready — timeout
    raises `RuntimeError` (per `wait_ready()`'s existing contract), aborting
    loudly rather than launching the publisher into an unconfirmed graph.
+   Note `run_scenario.py`'s existing `wait_ready()` wrapper forwards only
+   `--timeout-s`; it needs the topic / connection-id / remote-name /
+   `--min-bps` / `--field` overrides plumbed through for these two calls.
    Only then launch the three `sub.py` subscribers (hub-local on
    `/hub/from_a/heartbeat`, B on `/b/from_a/heartbeat`, A's echo-guard on
    `/a/echo_from_hub`) and `pub.py --tier critical --rate-hz 10.0` on A's
@@ -119,11 +122,17 @@ and instead run three plain bridges over loopback in the single namespace
    `_parse_count(pub)` — the publisher's own tally, never rate×duration
    arithmetic, so a publisher that underruns (e.g. scheduling jitter costs
    it a cycle) tightens the bar on itself instead of silently loosening it:
-   - `hub_local` and `b` sub-counts: `abs(sub_count - pub_count) <= 1`
-     (the `1` covers only the one message that can legitimately be
-     in-flight at shutdown). **Fails on**: any drop, any duplicate — a
-     single dropped message or a single duplicated message now fails,
-     which the old `0.8x-1.2x` band over ~10 messages could not detect.
+   - `hub_local` and `b` sub-counts: `sub_count == pub_count`, exactly.
+     **Fails on**: any drop, any duplicate. An earlier revision allowed
+     `abs(sub_count - pub_count) <= 1` "for the message in flight at
+     shutdown" — but one message of slack is exactly the size of the bug
+     this scenario exists to catch, so a single drop or a single duplicate
+     passed it. The slack is also unnecessary: the subscriber outlives the
+     publisher by 2 s (step 3) on loopback with sub-millisecond delivery,
+     so there is no legitimate source of even a one-message gap. If a run
+     ever fails by exactly one, that is a finding to investigate, not
+     tolerance to widen — record the observation before touching this
+     line.
    - `a_echo` sub-count: `== 0` exactly. **Fails on**: any regression in the
      sender-exclusion (loop) rule in `relayToOtherRemotes()` that relays a
      message back to its own sender — the only realistic way this line
@@ -141,7 +150,7 @@ and instead run three plain bridges over loopback in the single namespace
    against a silently-degraded run (e.g. two bridges up, the third
    isolated) is the delivery-count assertions above: an unreachable B or a
    dead hub relay drives `b`'s or `hub_local`'s count to 0, which the
-   `abs(...) <= 1` check rejects. `check=True` and the count assertions are
+   equality check rejects. `check=True` and the count assertions are
    complementary, not redundant — a future edit must not drop the count
    assertions on the assumption `check=True` already covers three-bridge
    connectivity.
@@ -154,7 +163,7 @@ and instead run three plain bridges over loopback in the single namespace
    unavailable). Runs `run_scenario.py --scenario relay_hub`, parses the
    four `BENCH_RESULT_*` lines, re-asserts the four conditions from step 3
    (defense in depth — the orchestrator's own exit code already encodes
-   them) with the same `abs(...) <= 1` / `== 0` / `> 0` logic.
+   them) with the same `== pub_count` / `== 0` / `> 0` logic.
 
 5. **CI capability check (must state, not assume):**
    `.github/workflows/ci.yml` runs `container: image: ros:jazzy-ros-core`
