@@ -16,7 +16,7 @@ WrappedPacket::WrappedPacket(uint64_t packet_num, const std::vector<uint8_t>& da
   memcpy(packet.data(), this, sizeof(SequencedPacketHeader));
   memcpy(reinterpret_cast<SequencedPacket*>(packet.data())->packet, data.data(), data.size());
 }
-  
+
 WrappedPacket::WrappedPacket(const WrappedPacket& other, std::string src_node, std::string cid)
 {
   type = PacketType::WrappedPacket;

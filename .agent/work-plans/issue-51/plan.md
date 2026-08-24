@@ -208,6 +208,43 @@ whose own name differed from its label had its traffic echoed back to it,
 with a single remote configured. Reading that parameter as the remote's
 identity is the fix; see `remote_identity.h`.
 
+### Revision (post-PR review, Copilot round): node names are now a hard limit
+
+The identity fix above was incomplete. The wire field is
+`char source_node[24]`, so 23 characters is the longest name that survives
+a round trip — and `setName` truncated a longer local name while a
+configured remote identity was left untruncated. A remote named longer than
+23 characters therefore never matched itself, the loop rule went inert, and
+the hub echoed: the same failure the identity fix was for, reached by an
+ordinary naming choice.
+
+The operator's decision (2026-08-23) is to **reject over-long names loudly,
+not canonicalize them**. Truncation is what manufactures the mismatch; and
+rejection is strictly stronger than canonicalizing, because canonicalizing
+would leave two configured names differing only after character 23
+collapsing onto one wire identity — the very collision
+`resolveRemoteIdentities` exists to reject. Rejection makes that
+unrepresentable instead of patching around it.
+
+As built:
+
+| File | Change |
+|------|--------|
+| `include/udp_bridge/packet.h` | `maximum_node_name_length`, `node_name_fits`, `node_name_too_long_error`, and `wire_field_to_string` (the bounded read of a fixed-size wire field) |
+| `include/udp_bridge/remote_identity.h` | `resolveRemoteIdentities` also rejects an over-long identity and one equal to this bridge's own name; takes the local name as an input |
+| `include/udp_bridge/drop_baseline.h` | New: `advanceDropBaseline` / `dropsSinceBaseline` — the monotonic, underflow-proof drop-delta baseline shared by the queue diagnostics and `on_deactivate` |
+| `src/udp_bridge.cpp` | `setName` returns false instead of truncating (`on_configure` fails); `add_remote` refuses an over-long name; `unwrap` reads `source_node` / `connection_id` with a bound; the static-config loop inserts under `remote_nodes_mutex_`; relay reports link failures at WARN via `SendFailureReport` |
+| `src/remote_node.cpp` | `RemoteNode::unwrap` reads `connection_id` with a bound |
+| `include/udp_bridge/relay_item.h` | `byte_size()` counts every string the item holds |
+| `test/test_node_name_limits.cpp` | New: drives the real lifecycle transition — over-long local name, remote name and label all fail `on_configure`; names at the limit configure; a remote with our own name fails |
+| `test/test_drop_baseline.cpp` | New: the delta arithmetic, the stale-total case that used to underflow, and concurrent advances reporting each drop exactly once |
+| `test/test_relay_routing.cpp`, `test/test_relay_queue.cpp` | Identity-length / boundary / bounded-read cases; `byte_size` field accounting |
+| `README.md`, `doc/relay_design.md`, `.agents/README.md` | The behaviour change is documented as a #51 upgrade note: a config that used to start with a truncation warning now fails to configure |
+
+Wire-side names get no length policy — one that was too long arrives
+already shortened and is indistinguishable from a short one — so the
+receive side gets bounded reads instead.
+
 ## Principles Self-Check
 
 | Principle | Consideration |
