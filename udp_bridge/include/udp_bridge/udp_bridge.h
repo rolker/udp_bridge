@@ -220,13 +220,27 @@ private:
   /// Map of remotes and connections
   using RemoteConnectionsList = std::map<std::string, std::vector<std::string> >;
 
+  /// How a per-connection send failure is reported (issue #51).
+  ///
+  /// `Connection::send()` throws on its ordinary Timeout path, and send()
+  /// logs that per connection. For locally-originated traffic an
+  /// unreachable destination is a fault worth an ERROR. For **relayed**
+  /// traffic it is not: a hub forwards every carried topic to every spoke,
+  /// so a single spoke over the horizon — an ordinary field condition —
+  /// would emit an ERROR per topic per send. Relay asks for `warning` so
+  /// the condition stays visible without drowning the log (and without
+  /// teaching the operator that ERROR means nothing).
+  enum class SendFailureReport { error, warning };
+
   /// Convert a message to a packet and send it to remotes.
   template <typename MessageType>
-  MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead);
+  MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead,
+                       SendFailureReport failure_report = SendFailureReport::error);
 
   /// Convert a message to a packet and send it to remote using all connections.
   template <typename MessageType>
-  MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead);
+  MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead,
+                       SendFailureReport failure_report = SendFailureReport::error);
 
   /// Return a list of all remotes.
   RemoteConnectionsList allRemotes() const;

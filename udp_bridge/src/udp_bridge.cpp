@@ -1325,7 +1325,13 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
         // The existing send path: fragmenting, wrapped-packet sequencing and
         // the per-connection AIMD admission control of #43/#52 all apply to
         // relayed traffic exactly as they do to locally published traffic.
-        auto size_data = send(rewritten, connections, false);
+        // The one difference is how a failing link is reported: a hub
+        // forwards every carried topic to every spoke, so one spoke over
+        // the horizon — an ordinary field condition, not a fault — would
+        // otherwise emit an ERROR per topic per send. WARN keeps it visible
+        // without teaching the operator to ignore ERROR.
+        auto size_data = send(rewritten, connections, false,
+                              SendFailureReport::warning);
         size_data.message_size = rewritten.data.size();
         {
           // Relayed bytes go into the topic's statistics alongside
@@ -1342,7 +1348,13 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       },
       [&](const std::string& remote_name, const std::string& what)
       {
-        RCLCPP_ERROR_STREAM(get_logger(),
+        // WARN, throttled, for the same reason send() reports relay link
+        // failures at WARN (issue #51): an over-horizon spoke is a normal
+        // field condition, and a hub hits it once per forwarded topic per
+        // send. Unthrottled ERROR here would bury the log — and the drop
+        // is already counted in the relay diagnostic, which is where a
+        // persistent failure shows up as a WARN summary.
+        RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
           "relay worker: send to '" << remote_name << "' failed for topic '"
           << item.topic << "' (from '" << item.source_node << "'): " << what);
       });
@@ -1934,7 +1946,7 @@ void UDPBridge::resendMissingPackets()
 }
 
 
-template <typename MessageType> MessageSizeData UDPBridge::send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead)
+template <typename MessageType> MessageSizeData UDPBridge::send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead, SendFailureReport failure_report)
 {
   rclcpp::Serialization<MessageType> serializer;
   rclcpp::SerializedMessage serialized_message;
@@ -1951,7 +1963,7 @@ template <typename MessageType> MessageSizeData UDPBridge::send(MessageType cons
 
   auto fragments = fragment(packet_data);
 
-  auto size_data = send(fragments, remotes, is_overhead);
+  auto size_data = send(fragments, remotes, is_overhead, failure_report);
 
   size_data.message_size = serial_size;
   size_data.fragment_count = fragments.size();
@@ -1959,16 +1971,16 @@ template <typename MessageType> MessageSizeData UDPBridge::send(MessageType cons
 }
 
 template <typename MessageType>
-MessageSizeData UDPBridge::send(MessageType const &message, const std::string& remote, bool is_overhead)
+MessageSizeData UDPBridge::send(MessageType const &message, const std::string& remote, bool is_overhead, SendFailureReport failure_report)
 {
   RemoteConnectionsList rcl;
   rcl[remote];
-  return send(message, rcl, is_overhead);
+  return send(message, rcl, is_overhead, failure_report);
 }
 
 
 // wrap and send a series of packets that should be sent as a group, such as fragments.
-template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t> >& data, const RemoteConnectionsList& remotes, bool is_overhead)
+template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t> >& data, const RemoteConnectionsList& remotes, bool is_overhead, SendFailureReport failure_report)
 {
   MessageSizeData size_data;
   std::vector<WrappedPacket> wrapped_packets;
@@ -2046,9 +2058,20 @@ template<> MessageSizeData UDPBridge::send(const std::vector<std::vector<uint8_t
           [&](const std::string& id, const std::string& what)
           {
             size_data.send_results[entry.first][id] = SendResult::failed;
-            RCLCPP_ERROR_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
-              "send to '" << entry.first << "' connection '" << id
-              << "' failed: " << what);
+            // Severity is the caller's call (issue #51). An unreachable
+            // destination is a fault for locally-originated traffic, but
+            // for relay it is an over-horizon spoke — normal in the field,
+            // and hit once per forwarded topic per send, so ERROR there
+            // would be pure noise. Both branches are throttled and both
+            // name the connection, so nothing is hidden either way.
+            if(failure_report == SendFailureReport::warning)
+              RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
+                "send to '" << entry.first << "' connection '" << id
+                << "' failed: " << what);
+            else
+              RCLCPP_ERROR_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
+                "send to '" << entry.first << "' connection '" << id
+                << "' failed: " << what);
           });
       }
   }
