@@ -84,7 +84,12 @@
             # return_host: "192.168.1.100"
             # return_port: 4200
 
-            # Data rate limit for this connection (bytes per second). 0 = default (500000).
+            # Data rate limit for this connection, in BYTES per second (not
+            # bits). 0 means the built-in default of 50000 B/s
+            # (Connection::default_rate_limit), which is far below the
+            # 500000 set here -- do not read the value below as "the
+            # default". 500000 is the socket buffer size, a different
+            # quantity that this comment used to conflate with the default.
             maximum_bytes_per_second: 500000
 
             # Maximum fraction of MEASURED GOODPUT that resend traffic may

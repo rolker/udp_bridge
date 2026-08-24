@@ -177,9 +177,10 @@ there works today.
   `doc/qos_design.md`). Design intent is BEST_AVAILABLE; per-topic
   `reliability:` config overrides.
 - **Rate fields are bytes per second, not bits**; the per-connection default
-  when `maximum_bytes_per_second` is 0 is **50000 B/s** — the
-  `example_params.yaml` comment claiming 500000 is wrong (that number is the
-  socket buffer size).
+  when `maximum_bytes_per_second` is 0 is **50000 B/s**
+  (`Connection::default_rate_limit`). 500000, which appears nearby in
+  `example_params.yaml`, is the socket buffer size and an explicitly-set
+  rate — not the default. The example's comment conflated the two until #67.
 - **A `remotes_list` entry IS the remote's wire name (#67)** — there is one
   identity namespace, not two. The entry both spells the remote's parameter
   paths (`remotes.<label>.*`) and is what `remote_nodes_`,
