@@ -88,10 +88,26 @@ inline std::string node_name_too_long_error(const std::string& source,
 // packet can fill all `size` bytes with non-zero data, and constructing a
 // std::string from the bare pointer would then read past the field — and
 // past the allocation, if no null byte happens to follow. Bound the scan.
+//
+// The bound is `size - 1`, not `size`, because that is what the encode side
+// can produce: the last byte of one of these fields is the null terminator,
+// so a name is at most `maximum_node_name_length` characters and a
+// connection id at most `maximum_connection_id_size - 1`. Reading all
+// `size` bytes when no terminator is present would be memory-safe but would
+// hand the rest of the bridge a value no encode path and no configuration
+// path can produce: a 24-character `source_node` (one over the limit
+// on_configure now rejects) used as a remote_nodes_/subscribers_ key and as
+// a topic-name component, and an 8-byte connection id that then walks
+// newConnection's truncation-WARN path. Decoding as the exact inverse of
+// encoding keeps every downstream invariant that holds for a name we sent
+// holding for a name we received.
 inline std::string wire_field_to_string(const char* field, std::size_t size)
 {
+  if(size == 0)
+    return std::string();
+  const std::size_t usable = size - 1;
   std::size_t length = 0;
-  while(length < size && field[length] != '\0')
+  while(length < usable && field[length] != '\0')
     ++length;
   return std::string(field, length);
 }

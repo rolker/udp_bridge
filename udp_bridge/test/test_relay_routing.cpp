@@ -379,9 +379,14 @@ TEST(RelayRouting, UnterminatedWireNameIsReadWithinItsField)
 
   const auto name = udp_bridge::wire_field_to_string(
     field.data(), udp_bridge::maximum_node_name_size);
-  EXPECT_EQ(name.size(), std::size_t(udp_bridge::maximum_node_name_size))
-    << "the read must stop at the end of the field, not at the next null";
-  EXPECT_EQ(name, std::string(udp_bridge::maximum_node_name_size, 'z'));
+  // Bounded at the last byte the encode side can write, which is one short
+  // of the field: the trailing byte is the terminator. Reading all 24 would
+  // be memory-safe but would yield a 24-character name -- one over the
+  // limit on_configure rejects -- and hand it on as a map key and a topic
+  // component.
+  EXPECT_EQ(name.size(), udp_bridge::maximum_node_name_length)
+    << "the read must stop within the field and within the name limit";
+  EXPECT_EQ(name, std::string(udp_bridge::maximum_node_name_length, 'z'));
 
   // And the ordinary null-padded case -- what our own write side produces
   // -- is unchanged.
@@ -395,7 +400,9 @@ TEST(RelayRouting, UnterminatedWireNameIsReadWithinItsField)
   std::vector<char> id_field(udp_bridge::maximum_connection_id_size, 'q');
   EXPECT_EQ(udp_bridge::wire_field_to_string(
               id_field.data(), udp_bridge::maximum_connection_id_size),
-            std::string(udp_bridge::maximum_connection_id_size, 'q'));
+            std::string(udp_bridge::maximum_connection_id_size - 1, 'q'))
+    << "the same canonical bound applies to the connection-id field, so an"
+       " unterminated one does not walk newConnection's truncation path";
 }
 
 // A packet that never passed through unwrap() carries no source_node, so the
