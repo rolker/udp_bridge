@@ -28,6 +28,7 @@
 #include "defragmenter.h"
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/publish_queue.h"
+#include "udp_bridge/drop_baseline.h"
 #include "udp_bridge/relay_drops.h"
 #include "udp_bridge/relay_queue.h"
 #include "udp_bridge/remote_identity.h"
@@ -548,12 +549,18 @@ private:
 
   // Last publish-queue drop total observed by diagnosePublishQueue, so the
   // diagnostic can WARN on *recent* drops (increase since last tick) rather
-  // than latching WARN forever after a single historical drop. Touched only
-  // from the diagnostic callback (periodic_group_, mutually exclusive).
-  uint64_t last_reported_publish_drops_ {0};
+  // than latching WARN forever after a single historical drop.
+  //
+  // Two writers, so atomic and advanced only through advanceDropBaseline:
+  // the diagnostic callback (periodic_group_) and on_deactivate, whose
+  // transition callback does NOT run in periodic_group_ and can therefore
+  // interleave with a tick. See drop_baseline.h — a plain uint64_t here
+  // both raced and underflowed, reporting an operator-caused backlog as a
+  // ~2^64 burst of link loss.
+  std::atomic<uint64_t> last_reported_publish_drops_ {0};
 
   // Same, for the relay queue (issue #51).
-  uint64_t last_reported_relay_drops_ {0};
+  std::atomic<uint64_t> last_reported_relay_drops_ {0};
 
   /// Sink-side relay drops (issue #51): items relayToOtherRemotes dequeued
   /// and then returned early on, which RelayQueue::dropped_count() cannot

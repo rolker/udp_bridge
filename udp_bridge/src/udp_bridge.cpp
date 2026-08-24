@@ -712,8 +712,16 @@ UDPBridge::CallbackReturn UDPBridge::on_deactivate(const rclcpp_lifecycle::State
   // tick reports the backlog before the re-baseline lands — never a
   // double-count, since both sides only ever assign the same monotonic
   // total.)
-  last_reported_publish_drops_ = publish_queue_.dropped_count();
-  last_reported_relay_drops_ = relay_queue_.dropped_count() + relay_drops_.lost();
+  // Advanced, not assigned: a diagnostic tick can interleave with this
+  // transition callback (it does not run in periodic_group_), and a plain
+  // store would let the tick subtract this newer baseline from the older
+  // total it had already read — an unsigned underflow that reports the
+  // operator's own discarded backlog as ~2^64 dropped messages. See
+  // drop_baseline.h.
+  advanceDropBaseline(last_reported_publish_drops_,
+                      publish_queue_.dropped_count());
+  advanceDropBaseline(last_reported_relay_drops_,
+                      relay_queue_.dropped_count() + relay_drops_.lost());
   // Discard any reorder-buffer packets held at deactivation (issue #35
   // review follow-up). spin_once returns early while INACTIVE, so the
   // window-expiry flush stops ticking; a packet held here would sit out
@@ -2746,12 +2754,14 @@ void UDPBridge::diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper
 {
   // dropped_count() is atomic; depth takes the queue's brief internal lock.
   // last_reported_publish_drops_ is touched here and, to re-baseline the
-  // delta across a deactivate, in on_deactivate; both writes assign the same
-  // monotonic total, so the "recent" delta needs no extra synchronization.
+  // delta across a deactivate, in on_deactivate — which does NOT run in
+  // periodic_group_ and can interleave with this tick. advanceDropBaseline
+  // makes that pair safe and, more importantly, unable to underflow; see
+  // drop_baseline.h.
   const uint64_t dropped = publish_queue_.dropped_count();
   const uint64_t depth = static_cast<uint64_t>(publish_queue_.size());
-  const uint64_t recent = dropped - last_reported_publish_drops_;
-  last_reported_publish_drops_ = dropped;
+  const uint64_t recent = dropsSinceBaseline(
+    dropped, advanceDropBaseline(last_reported_publish_drops_, dropped));
 
   stat.add("queued_items", depth);
   stat.add("dropped_total", dropped);
@@ -2777,8 +2787,8 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
 {
   // Mirror of diagnosePublishQueue for the relay worker (issue #51).
   // last_reported_relay_drops_ is touched here and in on_deactivate (see
-  // the note there); both assign the same monotonic total (periodic_group_ is
-  // MutuallyExclusive), so the "recent" delta needs no synchronization.
+  // the note there); the pair is serialized through advanceDropBaseline,
+  // which also makes the delta underflow-proof (drop_baseline.h).
   //
   // Two sources of loss are summed here. The queue drops on overflow and
   // push-after-stop (RelayQueue::dropped_count); the sink drops an item it
@@ -2797,8 +2807,8 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   const uint64_t dropped_by_sink = relay_drops_.lost();
   const uint64_t dropped = dropped_by_queue + dropped_by_sink;
   const uint64_t depth = static_cast<uint64_t>(relay_queue_.size());
-  const uint64_t recent = dropped - last_reported_relay_drops_;
-  last_reported_relay_drops_ = dropped;
+  const uint64_t recent = dropsSinceBaseline(
+    dropped, advanceDropBaseline(last_reported_relay_drops_, dropped));
 
   stat.add("queued_items", depth);
   stat.add("dropped_total", dropped);

@@ -182,6 +182,12 @@ if(BUILD_TESTING)
   # isolation via an injected sink, mirroring test_publish_queue: forwarding
   # must never stall the socket-drain thread.
   add_udp_bridge_gtest(test_relay_queue test/test_relay_queue.cpp)
+  # test_drop_baseline (issue #51) pins the "dropped since last tick"
+  # baseline shared by the publish- and relay-queue diagnostics and
+  # on_deactivate's re-baselining: two writers, one of which is a lifecycle
+  # transition callback outside periodic_group_, so the pair both raced and
+  # underflowed as a plain uint64_t.
+  add_udp_bridge_gtest(test_drop_baseline test/test_drop_baseline.cpp)
   # test_message_statistics (issue #51) pins the aggregate ("", "")
   # statistics row that both senders seed once per message — the row that
   # makes relayed traffic visible in a topic's overall rate rather than
