@@ -245,6 +245,27 @@ Wire-side names get no length policy — one that was too long arrives
 already shortened and is indistinguishable from a short one — so the
 receive side gets bounded reads instead.
 
+### Revision (pre-push review, round 4)
+
+The round-4 local review found two defects in the round-3 fixes and five
+suggestions. As built:
+
+| File | Change |
+|------|--------|
+| `src/udp_bridge.cpp` | `add_remote` also refuses a request naming this bridge itself, mirroring `resolveRemoteIdentities` (ERROR, no remote, early return); the relay worker's per-destination failure handler now **records** the drop before its throttled WARN, so the comment claiming it was already counted is true; the configured `RemoteNode` is constructed outside `remote_nodes_mutex_` (its constructor creates two DDS publishers) |
+| `include/udp_bridge/relay_drops.h` | New `RelayDropReason::SendFailed` + `send_failed` counter, in `lost()` and `lossBreakdown()` — a send failure is unrecoverable loss, unlike a rate-limit skip. Counted per failing destination, since the fan-out isolates per remote |
+| `include/udp_bridge/packet.h` | `wire_field_to_string` stops one byte short of the field, so decode is the exact inverse of encode: an unterminated field can no longer yield a 24-character name or an 8-byte connection id |
+| `include/udp_bridge/remote_identity.h` | The empty resolved identity is rejected too — `""` is a reserved sentinel on the send path |
+| `include/udp_bridge/relay_item.h` | `history_depth` comment names `MessageInternal`, not `RelayItem` |
+| `test/test_node_name_limits.cpp` | `add_remote`'s self-name refusal, driven through the real services (`add_remote` to attempt, `list_remotes` to observe), with an ordinary remote added first as a control |
+| `test/test_relay_queue.cpp`, `test/test_relay_send.cpp` | `SendFailed` accounting, and the relay error handler wired as `relayToOtherRemotes` wires it: two failing destinations of three produce two counts |
+| `test/test_relay_routing.cpp` | Empty-identity rejection; the unterminated-field cases updated to the canonical bound |
+| `README.md`, `doc/relay_design.md`, `.agents/README.md` | The two further refused identities, the `add_remote` self-name refusal, the decode bound, and `send_failed` in the relay diagnostic |
+
+Held out of scope, as instructed: the pre-existing `on_cleanup` socket/timer
+leak (a CLEANUP→CONFIGURE cycle `exit(1)`s on EADDRINUSE), which the host is
+filing separately, and the end-to-end wiring test gap (#64).
+
 ## Principles Self-Check
 
 | Principle | Consideration |
