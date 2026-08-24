@@ -392,8 +392,12 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       << remote_label << "') the name that peer calls itself"
          " — renaming its remotes.<label>.* parameter paths with it. A"
          " rename only takes effect on a fresh process: restart the node"
-         " rather than re-configuring a running one, which leaves the old"
-         " remote resident and sends everything to that peer twice.");
+         " rather than re-configuring a running one. Nothing ever closes"
+         " the bound socket, so a deactivate/cleanup/configure cycle"
+         " re-binds the same port, gets EADDRINUSE and exit(1)s at the"
+         " bind (issue #66). Under the shipped launch file (respawn=True)"
+         " the process comes back on its own, so the outcome is an"
+         " unplanned restart rather than a graceful rename.");
     return CallbackReturn::FAILURE;
   }
 

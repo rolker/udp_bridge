@@ -236,12 +236,18 @@ topics, `BridgeInfo` / `TopicStatistics` fields, diagnostic task names, and
 the `remote` / `name` service arguments).
 
 **A rename takes effect only in a fresh process — restart the node.**
-`on_cleanup` clears neither `remote_nodes_` nor `subscribers_`, so a
-deactivate→cleanup→configure cycle after a rename leaves the old
-`RemoteNode` resident with the same host and port as the new one, and every
-send goes out twice to the same peer: doubled uplink on the rate-limited
-links this bridge exists for. Pruning the stale entries in `on_cleanup` is a
-follow-up, not something the current code does.
+Nothing ever closes the bound socket — `on_cleanup` does not touch
+`socket_`, there is no destructor, and `SO_REUSEADDR` is never set — so on a
+fixed port (which is every deployed config) a deactivate→cleanup→configure
+cycle re-binds the same port, gets `EADDRINUSE` and `exit(1)`s at the bind,
+before any of the renamed state is built. The shipped
+`launch/udp_bridge_launch.py` runs the node with `respawn=True,
+respawn_delay=2`, so the process returns by itself: the practical result of
+re-configuring instead of restarting is an unplanned restart, not a graceful
+rename. Closing the socket in `on_cleanup` is issue
+[#66](https://github.com/rolker/udp_bridge/issues/66); pruning the stale
+`remote_nodes_` / `subscribers_` entries there is the other half of the same
+follow-up, and neither is something the current code does.
 
 See the upgrade note under `remotes.<remote_label>.name` in
 [`README.md`](../README.md#parameters) before upgrading a live config.

@@ -137,12 +137,17 @@ For each remote in `remotes_list`:
     >   `add_remote`.
     >
     > **Restart the node after a rename — do not re-configure a running
-    > one.** `on_cleanup` does not clear `remote_nodes_` or `subscribers_`,
-    > so a deactivate→cleanup→configure cycle leaves the *old* remote
-    > resident alongside the new one, on the same host and port: every send
-    > then goes out twice to the same peer, doubling uplink on exactly the
-    > rate-limited links this bridge exists for. A fresh process starts from
-    > an empty table.
+    > one.** Nothing in the package ever closes the bound socket
+    > (`on_cleanup` does not touch `socket_`, there is no destructor, and
+    > `SO_REUSEADDR` is never set), so on every fixed-port deployment a
+    > deactivate→cleanup→configure cycle re-binds the same port, gets
+    > `EADDRINUSE` and `exit(1)`s at the bind — before the rename can reach
+    > the routing table at all (issue
+    > [#66](https://github.com/rolker/udp_bridge/issues/66)). The shipped
+    > `launch/udp_bridge_launch.py` sets `respawn=True, respawn_delay=2`,
+    > so the process does come back; the outcome is an unplanned restart
+    > rather than a graceful re-configure. A fresh process starts from an
+    > empty table, which is what the rename needs.
     >
     > Anything that consumes those (dashboards, scripts, launch-time service
     > calls) must use the entry. A remote left under the wrong entry is the

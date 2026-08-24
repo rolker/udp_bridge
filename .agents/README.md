@@ -201,11 +201,19 @@ there works today.
     `udp_bridge/README.md`. It briefly *was* authoritative, between #51 and
     #67 — a `name:` in an old config is not a typo, it is a removed
     feature, and the node will tell the operator so by refusing to start.
-  - **A rename does not survive a live re-configure.** `on_cleanup` clears
-    neither `remote_nodes_` nor `subscribers_`, so renaming an entry and
-    cycling deactivate→cleanup→configure leaves the old `RemoteNode`
-    resident on the same host/port and doubles every send to that peer.
-    Restart the node instead. Pruning on cleanup is an open follow-up.
+  - **A rename does not survive a live re-configure.** Nothing ever closes
+    the bound socket (no `close()`, no destructor, `on_cleanup` does not
+    touch `socket_`, no `SO_REUSEADDR`), so on a fixed port — every
+    deployed config — cycling deactivate→cleanup→configure re-binds the
+    same port, gets `EADDRINUSE` and `exit(1)`s at the bind
+    (`src/udp_bridge.cpp:430`), before any renamed state exists. Restart
+    the node instead. `launch/udp_bridge_launch.py` sets `respawn=True,
+    respawn_delay=2`, so that exit is self-healing — the cost is an
+    unplanned restart, not a dead bridge. Closing the socket on cleanup is
+    issue #66; pruning the stale `remote_nodes_` / `subscribers_` entries
+    is the other half of it. (The doubled-send story an earlier revision of
+    this note told needs `port: 0` to be reachable at all, and no config
+    uses that.)
   - An entry is now both a ≤23-byte wire identity **and** a ROS 2
     parameter-path segment, and ROS 2 uses `.` to separate segments. A peer
     whose wire name contains a `.` is therefore unconfigurable — not
