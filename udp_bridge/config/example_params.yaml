@@ -48,8 +48,13 @@
     #
     # Because an entry is also a ROS 2 parameter-path segment, and ROS 2
     # separates path segments with `.`, a peer whose wire name contains a
-    # `.` cannot be configured here at all. (Before issue #67 such a name
-    # was reachable via a separate remotes.<label>.name key. That key is
+    # `.` can still be configured, but only by nesting its parameters as
+    # though the dot were a level boundary -- remotes_list: ["boat.one"]
+    # with `remotes:` / `boat:` / `one:` rather than a literal `boat.one:`
+    # key. That resolves correctly, but the file then reads as a nested
+    # structure rather than as one peer, so prefer names without a `.`.
+    # (Before issue #67 the flat form was reachable via a separate
+    # remotes.<label>.name key. That key is
     # REMOVED: a non-empty value now fails startup outright, whatever it is
     # set to -- even a value equal to its own entry. Delete it. An
     # explicitly empty value is indistinguishable from an absent key and is
