@@ -348,3 +348,35 @@ and the plan remains proportionate in scope.
 ### Independent findings this round
 - [ ] (must-fix) `abs(sub_count - pub_count) <= 1` passes on exactly one
   drop or one duplicate; tighten to exact equality — see Findings above.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-23 12:18 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Plan**: `.agent/work-plans/issue-64/plan.md` at `a465a40`
+**Branch**: feature/issue-64 at `a465a40`
+**Phases**: single PR
+
+Host-inline edit closing the round-2 `## Plan Review` must-fix (`81f32e6`).
+Two lines, no redesign.
+
+The revised assertion `abs(sub_count - pub_count) <= 1` was documented as
+failing on any drop or any duplicate. It does not: a diff of exactly 1 passes,
+so a single dropped or single duplicated message -- the bug class this scenario
+exists to detect -- goes undetected. Same vacuous-pass shape round 1 rejected,
+at a higher bar.
+
+The one-message slack came from the host, on the theory that a message could be
+in flight at shutdown. The review disproved that: the subscriber outlives the
+publisher by 2 s on loopback with sub-millisecond delivery. Now
+`sub_count == pub_count` exactly, with a note that a run failing by one is a
+finding to investigate rather than tolerance to widen.
+
+Also recorded the round-2 suggestion: `run_scenario.py`'s `wait_ready()`
+wrapper forwards only `--timeout-s` and needs the topic / connection-id /
+remote-name / `--min-bps` / `--field` overrides plumbed through for the two
+gate calls.
+
+### Open questions
+- [ ] No open questions — plan is implementation-ready.
