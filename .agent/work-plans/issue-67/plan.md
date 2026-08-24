@@ -34,9 +34,12 @@ not re-derives them.
    and a parameter-path segment (no `.`) — findings 2 and 4.
 2. **`src/udp_bridge.cpp` on_configure (347–373)** — keep
    `declareIfMissing("remotes." + label + ".name", std::string())` per
-   label (finding 2 — needed only so rclcpp surfaces an override to warn
-   about); if non-empty, `RCLCPP_WARN_STREAM` that the key is set but no
-   longer read and the label must equal the peer's wire name instead. Call
+   label (finding 2 — needed only so rclcpp surfaces an override at all);
+   if non-empty, `RCLCPP_ERROR_STREAM` naming the parameter, the entry and
+   the value, and return `CallbackReturn::FAILURE` ahead of the socket
+   bind. (Revised per the operator decision of 2026-08-24 — see divergence
+   6; the plan as written specified a WARN and a successful configure.)
+   Call
    `resolveRemoteIdentities(remotes_list, name_, &identity_error)`; same
    `FAILURE`-on-error handling.
 3. **~476–486** — `configured_remote_names_` becomes
@@ -74,39 +77,40 @@ not re-derives them.
    - Fix `MaximumLengthNamesConfigure` (129–135): boundary must move to the
      label — `.remote(kOtherAtLimit, "")` instead of
      `.remote("robot_a", kOtherAtLimit)`.
-   - Add `StaleRemoteNameParameterWarns`: `.remote("robot_a",
-     "some_stale_name").configure()` still returns `kInactive` (WARN, not
-     FAILURE).
+   - Add `RetiredRemoteNameParameterFailsToConfigure`: `.remote("robot_a",
+     "some_other_name").configure()` returns `kUnconfigured`, and
+     `RetiredRemoteNameMatchingItsLabelStillFailsToConfigure` for the
+     no-carve-out case. (Revised per the operator decision of 2026-08-24 —
+     see divergence 6. The plan specified `StaleRemoteNameParameterWarns`
+     asserting `kInactive`.)
 
      **Do not assert on log text.** No test in this package captures log
      content, and the one logging-adjacent test does the opposite — it
      *silences* the logger and asserts through an accessor instead
-     (`test_remote_node_resend.cpp:838-852`, whose own comment reads: "the
-     cap-enforcement assertion uses `dispatchMissWarnedIdCountForTest`, not
-     log inspection"). Follow that convention: expose a small
-     `staleRemoteNameKeyCountForTest()` (or equivalently-named accessor)
-     incremented where the WARN is emitted, and assert on it. That is
-     stable against wording changes, needs no stderr capture, and matches
-     how this repo already tests "did we notice X".
+     (`test_remote_node_resend.cpp:838-852`). Under the plan's WARN that
+     forced a `staleRemoteNameKeyCountForTest()` accessor, since a warning
+     is not otherwise observable. A FAILURE **is** directly observable in
+     the state the node lands in, so no accessor is needed and none is
+     added — see divergence 7.
 7. **Docs** (Issue Review confirmed all four are in-scope, deeper than a
    one-line fix):
    - `doc/relay_design.md` — rewrite the identity-namespace section
      (~158–200: drop the `remotes.<label>.name` fallback description, fold
      in ROS 1 lineage) and its upgrade note (~188–192: flips to "a live key
-     becomes inert-with-WARN"); fix the over-long-names table row (~216) to
-     drop the `.name` alternative.
+     is REJECTED — `on_configure` fails"); fix the over-long-names table row
+     (~216) to drop the `.name` alternative.
    - `.agents/README.md` — rewrite the pitfalls section (~183–208, "IS a
-     real parameter as of #51" → declared-but-unread, WARN on non-empty)
+     real parameter as of #51" → declared-but-unread, FAILURE on non-empty)
      and the parameter table row (108).
    - `README.md` — rewrite the `remotes.<remote_label>.name` description
      (~88) and its #51 upgrade note (~97–120). The node-name-length upgrade
      note (~122–129) is **also affected**, contrary to an earlier draft of
      this plan: it states that an over-long `remotes.<label>.name` fails the
-     configure transition, which stops being true once that key is read only
-     to warn about. Rewrite it so the rejection is described where it still
-     applies — the node's own `name`, the `remotes_list` label, and the
-     `add_remote` service — and so a stale over-long `.name` is described as
-     warned-about, not rejected.
+     configure transition, which stops being true once that key is no longer
+     read for identity. Rewrite it so the length rejection is described where
+     it still applies — the node's own `name`, the `remotes_list` label, and
+     the `add_remote` service — and so a `.name` key is described as refused
+     on *presence*, whatever its length.
    - `config/example_params.yaml` — remove the commented `# name: "robot_a"`
      example (~63) and the "identity on the wire is `remotes.<label>.name`"
      prose (~34); generalize the existing operator_1 note (~158) into the
@@ -118,9 +122,9 @@ not re-derives them.
 | File | Change |
 |------|--------|
 | `include/udp_bridge/remote_identity.h` | Delete resolver fn; label-only signature; drop dead collision map; rewrite header comment |
-| `src/udp_bridge.cpp` | Keep declaring `.name` for WARN only; stop using it for identity; drop dead INFO branch; fix WARN advice |
+| `src/udp_bridge.cpp` | Keep declaring `.name` for detection only; stop using it for identity; FAIL `on_configure` when non-empty; drop dead INFO branch; fix unknown-sender WARN advice |
 | `test/test_relay_routing.cpp` | 1 renamed+inverted test, 2 deleted, 3 trimmed to label-only args |
-| `test/test_node_name_limits.cpp` | 2 deleted, 1 fixed boundary, 1 new (stale-key WARN) |
+| `test/test_node_name_limits.cpp` | 2 deleted, 1 fixed boundary, 4 new (retired-key rejection ×2, absent-key negative, empty-entry lifecycle) |
 | `doc/relay_design.md`, `.agents/README.md`, `README.md`, `config/example_params.yaml` | Rewrite two-namespace language per step 7 |
 
 ## Principles Self-Check
@@ -128,7 +132,7 @@ not re-derives them.
 | Principle | Consideration |
 |---|---|
 | Only what's needed | Dead collision-map deletion (step 1) shrinks the diff below a naive rename |
-| Test what breaks | Every deletion's replacement coverage stated inline (steps 5–6); one new test for the WARN this issue adds |
+| Test what breaks | Every deletion's replacement coverage stated inline (steps 5–6); new tests for the rejection this issue adds, both the differing and the equal-to-label case |
 | Capture decisions | ROS 1 lineage moves from the GitHub thread into `remote_identity.h`'s durable header comment |
 | A change includes its consequences | All four Issue-Review-confirmed doc targets get concrete edits (step 7) |
 
@@ -159,14 +163,15 @@ not re-derives them.
 ## Open Questions
 
 - None — the Issue Review's four action items are resolved: dead-code
-  deletion (step 1), stale-key WARN mechanism (step 2), label-as-parameter-
+  deletion (step 1), retired-key rejection mechanism (step 2), label-as-parameter-
   path-segment constraint documented (steps 1, 7), unknown-sender WARN fixed
   (step 4).
 
 ## Implementation Divergences (kept in sync during implementation)
 
-The plan was followed as written. Five things it did not name were needed
-and are in the commits:
+The plan was followed as written except for the operator decision recorded
+in divergence 6, which changed the behaviour it specified. Seven things it
+did not name were needed and are in the commits:
 
 1. **`resolveRemoteIdentities` collapses repeats in its return value.** The
    plan said "return `std::vector<std::string>` (valid labels)" without
@@ -187,14 +192,49 @@ and are in the commits:
    1 when the key is set proves nothing unless something also pins that it
    is 0 when the key is absent — otherwise an unconditional increment
    passes. The negative case is what makes the accessor a real assertion.
+   *Kept under divergence 6, renamed
+   `AbsentRemoteNameParameterConfiguresCleanly` and now asserting the
+   transition instead of the (removed) counter — the same argument holds: a
+   rejection test proves nothing unless something pins that an absent key
+   still configures.*
 4. **The stale-key WARN counter is reset at the top of `on_configure`**,
    not merely incremented, so a re-configure reports the current config
-   rather than an accumulating total.
+   rather than an accumulating total. *Superseded by divergence 7 — the
+   counter no longer exists.*
 5. **`README.md`'s empty/self-name paragraph (~164)** also described the
    rejection in terms of "an empty `remotes_list` entry with no `name`
    set". The plan named the `remotes.<remote_label>.name` description, the
    #51 upgrade note and the node-name-length note; this fourth passage
    needed the same retargeting.
+6. **The retired key is REJECTED, not warned about — operator decision,
+   2026-08-24.** The plan (and the issue's ask item 3) specified a WARN and
+   a successful configure. The pre-push review recorded the consequence as
+   a downgraded finding: warn-only leaves exactly one config shape — a
+   stale value *differing* from its label — announced and then ignored, and
+   that shape is the #51 echo bug, while every other identity error fails
+   the transition. The operator's ruling: *"fail if any name is present
+   since it's removed and not supported."* So a non-empty
+   `remotes.<label>.name` returns `CallbackReturn::FAILURE`, with **no
+   carve-out** for a value equal to its label — the parameter is removed, so
+   presence is the error. The parameter is still declared (unchanged: the
+   only way rclcpp surfaces the override), and the FAILURE returns ahead of
+   the socket bind alongside the other identity failures, preserving #63
+   round 3's no-socket-leak property. An explicitly empty value is
+   indistinguishable from an absent key and is accepted; the docs say so.
+   This also made `test/bench/configs/three_path.yaml`'s retired key
+   load-bearing rather than cosmetic — under hard failure the #18 bench
+   harness stops configuring, and `test_smoke.py` fails until it is removed.
+7. **`staleRemoteNameKeyCountForTest()` and its counter were removed, not
+   updated.** They existed only because a WARN is not observable in a
+   package that captures no log content anywhere. A FAILURE is directly
+   observable in the state the node lands in, so the accessor was
+   unnecessary complexity and the tests assert on the transition result
+   instead. Removing it also obviated three review suggestions about the
+   counter (its "written before any worker thread exists" rationale being
+   false on a re-configure; counting occurrences rather than keys on a
+   repeated entry; not being reset in `on_cleanup`). The negative test —
+   an absent key configures cleanly — is kept, as
+   `AbsentRemoteNameParameterConfiguresCleanly`.
 
 ## Estimated Scope
 
