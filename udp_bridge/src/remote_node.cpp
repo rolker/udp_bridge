@@ -338,9 +338,15 @@ std::vector<uint8_t> RemoteNode::unwrap(std::vector<uint8_t> const &message, con
   {
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     duplicate = received_packet_times_.find(packet->packet_number) != received_packet_times_.end();
-    c = connection(packet->connection_id);  // re-enters mutex (recursive)
+    // Bounded read of the fixed-size wire field (issue #51): nothing on
+    // the wire guarantees `connection_id` is null-terminated, and a
+    // std::string built from the bare pointer would scan past the field —
+    // and past the receive buffer, if no null byte follows.
+    const std::string connection_id = wire_field_to_string(
+      packet->connection_id, maximum_connection_id_size);
+    c = connection(connection_id);  // re-enters mutex (recursive)
     if(!c)
-      c = newConnection(packet->connection_id, source_info.host, source_info.port);
+      c = newConnection(connection_id, source_info.host, source_info.port);
     auto now = clock_->now();
     if(!duplicate)
       recordPacketArrival(packet->packet_number, now);

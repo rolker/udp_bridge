@@ -335,27 +335,32 @@ TEST(RelayRouting, MaximumLengthIdentityStillClosesTheLoopRule)
 // follows. The read is bounded instead.
 TEST(RelayRouting, UnterminatedWireNameIsReadWithinItsField)
 {
-  // The field, filled edge to edge, immediately followed by more non-zero
-  // bytes: an unbounded scan would keep going into them.
-  struct
-  {
-    char source_node[udp_bridge::maximum_node_name_size];
-    char trailing[8];
-  } packed;
-  memset(&packed, 'z', sizeof(packed));
+  // Exactly the field, on the heap, filled edge to edge with no null byte
+  // anywhere in it. The allocation ends where the field ends, so an
+  // unbounded scan reads past the end of it -- which a sanitizer build
+  // reports and an unlucky production run turns into a garbage remote name
+  // or a crash.
+  std::vector<char> field(udp_bridge::maximum_node_name_size, 'z');
 
   const auto name = udp_bridge::wire_field_to_string(
-    packed.source_node, udp_bridge::maximum_node_name_size);
+    field.data(), udp_bridge::maximum_node_name_size);
   EXPECT_EQ(name.size(), std::size_t(udp_bridge::maximum_node_name_size))
     << "the read must stop at the end of the field, not at the next null";
   EXPECT_EQ(name, std::string(udp_bridge::maximum_node_name_size, 'z'));
 
-  // And the ordinary null-padded case is unchanged.
-  memset(&packed, 0, sizeof(packed));
-  memcpy(packed.source_node, "boat", 4);
-  EXPECT_EQ(udp_bridge::wire_field_to_string(packed.source_node,
+  // And the ordinary null-padded case -- what our own write side produces
+  // -- is unchanged.
+  std::vector<char> padded(udp_bridge::maximum_node_name_size, '\0');
+  memcpy(padded.data(), "boat", 4);
+  EXPECT_EQ(udp_bridge::wire_field_to_string(padded.data(),
                                              udp_bridge::maximum_node_name_size),
             "boat");
+
+  // The connection-id field is read the same way, for the same reason.
+  std::vector<char> id_field(udp_bridge::maximum_connection_id_size, 'q');
+  EXPECT_EQ(udp_bridge::wire_field_to_string(
+              id_field.data(), udp_bridge::maximum_connection_id_size),
+            std::string(udp_bridge::maximum_connection_id_size, 'q'));
 }
 
 // A packet that never passed through unwrap() carries no source_node, so the

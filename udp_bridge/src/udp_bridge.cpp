@@ -1690,8 +1690,22 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
   {
     const SequencedPacket* wrapped_packet = reinterpret_cast<const SequencedPacket*>(message.data());
 
+    // Read the fixed-size wire fields with an explicit bound (issue #51).
+    // `source_node` is `char[maximum_node_name_size]` and nothing on the
+    // wire guarantees a null terminator: our own write side memsets the
+    // field before copying, so packets we sent always terminate, but a
+    // corrupted or foreign packet can fill all 24 bytes with non-zero data
+    // and constructing a std::string from the bare pointer would then read
+    // past the field — and past the receive buffer, if no null byte
+    // happens to follow it. Same for `connection_id`, which is handed
+    // straight to the connection lookup below and to RemoteNode::unwrap.
+    const std::string source_node = wire_field_to_string(
+      wrapped_packet->source_node, maximum_node_name_size);
+    const std::string connection_id = wire_field_to_string(
+      wrapped_packet->connection_id, maximum_connection_id_size);
+
     auto updated_source_info = source_info;
-    updated_source_info.node_name = wrapped_packet->source_node;
+    updated_source_info.node_name = source_node;
     // Carry the wrapped sequence number into the recursive decode so the
     // stale-packet gate in decodeData can compare it against the per-topic
     // high-water mark. Propagates through the Compressed and Fragment
@@ -1703,15 +1717,15 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
     std::shared_ptr<RemoteNode> remote;
     {
       std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-      auto remote_iterator = remote_nodes_.find(wrapped_packet->source_node);
+      auto remote_iterator = remote_nodes_.find(source_node);
       if(remote_iterator != remote_nodes_.end())
         remote = remote_iterator->second;
 
       if(!remote)
       {
-        if(wrapped_packet->source_node == name_)
+        if(source_node == name_)
         {
-          RCLCPP_ERROR_STREAM(get_logger(), "Received a packet from a node with our name: " << name_ << " connection: " << wrapped_packet->connection_id << " host: " << source_info.host << " port: " << source_info.port);
+          RCLCPP_ERROR_STREAM(get_logger(), "Received a packet from a node with our name: " << name_ << " connection: " << connection_id << " host: " << source_info.host << " port: " << source_info.port);
           return;
         }
         // Loud on the misconfiguration that silently defeats the relay
@@ -1726,15 +1740,15 @@ void UDPBridge::unwrap(const std::vector<uint8_t>& message, const SourceInfo& so
         // legitimate, so this warns rather than refuses; it is skipped
         // entirely when no remote is statically configured.
         if(!configured_remote_names_.empty() &&
-           !configured_remote_names_.count(wrapped_packet->source_node))
+           !configured_remote_names_.count(source_node))
           RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 10000,
-            "packet from '" << wrapped_packet->source_node
+            "packet from '" << source_node
             << "' which matches no configured remote. If this is a remote in"
                " remotes_list, set remotes.<label>.name to '"
-            << wrapped_packet->source_node
+            << source_node
             << "' — otherwise relayed traffic can be sent back to it.");
-        remote = std::make_shared<RemoteNode>(wrapped_packet->source_node, name_, *this);
-        remote_nodes_[wrapped_packet->source_node] = remote;
+        remote = std::make_shared<RemoteNode>(source_node, name_, *this);
+        remote_nodes_[source_node] = remote;
       }
     }
     // remote->unwrap and the recursive decode() run without remote_nodes_mutex_
