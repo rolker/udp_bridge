@@ -41,14 +41,25 @@ struct RelayItem
   udp_bridge_interfaces::msg::MessageInternal message;
 
   /// Approximate footprint for the queue's byte budget. The payload
-  /// dominates; the small string fields are included so an empty-payload
-  /// message still counts a nonzero amount.
+  /// dominates; the string fields are included so an empty-payload message
+  /// still counts a nonzero amount.
+  ///
+  /// EVERY string MessageInternal carries is counted, because the queue's
+  /// byte bound is a memory bound: anything held and not counted lets the
+  /// queue hold more than its budget says. `message_definition` is the one
+  /// that matters in practice — a full ROS message definition dwarfs the
+  /// other fields and can rival a small payload — but `md5sum`,
+  /// `reliability` and `durability` are held too, so they count as well.
+  /// (`history_depth` is a uint32 inside the struct this method is a member
+  /// of, so it is not separately allocated and is not counted.)
   size_t byte_size() const
   {
     return message.data.size()
       + topic.size() + source_node.size()
       + message.source_topic.size() + message.destination_topic.size()
-      + message.datatype.size();
+      + message.md5sum.size() + message.datatype.size()
+      + message.message_definition.size()
+      + message.reliability.size() + message.durability.size();
   }
 };
 

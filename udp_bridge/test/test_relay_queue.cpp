@@ -107,6 +107,41 @@ struct BlockingSink
 
 } // namespace
 
+// The queue's budget is a MEMORY bound, so byte_size() has to account for
+// everything an item holds. It used to count the payload, the routing
+// topic, the sender and three of MessageInternal's strings, leaving
+// md5sum, message_definition, reliability and durability uncounted --
+// message_definition being the one that matters, since a full ROS message
+// definition can rival a small payload. Uncounted bytes let the queue hold
+// more than `relay_queue_max_bytes` says it may.
+TEST(RelayQueue, ByteSizeCountsEveryHeldString)
+{
+  RelayItem item;
+  item.topic = "0123456789";                      // 10
+  item.source_node = "012345678";                 // 9
+  item.message.data.resize(100);                  // 100
+  item.message.source_topic = "01234567";         // 8
+  item.message.destination_topic = "0123456";     // 7
+  item.message.md5sum = "012345";                 // 6
+  item.message.datatype = "01234";                // 5
+  item.message.message_definition = "0123";       // 4
+  item.message.reliability = "012";               // 3
+  item.message.durability = "01";                 // 2
+
+  EXPECT_EQ(item.byte_size(), 154u)
+    << "every string the item holds must be inside the queue's byte bound";
+
+  // And each field really is load-bearing: growing any one of them grows
+  // the accounted size by exactly that much.
+  const size_t before = item.byte_size();
+  item.message.message_definition += std::string(1000, 'd');
+  EXPECT_EQ(item.byte_size(), before + 1000u);
+  item.message.reliability += "x";
+  item.message.durability += "x";
+  item.message.md5sum += "x";
+  EXPECT_EQ(item.byte_size(), before + 1003u);
+}
+
 TEST(RelayQueue, PushDoesNotBlockOnAStalledSink)
 {
   BlockingSink sink;
