@@ -875,3 +875,31 @@ and identity semantics, not an objection. 1 inline comment, accurate.
 
 ### False positives
 - None. The single Copilot comment was checked against source and holds.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-24 17:41 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**PR**: #68 at `ff98042` (fix pushed as `a6345d8`)
+**Sources**: 2 (Copilot x3 rounds @ `8208d84`/`4ff1766`/`ff98042`; Local Review (Pre-Push) x2)
+**Cross-source confirmations**: 0 this round
+**CI**: all-pass (build-and-test success; copilot-pull-request-reviewer success)
+
+Copilot verdict progression: needs-a-closer-look -> needs-a-closer-look ->
+changes-recommended. Three inline comments across the rounds, all accurate, no
+false positives.
+
+### Findings
+- [x] (Copilot @ `8208d84`) Configure loop iterated the raw `remotes_list` rather than the deduplicated identities, so a repeated entry built the same `RemoteNode` twice — `src/udp_bridge.cpp:538`. Fixed in `4ff1766`.
+- [x] (Copilot @ `4ff1766`) Four documentation sites claimed a peer whose wire name contains a `.` is unconfigurable. Verified false against a live node: `remotes_list: ["boat.one"]` with the YAML nested as `remotes: boat: one:` resolves `remotes.boat.one.connections_list` correctly. Fixed in `ff98042`.
+- [x] (Copilot @ `ff98042`) `config/example_params.yaml` was a FIFTH site making the same claim, left saying "cannot be configured here at all" — so the file an operator copies from contradicted the four corrected ones. Fixed in `a6345d8`.
+
+### Notes
+- Finding 3 survived the fix for finding 2 because the post-fix sweep grepped for the phrasings the host had written (`unconfigurable`, `inexpressible`, ``contains a `.` ``) rather than for the claim. The example config words it differently. Second incomplete-sweep miss on this branch — the first was the same shape. Re-swept by concept across `udp_bridge/` and `.agents/`; no further instances.
+- All three findings originate from claims the host introduced, not from the implementation sub-agents: the un-deduplicated loop survived two local review rounds because round 1 saw it and framed it as a counter problem, which the fix pass then resolved by deleting the counter; the dot-name claim was the host's framing of a "retired capability" and propagated to five places.
+- Governance: no new ROS parameter, so `.agents/README.md`'s verified-parameter table needs no row. `example_params.yaml` re-validated as parseable YAML after the edit.
+- Verification after the fix: build 0, test 0, 254 tests / 0 failures.
+
+### False positives
+- None across all three Copilot rounds. Every comment was checked against source and held.
