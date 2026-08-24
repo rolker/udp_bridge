@@ -20,15 +20,35 @@ and instead run three plain bridges over loopback in the single namespace
 1. **New config** `udp_bridge/test/bench/configs/relay_hub.yaml` — three
    bridge blocks, all on `127.0.0.1`:
    - `bridge_a` (`name: "a"`, port 5401): `remotes_list: ["hub"]`;
-     `remotes.hub` (`name: "hub"`, port 5402) lists two topics on one
-     connection: outbound `/a/heartbeat` → dest `/hub/from_a/heartbeat`
-     (the message A sends), and inbound `/hub/from_a/heartbeat` → dest
-     `/a/echo_from_hub` — A also *asks for* the topic it publishes, so a
-     broken sender-exclusion in `relayToOtherRemotes()` (the loop rule) has
-     somewhere to deliver to and the echo-guard assertion (below) can
-     actually fail.
+     `remotes.hub` (`name: "hub"`, port 5402) lists exactly **one** topic:
+     outbound `/a/heartbeat` → dest `/hub/from_a/heartbeat` (the message A
+     sends). A's own config carries no inbound entry — per
+     `udp_bridge.cpp`'s push model (`source`/`destination` params,
+     ~583-592: a bridge locally subscribes to `source` and forwards to
+     `destination` on that remote), a config entry under A's own block
+     would subscribe A to a topic A never locally publishes, so it can
+     never fire. It would be a decorative, dead entry, not a working echo
+     guard.
    - `bridge_hub` (`name: "hub"`, port 5402): `remotes_list: ["a", "b"]`.
-     `remotes.a` (`name: "a"` — matches label) carries A's two topics above.
+     `remotes.a` (`name: "a"` — matches label) carries **one** topic: the
+     echo-guard entry, source `/hub/from_a/heartbeat` → dest
+     `/a/echo_from_hub`. This is the **only** place the echo-guard topic is
+     configured — the rule stated once, unambiguously: hub locally
+     subscribes to `/hub/from_a/heartbeat` (published locally, unconditionally,
+     the moment hub receives A's relayed data — `decodeData` →
+     `enqueuePublish` fires regardless of any further forwarding config) and
+     is configured to also forward it back to remote `"a"`. Normally
+     `relayToOtherRemotes()`'s loop rule (`udp_bridge.cpp`:1213,
+     `selectRateLimitedConnections(..., item.source_node)`) excludes the
+     sender from `subscribers_[topic].remote_details` before sending, so
+     this entry should never actually deliver to A even though it's
+     configured — that's what makes `a_echo == 0` a real assertion of the
+     exclusion logic, not a vacuous one: a regression that fails to exclude
+     `item.source_node` is the only realistic way traffic reaches this
+     destination. Hub's own local copy needs no separate config entry — the
+     `hub_local` subscriber (step 2) listens directly on
+     `/hub/from_a/heartbeat` on hub's domain, the unconditional local
+     publish described above.
      `remotes.b` (`name: "boat_b"` — **deliberately differs from the label
      `"b"`**, port 5403) lists `/hub/from_a/heartbeat` → dest
      `/b/from_a/heartbeat`. This is #63's exact shape: the mismatch lives on
@@ -41,8 +61,8 @@ and instead run three plain bridges over loopback in the single namespace
      `remotes.hub` (`name: "hub"`, port 5402) lists `/hub/from_a/heartbeat`
      as an inbound topic → dest `/b/from_a/heartbeat`.
    - Three distinct destination topics total (`/hub/from_a/heartbeat` =
-     hub-local, `/b/from_a/heartbeat` = B, `/a/echo_from_hub` = A's
-     echo-guard), per the host decision — no shared topic + stderr
+     hub's own local copy, `/b/from_a/heartbeat` = B, `/a/echo_from_hub` =
+     A's echo-guard), per the host decision — no shared topic + stderr
      disambiguation.
 
 2. **New scenario function** `run_relay_hub(duration_s)` in
@@ -52,22 +72,58 @@ and instead run three plain bridges over loopback in the single namespace
    ambiguity in logs). No `setup_topology()`/`netns=` args — `launch_bridge`
    (`:336`), `launch_pub`/`launch_sub` (`:366`/`:380`) already accept
    `netns=None` and run in the orchestrator's own (already-unshared)
-   namespace. Sequence: launch all three bridges (`launch_bridge` raises via
-   `check=True` in `_run` if any lifecycle `configure`/`activate` transition
-   fails — this is the "did three bridges really come up" guard: a silently
-   degraded 2-bridge run aborts loudly here, before any counting), launch
-   three `sub.py` subscribers (hub-local, B, A's echo-guard) on their
-   respective domains/topics, then one `pub.py --tier critical` on A's
-   domain targeting `/a/heartbeat`. Wait/parse counts via `_parse_count`
-   (`:687`), matching `run_smoke`'s wait pattern.
+   namespace.
+
+   **Publish volume**: `pub.py`'s critical tier defaults to 1 Hz
+   (`TIER_DEFAULTS['critical']`); at `duration_s=10` that's ~10 messages,
+   where one anomalous message is 10% of the sample — too coarse to tell
+   clean delivery from a single drop or duplicate. `launch_pub` gains an
+   optional `rate_hz: float | None = None` param that, when set, passes
+   `--rate-hz` through to `pub.py` (already supports the override; see
+   `TIER_DEFAULTS`/`--rate-hz` in `pub.py`). `run_relay_hub` calls it with
+   `rate_hz=10.0` at the same `duration_s=10` default, giving ~100
+   messages — one anomalous message is now ~1%, and total scenario runtime
+   is unchanged (still ~10s, since this scenario runs on every build).
+
+   **Readiness gate, not fixed sleeps**: `run_smoke`'s pattern (2s
+   bridge-handshake sleep + 0.5s discovery sleep before publishing) is
+   exactly what `range_degradation`/`subscriber_death` replaced with
+   `wait_ready.py` after #57 — a fixed sleep can under-wait and silently
+   measure a broken startup as if it were clean data. A three-hop hub
+   topology has one more discovery leg than the two-party pattern, so
+   reusing the fixed-sleep numbers unchanged is exactly the assumption
+   `wait_ready.py` exists to avoid. `wait_ready.py`'s `ReadinessGate`
+   already reads any `(topic, connection_id, remote_name)` triple's
+   `DataRates` off `BridgeInfo` — it only reads `message.success_bytes_per_second`,
+   which stays at 0 until the counted publisher starts (circular for a
+   pre-publish gate). Give it a `--field {message,overhead}` arg (default
+   `message`, so `range_degradation` is untouched) so `relay_hub` can gate
+   on `overhead.success_bytes_per_second` instead — the CONNECT/subscribe-
+   handshake traffic each bridge exchanges with its peers at activation,
+   independent of any topic data (`connection.cpp`'s `is_overhead` send
+   path, `udp_bridge.cpp`:2331/2528 `PacketSendCategory::overhead`). Launch
+   the three bridges, then two `wait_ready.py` calls with a short timeout
+   (e.g. 5s — this scenario has no netem and should be near-instant once
+   up) and a low `--min-bps` tuned during implementation to sit clearly
+   above idle noise: one for bridge_a's connection to `"hub"`, one for
+   bridge_hub's connection to `"boat_b"`. Both must report ready — timeout
+   raises `RuntimeError` (per `wait_ready()`'s existing contract), aborting
+   loudly rather than launching the publisher into an unconfirmed graph.
+   Only then launch the three `sub.py` subscribers (hub-local on
+   `/hub/from_a/heartbeat`, B on `/b/from_a/heartbeat`, A's echo-guard on
+   `/a/echo_from_hub`) and `pub.py --tier critical --rate-hz 10.0` on A's
+   domain targeting `/a/heartbeat`. Parse counts via `_parse_count` (`:687`).
 
 3. **Assertions** (in `main()`'s new `elif args.scenario == 'relay_hub':`
-   branch, alongside the other scenarios, ~line 934):
-   - `hub_local` and `b` sub-counts: `0.8 * pub_count <= sub_count <= 1.2 *
-     pub_count`. **Fails on**: 0 delivery (relay/local-publish broken), or
-     ~2x delivery (a duplicate-delivery regression — the exact vacuous-pass
-     shape #57 warned about; a bare `> 0` check cannot distinguish 1x
-     from 2x).
+   branch, alongside the other scenarios, ~line 934). `pub_count` is
+   `_parse_count(pub)` — the publisher's own tally, never rate×duration
+   arithmetic, so a publisher that underruns (e.g. scheduling jitter costs
+   it a cycle) tightens the bar on itself instead of silently loosening it:
+   - `hub_local` and `b` sub-counts: `abs(sub_count - pub_count) <= 1`
+     (the `1` covers only the one message that can legitimately be
+     in-flight at shutdown). **Fails on**: any drop, any duplicate — a
+     single dropped message or a single duplicated message now fails,
+     which the old `0.8x-1.2x` band over ~10 messages could not detect.
    - `a_echo` sub-count: `== 0` exactly. **Fails on**: any regression in the
      sender-exclusion (loop) rule in `relayToOtherRemotes()` that relays a
      message back to its own sender — the only realistic way this line
@@ -78,6 +134,18 @@ and instead run three plain bridges over loopback in the single namespace
    - Print `BENCH_RESULT_{HUB_LOCAL,B,A_ECHO}_SUB_COUNT=` and
      `BENCH_RESULT_A_PUB_COUNT=`, matching the `BENCH_RESULT_*` convention.
 
+   **Correcting the stand-up rationale**: `launch_bridge`'s `check=True`
+   (`_run`, raised if any lifecycle `configure`/`activate` transition
+   fails) only proves a bridge reached ACTIVE on its own — it says nothing
+   about whether it ever exchanged a packet with a peer. The actual guard
+   against a silently-degraded run (e.g. two bridges up, the third
+   isolated) is the delivery-count assertions above: an unreachable B or a
+   dead hub relay drives `b`'s or `hub_local`'s count to 0, which the
+   `abs(...) <= 1` check rejects. `check=True` and the count assertions are
+   complementary, not redundant — a future edit must not drop the count
+   assertions on the assumption `check=True` already covers three-bridge
+   connectivity.
+
 4. **New pytest** `udp_bridge/test/bench/test_relay_hub.py`, modeled on
    `test_smoke.py` (same `_userns_available()`/`_ros2_available()` skip
    markers — **no** `UDP_BRIDGE_BENCH_SCENARIOS=1` gate, matching the
@@ -86,7 +154,7 @@ and instead run three plain bridges over loopback in the single namespace
    unavailable). Runs `run_scenario.py --scenario relay_hub`, parses the
    four `BENCH_RESULT_*` lines, re-asserts the four conditions from step 3
    (defense in depth — the orchestrator's own exit code already encodes
-   them) with the same tolerance-band logic.
+   them) with the same `abs(...) <= 1` / `== 0` / `> 0` logic.
 
 5. **CI capability check (must state, not assume):**
    `.github/workflows/ci.yml` runs `container: image: ros:jazzy-ros-core`
@@ -107,7 +175,8 @@ and instead run three plain bridges over loopback in the single namespace
 | File | Change |
 |---|---|
 | `udp_bridge/test/bench/configs/relay_hub.yaml` | New — three-bridge hub config (step 1) |
-| `udp_bridge/test/bench/run_scenario.py` | Add `run_relay_hub()`, `'relay_hub'` CLI choice, `main()` branch |
+| `udp_bridge/test/bench/run_scenario.py` | Add `run_relay_hub()`, `'relay_hub'` CLI choice, `main()` branch; `launch_pub()` gains optional `rate_hz` param |
+| `udp_bridge/test/bench/wait_ready.py` | Add `--field {message,overhead}` arg (default `message`, `range_degradation` unaffected) |
 | `udp_bridge/test/bench/test_relay_hub.py` | New — pytest wrapper, no opt-in gate |
 | `udp_bridge/test/bench/README.md` | New scenario-table row; CI section note that `relay_hub` skips under the same `unshare` restriction as `smoke` |
 
