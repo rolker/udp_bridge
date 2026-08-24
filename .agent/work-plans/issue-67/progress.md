@@ -851,3 +851,27 @@ Not pushed, no PR — per the sub-agent handoff contract.
 ---
 **Authored-By**: `Claude Code Agent`
 **Model**: `Claude Opus`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-24 14:52 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**PR**: #68 at `8208d84`
+**Sources**: 2 (Copilot @ `8208d84`; Local Review (Pre-Push) x2 @ `11bc263`/`3f1ad40`)
+**Cross-source confirmations**: 1
+**CI**: all-pass (build-and-test success; copilot-pull-request-reviewer success)
+
+Copilot verdict: "Needs a closer look" — a request for human review of lifecycle
+and identity semantics, not an objection. 1 inline comment, accurate.
+
+### Findings
+- [ ] (cross-confirmed by root cause: Copilot @ `8208d84` + Local Review @ `11bc263`) The configure loop iterates the raw `remotes_list` rather than the deduplicated `remote_identities` returned by `resolveRemoteIdentities`, so a repeated entry constructs and `update()`s the same `RemoteNode` twice — two DDS publishers created then discarded, plus duplicate `getaddrinfo` — before the second assignment collapses the state. Final state is correct; the cost is redundant DDS entity churn during `on_configure` and an idempotence claim that holds for state but not for work. Fix: iterate `remote_identities`. Consider also strengthening `RepeatedLabelIsIdempotentNotACollision` to assert the work is not repeated, not only the resulting state — `src/udp_bridge.cpp:538`
+
+### Notes
+- Not a same-head-SHA confirmation (the two sightings are at different heads), but the same root cause found twice by independent sources. Worth recording how it survived: round 1 raised it as "the counter counts occurrences, not keys", and the fix pass resolved that by deleting the counter entirely — removing the symptom while the un-deduplicated loop remained. Copilot then found the loop's other consequence. A reminder that resolving a finding by deleting its symptom can leave the cause in place.
+- Severity low: no incorrect end state, no field-visible behaviour change. A repeated `remotes_list` entry is itself a config error the package tolerates deliberately.
+- Governance: no new ROS parameter this round, so `.agents/README.md`'s verified-parameter table needs no row.
+
+### False positives
+- None. The single Copilot comment was checked against source and holds.
