@@ -29,10 +29,28 @@
     # instead of the late arrival being hard-dropped. Clamped to 0–500 ms.
     reorder_hold_window_ms: 0.0
 
-    # List of initial remote nodes to connect to. These are LABELS: they
-    # spell the parameter paths below (remotes.<label>.connections_list).
-    # The remote's identity on the wire is remotes.<label>.name, which
-    # defaults to the label -- see the note on that key below.
+    # List of initial remote nodes to connect to. Each entry does two jobs
+    # at once: it spells that remote's parameter paths below
+    # (remotes.<entry>.connections_list) AND it IS the name that remote
+    # calls itself on the wire -- that bridge's own `name` parameter, which
+    # it stamps into every packet it sends.
+    #
+    # So: YOUR LABEL FOR A PEER MUST BE THE NAME THAT PEER CALLS ITSELF.
+    #
+    # That name is the remote's identity everywhere it matters, including
+    # the relay loop rule ("never send a message back to the remote it came
+    # from"), which compares it against the sender name on the wire.
+    # Getting it wrong means the hub does not recognise that remote's own
+    # traffic and can relay it back to it; the bridge WARNs when it receives
+    # a packet from a name matching no configured remote. An entry that is
+    # empty, longer than 23 characters, or equal to this bridge's own `name`
+    # fails startup.
+    #
+    # Because an entry is also a ROS 2 parameter-path segment, and ROS 2
+    # separates path segments with `.`, a peer whose wire name contains a
+    # `.` cannot be configured here at all. (Before issue #67 such a name
+    # was reachable via a separate remotes.<label>.name key; that key is
+    # retired -- a non-empty value now only produces a WARN saying so.)
     #
     # Listing a SECOND remote here also turns this bridge into a relay hub.
     # A topic received from one remote is forwarded to every OTHER remote
@@ -43,24 +61,9 @@
     remotes_list: ["robot_a"]
 
     remotes:
-      robot_a:  # Label for the remote (used in remotes_list)
-        # Name of the remote node as known by the remote itself -- i.e.
-        # that bridge's own `name` parameter, which it stamps into every
-        # packet it sends. Defaults to the label (robot_a) if omitted,
-        # which is the usual case: set this ONLY when the remote calls
-        # itself something other than the label used here.
-        #
-        # This is the remote's identity everywhere it matters, including
-        # the relay loop rule ("never send a message back to the remote it
-        # came from"), which compares this name against the sender name on
-        # the wire. Getting it wrong means the hub does not recognise that
-        # remote's own traffic and can relay it back to it; the bridge
-        # WARNs when it receives a packet from a name matching no
-        # configured remote. Two remotes resolving to the same name is a
-        # configuration error and fails startup.
-        #
-        # Left as the default here, matching the operator_1 block below.
-        # name: "robot_a"
+      robot_a:  # The remote: this bridge knows it as "robot_a" on the
+                # wire, and that is what robot_a's own `name` parameter
+                # must be set to. (Matches the operator_1 block below.)
 
         # List of named connections to this remote.
         connections_list: ["telemetry"]
@@ -150,13 +153,13 @@
       # relayed to operator_1 is the topic the hub itself publishes/knows
       # -- i.e. robot_a's DESTINATION topic -- not robot_a's source name.
       #
+      # As above, "operator_1" is what that bridge calls itself on the
+      # wire, not just a local nickname for it.
+      #
       # Star topologies only: operator_1 must not also have a route back
       # to robot_a. The bridge knows only the last hop, so a cycle
       # (A -> B -> C -> A) would circulate a message indefinitely. See
       # doc/relay_design.md.
-      #
-      # (No `name:` key here: operator_1 calls itself "operator_1" on the
-      #  wire, so the label is the identity and the key can be omitted.)
       #
       # operator_1:
       #   connections_list: ["wan"]

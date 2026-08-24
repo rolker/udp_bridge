@@ -105,8 +105,8 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
 | `relay_queue_max_bytes` | 64 MiB | Byte budget for the relay worker queue (#51); clamped 1 MiB–2 GiB, same default and clamps as `publish_queue_max_bytes` |
-| `remotes.<label>.name` | `""` (empty) | Wire name of the remote (#51). Empty → the `remotes_list` label is used. Duplicate resolved names fail `on_configure` (validated before the socket is opened), as does a resolved name over 23 chars, one equal to this bridge's own `name`, or an empty one (an empty `remotes_list` entry with no `name`; `""` is a reserved sentinel on the send path). The `add_remote` service applies the same over-long and self-name refusals at runtime (ERROR, no remote created) |
-| `remotes_list` | `[]` | Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
+| `remotes.<label>.name` | `""` (empty) | **Retired (#67)** — still declared (rclcpp surfaces a YAML override only for a declared parameter; this node does not set `automatically_declare_parameters_from_overrides`), but never read for identity. A non-empty value logs a WARN at `on_configure` saying the key is inert and what to rename instead. Was, in #51 only, the wire name overriding the label |
+| `remotes_list` | `[]` | Each entry IS the remote's wire name (#67), not just a parameter-path label: your label for a peer must be the name that peer calls itself. An entry that is empty, over 23 chars, or equal to this bridge's own `name` fails `on_configure` (validated before the socket is opened; `""` is a reserved sentinel on the send path); a repeated entry is idempotent. The `add_remote` service applies the same over-long and self-name refusals at runtime (ERROR, no remote created). Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
 
 See `config/example_params.yaml` for the nested structure.
 
@@ -180,29 +180,41 @@ there works today.
   when `maximum_bytes_per_second` is 0 is **50000 B/s** — the
   `example_params.yaml` comment claiming 500000 is wrong (that number is the
   socket buffer size).
-- **`remotes.<label>.name` IS a real parameter as of #51** — and it changes
-  what everything downstream is keyed by. The `remotes_list` entry is a
-  *label* (it spells the parameter path); `remotes.<label>.name`, when
-  non-empty, is the name that remote uses on the wire, and it is what
-  `remote_nodes_`, `subscribers_[topic].remote_details`, the per-remote
-  topics/diagnostics and the service `remote`/`name` arguments key on.
-  Empty (the default) means label == wire name, which is what every config
-  in this workspace does. Before #51 the parameter was never declared, so a
-  `name:` key in YAML was silently inert — see the upgrade note in
-  `udp_bridge/README.md` before changing one.
+- **A `remotes_list` entry IS the remote's wire name (#67)** — there is one
+  identity namespace, not two. The entry both spells the remote's parameter
+  paths (`remotes.<label>.*`) and is what `remote_nodes_`,
+  `subscribers_[topic].remote_details`, the per-remote topics/diagnostics
+  and the service `remote`/`name` arguments key on. So **your label for a
+  peer must be the name that peer calls itself** — every config in this
+  workspace already does this. Two consequences worth knowing:
+  - `remotes.<label>.name` is **retired**. It is still declared (that is the
+    only way rclcpp surfaces a YAML override, since the node does not set
+    `automatically_declare_parameters_from_overrides`) and read solely to
+    WARN that a non-empty value is inert. Do not add it back as an identity
+    input; see the upgrade note in `udp_bridge/README.md`. It briefly *was*
+    authoritative, between #51 and #67 — a `name:` in an old config is not
+    a typo, it is a retired feature.
+  - An entry is now both a ≤23-byte wire identity **and** a ROS 2
+    parameter-path segment, and ROS 2 uses `.` to separate segments. A peer
+    whose wire name contains a `.` is therefore unconfigurable — not
+    truncated, not warned about, inexpressible. No config in this workspace
+    hits this.
 - **Node names are capped at 23 characters and over-long ones are REJECTED,
   not truncated (#51).** `setName`, `resolveRemoteIdentities` and the
   `add_remote` service all refuse; only `WrappedPacket`'s constructor still
   clamps, as a last line of defence a validated config cannot reach.
   Truncation is what manufactures the identity mismatch the relay loop rule
-  depends on not having, and it would also let two configured names
-  differing only after char 23 collide on one wire identity. Wire-side names
+  depends on not having, and it would also let two `remotes_list` entries
+  differing only after char 23 collapse onto one wire identity, silently
+  merging two remotes' connections and rate limits. Wire-side names
   get bounded reads (`wire_field_to_string`), not length policy — a long one
   arrives already shortened. The read stops one byte short of the field (the
   trailing byte is the terminator), so decode is the exact inverse of encode
   and an unterminated field cannot yield a 24-character name.
 - **A remote may not be named as this bridge is named, and may not be
-  unnamed (#51).** Both fail `on_configure`; `add_remote` also refuses the
+  unnamed (#51).** Both fail `on_configure` — since #67 that means a
+  `remotes_list` entry equal to our `name`, or an empty one; `add_remote`
+  also refuses the
   self-name at runtime. Our own name in `remote_nodes_` puts `unwrap()`'s
   self-packet refusal out of reach (it only runs on a lookup miss), and the
   empty name is a send-path sentinel for "connection request", so a remote
