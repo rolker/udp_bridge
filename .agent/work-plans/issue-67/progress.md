@@ -700,3 +700,117 @@ Disk note for the record: the host root filesystem remains at 100% with
 ---
 **Authored-By**: `Claude Code Agent`
 **Model**: `Claude Opus`
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-24 10:04 -04:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-67 at `3f1ad40`
+**Mode**: pre-push
+**Depth**: Deep (reason: the fix pass changed the design — a WARN became a lifecycle FAILURE — and re-touched five doc targets plus the bench config)
+**Must-fix**: 1 | **Suggestions**: 5
+**Round**: 2 | **Ship**: recommended — one must-fix, down from three; it is a precise doc/ERROR-text correction in four named places with an obvious replacement, not a design question. Fix it and push; no third review round is warranted.
+
+Specialists: Static analysis (pre-commit over `origin/jazzy..HEAD`, exit 0) ·
+Governance + Plan Drift · Docs Accuracy · Claude Adversarial Lens A · Claude
+Adversarial Lens B. Copilot off (not requested). Local Adversarial skipped:
+Ollama unavailable on this host (OOM).
+
+Build/test re-run independently in this worktree: BUILD_EXIT=0, TEST_EXIT=0,
+`colcon test-result --verbose` = **253 tests, 0 errors, 0 failures, 14
+skipped**, RESULT_EXIT=0. Exit codes read directly. `test_bench_smoke`
+ran (1 test, 0 skipped, 0 failures) — so the bench genuinely configures with
+the retired keys removed, which is the fix pass's own must-fix-2 claim
+confirmed by execution rather than narrative. Disk: root at 99%, ~22 GB
+free; nothing failed for space.
+
+### The round-1 must-fixes, verified against source
+- **Roadmap comment** — `test_relay_routing.cpp:33-51` now names
+  `LabelIsTheIdentity`, `EmptyRemoteIdentityIsRejected`,
+  `RemoteResolvingToOurOwnNameIsRejected`,
+  `RepeatedLabelIsIdempotentNotACollision`; all four exist verbatim in the
+  file, as do every other test the roadmap names. It states the
+  single-namespace rule and points the removed key's rejection at
+  `test_node_name_limits.cpp`. Fixed.
+- **Bench config** — both retired keys gone from `three_path.yaml`. Swept
+  the whole repo and the whole workspace: no other config sets
+  `remotes.<label>.name`. The removed values (`boat`, `operator`) were
+  identical to their labels, so every bench topic path and `wait_ready.py`
+  identity is unchanged. Fixed and load-bearing.
+- **Restart caveat** — present in `README.md:139`, `relay_design.md:238`,
+  `.agents/README.md:208`, `example_params.yaml:56` and the ERROR text
+  (`udp_bridge.cpp:394`). Present — but see must-fix 1: the *reason* those
+  places give is wrong.
+
+### The operator decision, verified against source
+- **FAILURE ordering holds.** `on_configure` spans `:82-717`. Every
+  `return CallbackReturn::FAILURE` is at `:95` (over-long local `name`),
+  `:217` (give-up thresholds), `:397` (**new** — retired key) and `:409`
+  (identity error). `socket()` is at `:414`, `bind()` at `:427`. There is
+  no other early return. #63 round 3's no-socket-leak / no-EADDRINUSE-
+  `exit(1)` property is preserved by the new path. Cross-confirmed by both
+  adversarial lenses.
+- **Accessor removal is clean.** `staleRemoteNameKeyCountForTest` and
+  `stale_remote_name_key_count_` appear nowhere in the worktree outside the
+  work-plan narrative, and nowhere under `layers/main/`. The two deleted
+  tests only ever asserted 0 and 1; no test exercised a multi-key tally, so
+  the counter's removal dropped no covered case (the *behaviour* it implied
+  survives as suggestion 2).
+- **The two rejection tests are discriminating**: revert the `return` to
+  the old WARN and both flip `kUnconfigured` → `kInactive` and fail.
+  `AbsentRemoteNameParameterConfiguresCleanly` guards the inverse
+  over-rejection and is what pins the empty-value edge (`Bridge::remote`
+  declares the key with an empty value, so a presence-of-key rule would
+  fail it). `EmptyRemoteLabelFailsToConfigure` is new coverage of
+  pre-existing behaviour, not a discriminating test for this change — the
+  Implementation entry says so accurately.
+- **Empty-value edge** is implemented as documented: only a non-empty value
+  returns FAILURE, and `"remotes.<label>.name"` at `:382` is the parameter's
+  only occurrence in `src/` or `include/` — `addRemote` and the CONNECT
+  path never read it.
+- **Blast radius is zero.** Grepped every udp_bridge config under
+  `layers/main` (bizzyboat, izzyboat, ben, lr30, echo, dev_bridge, sim,
+  operator variants): none sets `remotes.<label>.name`.
+- **Docs flipped warn→rejected everywhere.** Swept `*.md`, `*.h`, `*.cpp`,
+  `*.yaml` for "warn"/"inert"/"WARNING" about this key: no straggler. The
+  remaining hits are the unrelated local-name truncation history, the "relay
+  is supposed to be inert" phrasing about the loop rule, and
+  `DiagnosticStatus::WARN`.
+- **The three collateral doc-fact commits are each right**: 22
+  `add_udp_bridge_gtest` targets, names *and* order matching
+  `.agents/README.md:28` exactly (`99e5e90`… `5615c9b`);
+  `Connection::default_rate_limit = 50000` at `connection.h:243`, with
+  500000 confirmed as the `SO_RCVBUF`/`SO_SNDBUF` size at
+  `udp_bridge.cpp:446,450`; the unknown-sender WARN is gated on
+  `!configured_remote_names_.empty()` at `udp_bridge.cpp:1823`.
+- **Plan sync** is thorough: divergences 6 (the decision) and 7 (the
+  accessor removal) added, 3 amended and 4 marked superseded, and the
+  WARN language replaced throughout steps 2, 6, 7 and both tables. No plan
+  drift finding.
+
+### Findings
+- [ ] (must-fix) The restart caveat's stated *mechanism* is false on every fixed-port deployment, which is all of them. `socket_` is never closed anywhere (no `close()`, no destructor, `on_cleanup` does not touch it) and no `SO_REUSEADDR` is ever set, so a deactivate→cleanup→configure re-enters `socket()`/`bind()` at `:414`/`:427` and the second bind on the same fixed port returns `EADDRINUSE` → `exit(1)` at `:430` — *before* the duplicate `RemoteNode` at `:517` can exist. The doubled-uplink story is only reachable with `port: 0`. The advice ("restart the node") stays correct and should stay; the reason must be replaced with what actually happens — the re-bind fails and the process exits, which under the shipped `launch/udp_bridge_launch.py` (`respawn=True, respawn_delay=2`) is self-healing. Reproduced the `EADDRINUSE` directly. Four places carry the wrong mechanism (`example_params.yaml:56` states only the advice and is fine). Raised by Lens B, verified independently — `udp_bridge/src/udp_bridge.cpp:393-396`, `udp_bridge/README.md:139-145`, `udp_bridge/doc/relay_design.md:238-244`, `.agents/README.md:203-208`
+- [ ] (suggestion) `socket_` is leaked and the port stays bound for the process lifetime, which is the root cause of must-fix 1 and silently defeats the `declareIfMissing` reentrancy discipline documented at `udp_bridge.h:299-310`. A `close(socket_)` + `socket_ = -1` in `on_cleanup` would make cleanup→configure actually work. Pre-existing and out of scope here — belongs with the existing `remote_nodes_`/`subscribers_` pruning follow-up, which it is the other half of — `udp_bridge/src/udp_bridge.cpp:414`, `on_cleanup` `:780-810`
+- [ ] (suggestion) First-offender-only: the `return` is inside the loop, so a hub with three legacy `name:` keys reports one, and recovery needs a process restart per key (see must-fix 1). Accumulating the offending labels and returning FAILURE after the loop is a three-line change. Counter-argument, which is why it is not a must-fix: `resolveRemoteIdentities` is first-error too, so this is the house style. Cross-confirmed Lens A + Lens B — `udp_bridge/src/udp_bridge.cpp:380-398`
+- [ ] (suggestion) The implemented rule is narrower than the documented one: the loop iterates `remotes_list`, so a `remotes.<label>.name` under a block *not* listed there is never declared, never read and never rejected. Defensible (the orphaned block is wholly inert), but the docs say flatly that setting it at all is a configuration error. A half-sentence qualifier ("for a remote listed in `remotes_list`") makes them match — `udp_bridge/README.md:95`, `.agents/README.md:191`
+- [ ] (suggestion) "the node will tell the operator so by refusing to start" overstates the observable symptom: `main()` spins regardless of the transition outcome, and `diagnostic_updater_` is created only *after* the failure point, so there is no `/diagnostics` row, no `bridge_info` and no heartbeat — the sole signal is one ERROR line on stderr, on the node that *is* the telemetry link. Same class as the pre-existing over-long-name failure, so not a regression; worth one clause since this pass is about docs matching behaviour — `.agents/README.md:203`
+- [ ] (suggestion) The comment at `udp_bridge.cpp:340-346` claims identity validation runs "ahead of every resource this callback acquires"; `add_on_set_parameters_callback` is acquired at `:288`, and a mistyped YAML scalar can still throw out of the connections/topics loops *after* the bind (`:544-640`), which `rclcpp_lifecycle` swallows. Pre-existing, but the new FAILURE path is the second to lean on the claim — narrow it to "explicit failure paths". Cross-confirmed Lens A + Lens B — `udp_bridge/src/udp_bridge.cpp:340`, `:508`, `:523`
+
+### Considered and not raised as findings
+- Issue #67's ask item 3 says "**Warn** if the now-unread key is present";
+  the branch fails instead. That is the operator's 2026-08-24 ruling and is
+  recorded in `plan.md` divergence 6 and the Implementation entry, so it is
+  a documented deviation, not drift. Worth one line in the PR body when it
+  opens so a reader of #67 does not score ask item 3 as unmet.
+- `plan.md`'s *Files to Change* table still omits
+  `include/udp_bridge/udp_bridge.h`, which this pass edits (accessor
+  deletion). Below the suggestion threshold; divergence 7 covers the change
+  in prose.
+- `README.md:176-178` has ragged line wrapping left by the edit. Cosmetic.
+- `.agents/review-context.yaml` does not exist in this repo (pre-existing gap).
+
+---
+**Authored-By**: `Claude Code Agent`
+**Model**: `Claude Opus`
