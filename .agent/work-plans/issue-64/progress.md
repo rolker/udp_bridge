@@ -207,3 +207,144 @@ edited the existing plan, not appended a second one:
 
 ### Open questions
 - [ ] No open questions — plan is review-plan-ready.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-23 23:46 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-64/plan.md` at `d85832a`
+**PR**: PR-less
+**Verdict**: changes-requested
+
+This is round 2, re-verifying the round-1 (`19ac1ef`) must-fixes/suggestions
+against the revision at `5f4358f`. Round-1-verified items (label/name
+mismatch shape, three distinct topics, loopback three-domain topology,
+default-on gating, CI-skip claim) were not relitigated.
+
+### Findings
+- [ ] (must-fix) The revised delivery assertion `abs(sub_count - pub_count) <= 1`
+  does not do what the plan text claims. The plan states this "Fails on: any
+  drop, any duplicate," but a diff of exactly 1 — i.e. exactly one dropped
+  message or exactly one duplicated message — satisfies `<= 1` and therefore
+  **passes**. Only a diff of 2 or more fails. This reintroduces the same
+  class of vacuous-pass gap round 1 flagged (a single duplicate "stays inside
+  the band"), just at a higher bar (2 instead of the old ~20%-of-10). Given
+  `sub`'s listen window already runs 2s past `pub`'s duration (the same
+  `duration_s + 2` margin `run_smoke`/`run_full_mix` use, confirmed at
+  `run_scenario.py:712`/`:746`) and `pub.py`'s `_count` increments
+  immediately after `publish()` and before `destroy_node()` (confirmed by
+  reading `pub.py` in full), there is no legitimate race that should produce
+  even a one-message gap over loopback — delivery is sub-millisecond and the
+  subscriber outlives the publisher. The `<= 1` slack isn't buying protection
+  against a real race; it's silently tolerating exactly the failure modes
+  this assertion was rewritten to catch. Tighten to exact equality
+  (`sub_count == pub_count`) for `hub_local` and `b`, or state explicitly (if
+  a real race is believed to exist) what mechanism could legitimately produce
+  a diff of 1 despite the 2s post-publish listen margin — `plan.md` Approach
+  step 3.
+
+### Suggestions
+- [ ] The plan's readiness-gate description ("two `wait_ready.py` calls ...
+  one for bridge_a's connection to `"hub"`, one for bridge_hub's connection
+  to `"boat_b"`") doesn't note that the existing `wait_ready()` Python
+  wrapper in `run_scenario.py` (`:396`) only forwards `--timeout-s` — it has
+  no parameters for `--topic`/`--connection-id`/`--remote-name`/`--min-bps`,
+  all of which `relay_hub`'s two gate calls need to differ from
+  `range_degradation`'s defaults. Implementation will need to either extend
+  `wait_ready()` with pass-through params or call `wait_ready.py` directly
+  via `subprocess`, bypassing the wrapper. Not a structural problem, but the
+  Files-to-Change table's `run_scenario.py` row doesn't mention this — worth
+  a one-line note so the implementer doesn't assume the existing wrapper is
+  reusable as-is.
+
+### Verified sound
+- **`pub.py --rate-hz` and `launch_pub(rate_hz=...)`**: `pub.py` already
+  accepts `--rate-hz` (`argparse` at line 86, applied at line 94 in place of
+  the tier default) and forwards it to `BenchPublisher`'s timer period. The
+  plan's proposed `launch_pub(rate_hz: float | None = None)` forwarding it as
+  `--rate-hz` is a straightforward, correct extension of the existing
+  `launch_pub` (`run_scenario.py:366`) — no `rate_hz` param exists yet
+  (expected; this is plan review, not code review) but nothing about the
+  proposed shape is unsound. ~100 messages at 10 Hz/10s is a real
+  improvement over ~10 at 1 Hz/10s for the reasons stated.
+- **`pub_count` sourced from `_parse_count`, not rate×duration**: confirmed
+  — `pub.py` prints `BENCH_PUB_COUNT={node._count}` on exit (its own tally),
+  and `_parse_count()` (`run_scenario.py:687`) reads exactly that line. No
+  arithmetic reconstruction anywhere in the proposed assertion.
+- **Echo-guard now lives once, under the hub's `remotes.a` block**: the dead
+  entry under bridge A's own `remotes.hub` is gone from the current plan
+  text (verified by reading the full Approach step 1 — only one
+  `/a/echo_from_hub` destination is described, and it's under bridge_hub's
+  `remotes.a`). Traced against `udp_bridge.cpp`: `relayToOtherRemotes()`
+  builds its destination list via
+  `selectRateLimitedConnections(sub.remote_details, now, item.source_node)`
+  (`:1269`, sender excluded before rate-limiting) against
+  `subscribers_["hub/from_a/heartbeat"].remote_details`, which is populated
+  from parsing `remotes.<remote>.connections.<connection>.topics.<topic>`
+  parameters (`:583-592`) — i.e. only a config entry under the **hub's**
+  `remotes.a` block populates the routing-table entry a broken
+  sender-exclusion could deliver through. A dead entry under bridge_a's own
+  config (no local publisher on that topic on A's domain) could never fire
+  regardless of the exclusion logic, so the surviving placement is the only
+  one that makes `a_echo == 0` a real assertion of the loop rule. Confirmed
+  sound, matching round 1's finding and the stated fix.
+- **`wait_ready.py --field {message,overhead}` leaves `range_degradation`
+  bit-identical**: confirmed by reading the whole file — the only caller of
+  the `wait_ready()` Python wrapper across `run_scenario.py` is
+  `run_range_degradation` (`:632`); it passes no `--field` flag, so a new
+  arg defaulting to `message` changes nothing for that caller.
+  `subscriber_death` does not call `wait_ready()` at all.
+- **`overhead` field exists and is populated before topic data flows**:
+  `udp_bridge_interfaces/msg/RemoteConnection.msg` has a `DataRates overhead`
+  field. `sendConnectionRequests()` (`udp_bridge.cpp:2354`) sends
+  `ConnectionInternal`/`OPERATION_CONNECT` with `is_overhead=true`
+  (`:2369`), and `sendBridgeInfo()` (`:2262`) itself sends its own
+  `BridgeInfo` as overhead traffic (`:2351`) on a 2s wall timer
+  (`bridge_info_timer_`, `:636`) — independent of any topic-data traffic.
+  `rc.overhead = connection->data_sent_rate(bi.stamp, PacketSendCategory::overhead)`
+  (`:2331`/`:2528`) populates the exact field the gate reads, and this
+  recurs every 2s (not a one-shot burst), so the gate's `--timeout-s 5` with
+  `consecutive=2` samples has multiple real opportunities to observe it.
+  The plan's claim that overhead traffic "flows before any topic data
+  exists" is correct and, per the periodic 2s resend, more robust than a
+  one-shot-burst reading would have been.
+- **Timeout raises loudly**: `wait_ready()` (`run_scenario.py:396`) raises
+  `RuntimeError` on the script's nonzero exit; `wait_ready.py`'s own `main()`
+  returns 1 on timeout and prints a diagnostic including the best-seen rate.
+  Matches the plan's "timeout raises RuntimeError" claim (referring to the
+  wrapper's existing contract, correctly).
+- **Corrected stand-up rationale**: `launch_bridge`'s `check=True` only
+  confirms lifecycle transitions succeeded (`ros2 lifecycle set` calls at
+  `:357-361`), which says nothing about inter-bridge packet exchange. The
+  plan's restated rationale — that the delivery-count assertions are the
+  actual connectivity guard — is accurate, and the revision correctly
+  dropped the earlier over-claim.
+- **Self-caught `/hub_local` correction**: confirmed against
+  `decodeData`/`enqueuePublish`/`publishItem` — `enqueuePublish()`
+  (`:1391`) unconditionally pushes every admitted item onto
+  `publish_queue_` regardless of `item.relay`/relay eligibility, and
+  `publishItem()` publishes it locally. The hub's local copy of
+  `/hub/from_a/heartbeat` requires no config entry; it's the direct
+  consequence of this unconditional local-publish path. The plan's
+  corrected reasoning is right.
+
+### Summary
+The revision genuinely fixes round 1's two must-fixes' underlying concerns
+(echo-guard placement is now unambiguous and traced-correct; volume is
+real via a verified `--rate-hz` path) and both suggestions (stand-up
+rationale corrected; readiness gate added on a verified-real overhead-traffic
+mechanism). But the specific tolerance chosen for the headline delivery
+assertion — `abs(sub_count - pub_count) <= 1` — doesn't achieve what the
+plan says it achieves: it still passes on exactly one dropped or exactly one
+duplicated message, the identical failure shape round 1's must-fix targeted.
+Given the harness's existing 2s post-publish subscriber margin, there's no
+apparent legitimate source of a one-message gap, so the fix is likely a
+one-line tightening to exact equality rather than a redesign. This is a
+real (if narrow) gap in the plan's crux mechanism, not a nit — worth a third,
+quick revision pass before implementation. Everything else reviewed is sound
+and the plan remains proportionate in scope.
+
+### Independent findings this round
+- [ ] (must-fix) `abs(sub_count - pub_count) <= 1` passes on exactly one
+  drop or one duplicate; tighten to exact equality — see Findings above.
