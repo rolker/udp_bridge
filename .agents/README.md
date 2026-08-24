@@ -25,7 +25,7 @@ dropping those exclusions.
 
 | Package | Language | Build targets (from CMakeLists.txt) |
 |---------|----------|-------------------------------------|
-| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 15 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`) |
+| `udp_bridge` | C++17 (ament_cmake) | `udp_bridge` library, `udp_bridge_node` executable, 20 gtest targets (`utest`, `test_utilities`, `test_defragmenter`, `test_qos_resolution`, `test_qos_matching_integration`, `test_connection_rate_limit`, `test_remote_node_resend`, `test_connection_cleanup`, `test_giveup_diagnostic`, `test_resend_budget`, `test_admission_control`, `test_publish_queue`, `test_subscriber_registry`, `test_stale_packet_gate`, `test_reorder_buffer`, `test_relay_routing`, `test_relay_queue`, `test_relay_send`, `test_unaddressed_connection`, `test_message_statistics`) |
 | `udp_bridge_interfaces` | rosidl | 13 messages + 3 services (`Subscribe`, `AddRemote`, `ListRemotes`) |
 
 `udp_bridge` depends on `rclcpp`, `rclcpp_lifecycle`, `diagnostic_updater`,
@@ -44,7 +44,9 @@ udp_bridge/
 ├── test/mininet/         # manual-run integration scripts — NOT wired into CI
 ├── launch/               # udp_bridge_launch.py + legacy ROS 1 test launches
 ├── config/example_params.yaml
-└── doc/                  # conceptual_overview.md, qos_design.md (read this)
+└── doc/                  # conceptual_overview.md, qos_design.md (read this),
+                          #   admission_control_design.md, resend_budget_design.md,
+                          #   relay_design.md
 udp_bridge_interfaces/    # msg/ + srv/ definitions
 ```
 
@@ -70,6 +72,19 @@ callback groups whose invariants are documented at the top of
   rmw-touching republish of received data, so a stalled destination
   publisher can't wedge the socket drain. Bounded by
   `publish_queue_max_bytes`; drops oldest under back-pressure.
+- A separate **relay worker thread** (`RelayQueue`, issue #51) forwards a
+  message received from one remote to the OTHER remotes whose `topics_list`
+  carries the same topic, for hub topologies (`boat → hub → operators`).
+  Same reason for the thread: `Connection::send()`'s `sendto()` can retry for
+  ~200 ms, which must not happen on the socket drain. Bounded by the
+  `relay_queue_max_bytes` (default 64 MiB, clamped 1 MiB–2 GiB);
+  drops oldest under back-pressure and reports them in the `relay queue`
+  diagnostic. Only messages the stale-packet / reorder gate ADMITS are
+  relayed: the relay form rides along inside the `PublishItem` (an optional
+  `RelayItem`, null when relay is unreachable) so a buffered packet is
+  forwarded when the buffer releases it, and never if it is dropped.
+  `UDPBridge::enqueuePublish()` is the single admit-to-publish point. See
+  `doc/relay_design.md`.
 
 Wire format: `Packet`/`WrappedPacket` (packet.h, wrapped_packet.h), zlib
 compression on send (`src/packet.cpp`), fragmentation above
@@ -82,13 +97,15 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `name` | node name | Bridge name as seen by remote bridges (unique per network) |
+| `name` | node name | Bridge name as seen by remote bridges (unique per network). **Max 23 chars** — the on-wire `source_node` field is 24 bytes. Longer fails `on_configure` (#51); it is NOT truncated, because a truncated name stops matching what remotes are configured with and silently disables the relay loop rule |
 | `port` | `4200` | UDP listen port; clamped 0–65535 |
 | `maximum_packet_size` | `1200` | Clamped 256–65500; default sized for a tunnelled link (WireGuard-over-cellular MTU), not the IPv4/UDP maximum (#58) |
 | `drop_stale_packets` | `true` | Gate dropping late out-of-order resends per destination topic |
 | `reorder_hold_window_ms` | `0.0` | Reorder/jitter buffer hold window (ms), global (#35); `0.0` = disabled. When > 0 (and `drop_stale_packets` on), a gap-opening packet is held up to this window so an out-of-order gap-filler publishes first; clamped 0–500 ms |
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
+| `relay_queue_max_bytes` | 64 MiB | Byte budget for the relay worker queue (#51); clamped 1 MiB–2 GiB, same default and clamps as `publish_queue_max_bytes` |
+| `remotes.<label>.name` | `""` (empty) | Wire name of the remote (#51). Empty → the `remotes_list` label is used. Duplicate resolved names fail `on_configure` (validated before the socket is opened), as does a resolved name over 23 chars, one equal to this bridge's own `name`, or an empty one (an empty `remotes_list` entry with no `name`; `""` is a reserved sentinel on the send path). The `add_remote` service applies the same over-long and self-name refusals at runtime (ERROR, no remote created) |
 | `remotes_list` | `[]` | Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
 
 See `config/example_params.yaml` for the nested structure.
@@ -121,6 +138,7 @@ Services (all `udp_bridge_interfaces/srv`, on `<node_name>/...`):
 1. `udp_bridge/src/udp_bridge_node.cpp` — callback-group + threading invariants (top comment)
 2. `udp_bridge/src/udp_bridge.cpp` — locking convention (top comment) + `on_configure`
 3. `udp_bridge/doc/qos_design.md` — QoS policy and the rmw_zenoh_cpp RELIABLE workaround
+   (and `doc/relay_design.md` before touching the receive path — relay runs there)
 4. `udp_bridge/include/udp_bridge/resend_constants.h` — resend-protocol timing contract
 5. `udp_bridge/config/example_params.yaml` — parameter structure
 
@@ -162,12 +180,42 @@ there works today.
   when `maximum_bytes_per_second` is 0 is **50000 B/s** — the
   `example_params.yaml` comment claiming 500000 is wrong (that number is the
   socket buffer size).
-- **`remotes.<label>.name` is not a real parameter** — the remote's name is
-  the `remotes_list` label itself. The old `udp_bridge/README.md` and the
-  example YAML comment claiming otherwise are stale.
+- **`remotes.<label>.name` IS a real parameter as of #51** — and it changes
+  what everything downstream is keyed by. The `remotes_list` entry is a
+  *label* (it spells the parameter path); `remotes.<label>.name`, when
+  non-empty, is the name that remote uses on the wire, and it is what
+  `remote_nodes_`, `subscribers_[topic].remote_details`, the per-remote
+  topics/diagnostics and the service `remote`/`name` arguments key on.
+  Empty (the default) means label == wire name, which is what every config
+  in this workspace does. Before #51 the parameter was never declared, so a
+  `name:` key in YAML was silently inert — see the upgrade note in
+  `udp_bridge/README.md` before changing one.
+- **Node names are capped at 23 characters and over-long ones are REJECTED,
+  not truncated (#51).** `setName`, `resolveRemoteIdentities` and the
+  `add_remote` service all refuse; only `WrappedPacket`'s constructor still
+  clamps, as a last line of defence a validated config cannot reach.
+  Truncation is what manufactures the identity mismatch the relay loop rule
+  depends on not having, and it would also let two configured names
+  differing only after char 23 collide on one wire identity. Wire-side names
+  get bounded reads (`wire_field_to_string`), not length policy — a long one
+  arrives already shortened. The read stops one byte short of the field (the
+  trailing byte is the terminator), so decode is the exact inverse of encode
+  and an unterminated field cannot yield a 24-character name.
+- **A remote may not be named as this bridge is named, and may not be
+  unnamed (#51).** Both fail `on_configure`; `add_remote` also refuses the
+  self-name at runtime. Our own name in `remote_nodes_` puts `unwrap()`'s
+  self-packet refusal out of reach (it only runs on a lookup miss), and the
+  empty name is a send-path sentinel for "connection request", so a remote
+  filed under it can never be routed to.
 - **Connection config is one complete per-connection block**: partial
   overrides silently break return-path routing (boat replies to the wrong
   host, data flow drops to zero).
+- **Relay has no parameter, and no cycle protection.** The per-remote
+  `topics_list` is the relay routing table: a second remote listing an
+  already-carried topic starts that traffic flowing to it. The only loop
+  protection is "never send back to the immediate sender", so **star
+  topologies only** — `A → B → C → A` would circulate a message
+  indefinitely (`doc/relay_design.md`).
 - **Threading:** never add blocking work to the socket-drain path; respect
   the lock-briefly-copy-out convention documented at the top of
   `udp_bridge.cpp` and the group assignments in `udp_bridge_node.cpp`.

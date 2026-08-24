@@ -26,7 +26,12 @@
 #include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
+#include "udp_bridge/destination_selection.h"
 #include "udp_bridge/publish_queue.h"
+#include "udp_bridge/drop_baseline.h"
+#include "udp_bridge/relay_drops.h"
+#include "udp_bridge/relay_queue.h"
+#include "udp_bridge/remote_identity.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/wrapped_packet.h"
 //#include "std_msgs/msg/int32.hpp"
@@ -72,9 +77,15 @@ public:
   void spin_once();
 
 private:
-  /// Sets the node name as seen by other udp_bridge nodes
-  /// Warns if truncated to size specified in packet header.
-  void setName(const std::string &name);
+  /// Sets the node name as seen by other udp_bridge nodes.
+  ///
+  /// Returns false, having left `name_` untouched, when the name does not
+  /// fit the on-wire `source_node` field. The caller (on_configure) fails
+  /// the transition on that: the name is NOT truncated, because a
+  /// truncated name no longer equals the name every other bridge is
+  /// configured to expect, which silently disables the relay loop rule
+  /// (issue #51 — see packet.h's maximum_node_name_length).
+  bool setName(const std::string &name);
 
   /// Callback method for locally subscribed topics.
   /// ShapeShifter is used to be agnostic of message type at compile time.
@@ -117,12 +128,43 @@ private:
   /// call that can block on a single subscriber.
   void decodeData(std::vector<uint8_t> const &message, const SourceInfo& source_info);
 
+  /// The single admit-to-publish point: hands an item the stale/reorder
+  /// gate admitted to publish_queue_, and its attached relay form (issue
+  /// #51), if any, to relay_queue_. Every path that publishes a received
+  /// message goes through here — decodeData's immediate path, the items a
+  /// gap-filler releases, and the items flushExpiredBuffer releases on
+  /// window expiry — so relay is gated exactly as local publication is: a
+  /// packet judged stale or superseded is never forwarded.
+  void enqueuePublish(PublishItem&& item);
+
   /// publish_queue_ sink: runs on the publish worker thread. Finds or
   /// creates the destination GenericPublisher (first-arrival also triggers
   /// sendBridgeInfo) and publishes. Any blocking here (RELIABLE publish to a
   /// dead-but-matched subscriber; first-arrival rmw discovery) stalls only
   /// the worker, never the socket-drain thread.
   void publishItem(PublishItem&& item);
+
+  /// True when some remote other than `source_node` lists `topic` in its
+  /// routing table — i.e. when this received message has somewhere to be
+  /// relayed (issue #51). Cheap enough for the socket-drain thread: one
+  /// subscribers_ lookup under subscribers_mutex_, no copy, no I/O. Lets
+  /// decodeData skip the payload copy entirely in the ordinary
+  /// single-remote deployment, where relay is unreachable by construction.
+  bool hasRelayDestinations(const std::string& topic,
+                            const std::string& source_node) const;
+
+  /// relay_queue_ sink: runs on the relay worker thread (issue #51).
+  /// Forwards a message received from one remote to the OTHER remotes whose
+  /// per-remote topics_list carries the same topic — the topic list is the
+  /// routing table, there is no relay parameter. The loop rule (never send
+  /// back to item.source_node) is applied by
+  /// selectRateLimitedConnections's exclude_remote, which also throttles
+  /// relayed traffic against exactly the same last_sent_time state as
+  /// locally published traffic. Sends go through the existing send() path,
+  /// so fragmenting, sequencing and AIMD admission control (#43/#52) apply
+  /// unchanged. Direct-neighbour only: cycles are unsupported — see
+  /// doc/relay_design.md.
+  void relayToOtherRemotes(RelayItem&& item);
 
   /// Decodes topic info from remote.
   void decodeBridgeInfo(std::vector<uint8_t> const &message, const SourceInfo& source_info);
@@ -178,13 +220,27 @@ private:
   /// Map of remotes and connections
   using RemoteConnectionsList = std::map<std::string, std::vector<std::string> >;
 
+  /// How a per-connection send failure is reported (issue #51).
+  ///
+  /// `Connection::send()` throws on its ordinary Timeout path, and send()
+  /// logs that per connection. For locally-originated traffic an
+  /// unreachable destination is a fault worth an ERROR. For **relayed**
+  /// traffic it is not: a hub forwards every carried topic to every spoke,
+  /// so a single spoke over the horizon — an ordinary field condition —
+  /// would emit an ERROR per topic per send. Relay asks for `warning` so
+  /// the condition stays visible without drowning the log (and without
+  /// teaching the operator that ERROR means nothing).
+  enum class SendFailureReport { error, warning };
+
   /// Convert a message to a packet and send it to remotes.
   template <typename MessageType>
-  MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead);
+  MessageSizeData send(MessageType const &message, const RemoteConnectionsList& remotes, bool is_overhead,
+                       SendFailureReport failure_report = SendFailureReport::error);
 
   /// Convert a message to a packet and send it to remote using all connections.
   template <typename MessageType>
-  MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead);
+  MessageSizeData send(MessageType const &message, const std::string& remote, bool is_overhead,
+                       SendFailureReport failure_report = SendFailureReport::error);
 
   /// Return a list of all remotes.
   RemoteConnectionsList allRemotes() const;
@@ -232,6 +288,12 @@ private:
   /// distinct from wire loss — see doc/qos_design.md). Registered once in
   /// on_configure (a single global task, not per-remote).
   void diagnosePublishQueue(diagnostic_updater::DiagnosticStatusWrapper& stat);
+
+  /// Populate the relay-queue DiagnosticStatus (issue #51): queued depth +
+  /// total drops, WARNing on drops since the previous tick. A relay drop is
+  /// unrecoverable — the message never reached a Connection, so the resend
+  /// layer cannot retransmit it. Registered once in on_configure.
+  void diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& stat);
 
   /// Lifecycle-safe wrapper around `declare_parameter`. Parameters
   /// declared during `on_configure` persist across a
@@ -416,6 +478,19 @@ private:
   std::map<std::string, std::shared_ptr<RemoteNode> > remote_nodes_;
   mutable std::mutex remote_nodes_mutex_;
 
+  /// Wire identities of the statically-configured remotes (issue #51) —
+  /// `remotes.<label>.name` where set, else the `remotes_list` label; see
+  /// remote_identity.h. Used only to recognise, and warn about, traffic
+  /// from a sender that matches no configured remote: on a static config
+  /// that is the visible symptom of a label/`name` mismatch, which makes
+  /// the relay loop rule compare two different namespaces and lets the hub
+  /// echo a remote's own traffic back to it. Populated in on_configure,
+  /// cleared in on_cleanup, and read on the socket-drain path — all three
+  /// under remote_nodes_mutex_. The write is *not* race-free by timing: on
+  /// a re-configure only diagnostic_timer_ was reset in on_cleanup, so the
+  /// other timers survive and keep firing while on_configure runs.
+  std::set<std::string> configured_remote_names_;
+
   // Per-remote diagnostic state for the resend-give-up rate
   // computation (issue #22). Guarded by remote_nodes_mutex_ —
   // extended scope, not a new mutex; entries are small
@@ -488,9 +563,37 @@ private:
 
   // Last publish-queue drop total observed by diagnosePublishQueue, so the
   // diagnostic can WARN on *recent* drops (increase since last tick) rather
-  // than latching WARN forever after a single historical drop. Touched only
-  // from the diagnostic callback (periodic_group_, mutually exclusive).
-  uint64_t last_reported_publish_drops_ {0};
+  // than latching WARN forever after a single historical drop.
+  //
+  // Two writers, so atomic and advanced only through advanceDropBaseline:
+  // the diagnostic callback (periodic_group_) and on_deactivate, whose
+  // transition callback does NOT run in periodic_group_ and can therefore
+  // interleave with a tick. See drop_baseline.h — a plain uint64_t here
+  // both raced and underflowed, reporting an operator-caused backlog as a
+  // ~2^64 burst of link loss.
+  std::atomic<uint64_t> last_reported_publish_drops_ {0};
+
+  // Same, for the relay queue (issue #51).
+  std::atomic<uint64_t> last_reported_relay_drops_ {0};
+
+  /// Sink-side relay drops (issue #51): items relayToOtherRemotes dequeued
+  /// and then returned early on, which RelayQueue::dropped_count() cannot
+  /// see. Summed with the queue's own drops in diagnoseRelayQueue, so the
+  /// "relay dropping" WARN reflects all unrecoverable relay loss and not
+  /// just the overflow half of it. See relay_drops.h.
+  RelayDropCounters relay_drops_;
+
+  // Byte budget for relay_queue_ (issue #51). A ROS parameter for the same
+  // reason publish_queue_max_bytes is one: it is the memory this node may
+  // hold when an outgoing link stalls, and on a hub the relay queue carries
+  // the whole downstream fan-out, so the right size depends on the
+  // deployment — a fixed constant would be a capability limit no operator
+  // could lift without a rebuild. Same default and the same clamps as the
+  // publish queue (see kDefaultPublishQueueMaxBytes); relay drops are
+  // unrecoverable, so the budget wants headroom for a link stall of a few
+  // seconds rather than a tight fit. Set once per configure, read by
+  // relay_queue_.configure().
+  size_t relay_queue_max_bytes_ {kDefaultPublishQueueMaxBytes};
 
   // Decouples the rmw-touching tail of decodeData from the socket-drain
   // thread (issue #10). configure()'d in on_configure, start()'ed in
@@ -501,6 +604,20 @@ private:
   // remote_nodes_ are destroyed — the worker's sink (publishItem /
   // sendBridgeInfo) touches all three.
   PublishQueue publish_queue_;
+
+  // Remote->remote forwarding worker (issue #51). Keeps Connection::send()
+  // — whose sendto() has a ~200 ms worst-case retry loop per stalled
+  // destination — off the socket-drain thread, exactly as publish_queue_
+  // keeps rmw publish work off it (issue #10). Separate from
+  // publish_queue_ so a stalled local subscriber and a stalled remote link
+  // are independent failure domains. Lifecycle mirrors publish_queue_:
+  // configure()'d in on_configure, start()'ed in on_activate,
+  // stop()+join()'ed in on_deactivate, with a backstop stop() in
+  // on_cleanup. Declared LAST for the same destruction-order reason: on a
+  // non-lifecycle teardown its destructor (stop() + join()) must run
+  // before subscribers_ / remote_nodes_ — which its sink touches — are
+  // destroyed.
+  RelayQueue relay_queue_;
 };
 
 } // namespace udp_bridge

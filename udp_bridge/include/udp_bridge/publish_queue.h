@@ -2,7 +2,9 @@
 #define UDP_BRIDGE_PUBLISH_QUEUE_H
 
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -12,7 +14,11 @@
 #include <thread>
 #include <utility>
 
+#include <memory>
+
 #include "rclcpp/serialized_message.hpp"
+
+#include "udp_bridge/relay_item.h"
 
 namespace udp_bridge
 {
@@ -33,16 +39,75 @@ struct PublishItem
   uint32_t history_depth = 0;
   rclcpp::SerializedMessage message;
 
+  /// The same message in the form the relay worker needs (issue #51), or
+  /// null when this message has nowhere to be relayed — which is every
+  /// configuration in this repo today, so the ordinary path allocates
+  /// nothing.
+  ///
+  /// It rides along with the PublishItem so that relay happens *only for
+  /// packets the stale/reorder gate admits*, including the buffered ones:
+  /// a packet the reorder buffer holds is stored as a PublishItem and
+  /// released later (by a gap-filler or by window expiry), and it must
+  /// carry its relay form with it — relaying at buffer time would forward
+  /// packets the gate may still drop. UDPBridge::enqueuePublish() is the
+  /// single place that hands it to relay_queue_, on every path that
+  /// publishes.
+  ///
+  /// While the relay form is attached, it is the ONLY copy of the payload:
+  /// `message` is left empty and materialized from it by
+  /// materializePublishPayload() at enqueuePublish() time, immediately
+  /// before the relay form is moved out to relay_queue_. That ordering
+  /// matters on a hub, which is the one node that concentrates traffic:
+  /// holding both forms would double the resident bytes of every packet
+  /// waiting in the reorder buffer (one per topic per remote, for up to
+  /// reorder_hold_window_ms), and would pay for a payload copy on packets
+  /// the gate goes on to drop. Deferring it costs nothing — the copy still
+  /// happens on the same thread, just once and only for packets that are
+  /// actually published.
+  std::unique_ptr<RelayItem> relay;
+
   /// Approximate footprint for the queue's byte budget. The serialized
   /// payload dominates; the small string fields are included so an
-  /// empty-payload message still counts a nonzero amount.
+  /// empty-payload message still counts a nonzero amount. An attached
+  /// relay form is counted too — it is resident memory held by this item
+  /// (null, and so free, whenever relay is unreachable). While a relay
+  /// form is attached, `message` is empty and the payload is counted once,
+  /// through the relay form.
   size_t byte_size() const
   {
     return message.size()
       + topic.size() + datatype.size()
-      + reliability.size() + durability.size();
+      + reliability.size() + durability.size()
+      + (relay ? relay->byte_size() : 0u);
   }
 };
+
+/// Fill `item.message` from the attached relay form's payload (issue #51).
+///
+/// A relaying item carries its payload only in `relay->message.data` until
+/// this runs, so the two forms are never resident at once while the item
+/// waits in the reorder buffer. Call it exactly once, immediately before
+/// the relay form is handed to the relay queue — after which the item is
+/// an ordinary PublishItem and the publish worker cannot tell the
+/// difference.
+///
+/// A no-op for an item with no relay form: on that path `message` was
+/// filled at construction and there is nothing to copy from.
+inline void materializePublishPayload(PublishItem& item)
+{
+  if(!item.relay)
+    return;
+  const auto& payload = item.relay->message.data;
+  // reserve(0) throws from the rcl uint8_array layer, and an empty payload
+  // is a legal message (a std_msgs/msg/Empty, say).
+  if(!payload.empty())
+  {
+    item.message.reserve(payload.size());
+    memcpy(item.message.get_rcl_serialized_message().buffer,
+           payload.data(), payload.size());
+  }
+  item.message.get_rcl_serialized_message().buffer_length = payload.size();
+}
 
 /// Bounded, drop-oldest publish queue served by a single worker thread.
 ///
@@ -70,6 +135,15 @@ public:
   /// in on_configure); changing these while running is not supported.
   void configure(Sink sink, size_t max_bytes)
   {
+    // run() reads sink_ / max_bytes_ without the lock, so reconfiguring a
+    // running queue is a data race — one that surfaces as a corrupted
+    // std::function call, not as a wrong value. Check and assign under
+    // mutex_ so the pair cannot interleave with start()/stop() and so the
+    // assignment is ordered before the worker start() launches under the
+    // same mutex. The assert is a debug-build aid only (compiled out under
+    // NDEBUG, which is how this ships); the locking is what holds.
+    std::lock_guard<std::mutex> lock(mutex_);
+    assert(!running_ && "PublishQueue::configure() must not be called while running");
     sink_ = std::move(sink);
     max_bytes_ = max_bytes;
   }
@@ -99,6 +173,10 @@ public:
   /// destructor.
   void stop()
   {
+    // Serializes the whole stop, so two concurrent callers cannot both
+    // reach worker_.join(): running_ is cleared only after the join, so
+    // the running_ check alone does not exclude the second caller.
+    std::lock_guard<std::mutex> stop_lock(stop_mutex_);
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if(!running_)
@@ -110,6 +188,10 @@ public:
       worker_.join();
     std::lock_guard<std::mutex> lock(mutex_);
     running_ = false;
+    // A discarded backlog is real loss and belongs in the drop total, the
+    // same as an overflow drop; stop() is reached on the ordinary
+    // deactivate path, not only at shutdown.
+    dropped_count_.fetch_add(queue_.size(), std::memory_order_relaxed);
     queue_.clear();
     queued_bytes_ = 0;
   }
@@ -199,6 +281,10 @@ private:
   }
 
   mutable std::mutex mutex_;
+  /// Held for the duration of stop() only, so concurrent stops serialize
+  /// rather than racing on worker_.join(). Always acquired BEFORE mutex_,
+  /// never after.
+  std::mutex stop_mutex_;
   std::condition_variable cv_;
   std::deque<PublishItem> queue_;
   size_t queued_bytes_ = 0;
