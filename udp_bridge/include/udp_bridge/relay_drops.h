@@ -30,6 +30,18 @@ enum class RelayDropReason
   /// working as configured, NOT loss — counted separately so it is visible
   /// without inflating the loss figure or the WARN.
   NoDestinationDue,
+  /// The send to one destination threw (the ordinary `ConnectionException`
+  /// Timeout path among them), so that destination never received the
+  /// message. The fan-out to the other destinations continues — see
+  /// relay_send.h — so this is counted **per failing destination**, not per
+  /// item: one item that fails to two remotes records two.
+  ///
+  /// It is loss, not a rate limit: the message was never handed to the
+  /// wire, and the resend layer has nothing to retransmit because no
+  /// packet was ever sent. Counting it is what makes the relay worker's
+  /// throttled WARN safe — without it, a link failing past `send()`'s
+  /// per-destination isolation would be reported nowhere at all.
+  SendFailed,
 };
 
 /// Sink-side relay drop tallies. Incremented from the relay worker and read
@@ -40,6 +52,7 @@ struct RelayDropCounters
   std::atomic<uint64_t> unnamed_sender {0};
   std::atomic<uint64_t> topic_gone {0};
   std::atomic<uint64_t> no_destination_due {0};
+  std::atomic<uint64_t> send_failed {0};
 
   void record(RelayDropReason reason)
   {
@@ -51,6 +64,8 @@ struct RelayDropCounters
         topic_gone.fetch_add(1, std::memory_order_relaxed); break;
       case RelayDropReason::NoDestinationDue:
         no_destination_due.fetch_add(1, std::memory_order_relaxed); break;
+      case RelayDropReason::SendFailed:
+        send_failed.fetch_add(1, std::memory_order_relaxed); break;
     }
   }
 
@@ -60,7 +75,8 @@ struct RelayDropCounters
   uint64_t lost() const
   {
     return unnamed_sender.load(std::memory_order_relaxed)
-         + topic_gone.load(std::memory_order_relaxed);
+         + topic_gone.load(std::memory_order_relaxed)
+         + send_failed.load(std::memory_order_relaxed);
   }
 
   /// A short "reason=count" breakdown of the **loss** reasons for the
@@ -83,6 +99,7 @@ struct RelayDropCounters
     };
     append("unnamed_sender", unnamed_sender.load(std::memory_order_relaxed));
     append("topic_gone", topic_gone.load(std::memory_order_relaxed));
+    append("send_failed", send_failed.load(std::memory_order_relaxed));
     return out;
   }
 

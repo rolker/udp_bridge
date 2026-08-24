@@ -457,6 +457,30 @@ TEST(RelayDropCountersTest, SinkDropsAreCountedAsLoss)
     << "zero-valued reasons stay out of the diagnostic string";
 }
 
+// A send that throws past the fan-out's per-destination isolation is loss
+// too, and it used to be counted nowhere: the relay worker's error handler
+// logged a THROTTLED warning and recorded nothing, so a link failing on
+// every message showed one WARN every five seconds and no drop figure at
+// all. The counter is what makes that throttle safe.
+TEST(RelayDropCountersTest, SendFailuresAreCountedAsLoss)
+{
+  udp_bridge::RelayDropCounters counters;
+
+  // Two failing destinations for one item: the fan-out isolates per
+  // remote, so each destination that never received the message counts.
+  counters.record(udp_bridge::RelayDropReason::SendFailed);
+  counters.record(udp_bridge::RelayDropReason::SendFailed);
+
+  EXPECT_EQ(counters.send_failed.load(), 2u)
+    << "counted per failing destination, not per item";
+  EXPECT_EQ(counters.lost(), 2u)
+    << "the message never reached a Connection, so nothing can resend it";
+  EXPECT_NE(counters.lossBreakdown().find("send_failed=2"), std::string::npos)
+    << "the operator must be able to tell send failures from the other losses";
+  EXPECT_EQ(counters.rateLimited(), 0u)
+    << "a send failure is loss, not the rate limiter working";
+}
+
 // The fourth early return is NOT loss: the routing table lists other
 // remotes but none is due under its `period` yet. Counting it as a drop
 // would put the relay diagnostic permanently in WARN on any rate-limited

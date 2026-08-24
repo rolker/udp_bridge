@@ -1348,12 +1348,20 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       },
       [&](const std::string& remote_name, const std::string& what)
       {
+        // Count it first, then log. The count is what makes the throttle
+        // safe: a throttled WARN shows a persistent failure but not how
+        // much was lost to it, and a message that fails here was never
+        // handed to a Connection, so the resend layer has nothing to
+        // retransmit. relay_drops_ carries it into `dropped_by_sink`,
+        // `sink_drop_reasons` and the relay-queue diagnostic's WARN
+        // (relay_drops.h), one count per failing destination.
+        relay_drops_.record(RelayDropReason::SendFailed);
         // WARN, throttled, for the same reason send() reports relay link
         // failures at WARN (issue #51): an over-horizon spoke is a normal
         // field condition, and a hub hits it once per forwarded topic per
-        // send. Unthrottled ERROR here would bury the log — and the drop
-        // is already counted in the relay diagnostic, which is where a
-        // persistent failure shows up as a WARN summary.
+        // send. Unthrottled ERROR here would bury the log, and the loss it
+        // stands for is now counted above rather than being inferred from
+        // how often the line appears.
         RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 5000,
           "relay worker: send to '" << remote_name << "' failed for topic '"
           << item.topic << "' (from '" << item.source_node << "'): " << what);

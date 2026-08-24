@@ -353,10 +353,17 @@ of the worker:
 
 - what `RelayQueue` itself discards — overflow and push-after-stop;
 - what the sink (`relayToOtherRemotes`) abandons after dequeuing it: the
-  sender carries no `source_node` (`UnnamedSender`), or the topic's routing
+  sender carries no `source_node` (`UnnamedSender`), the topic's routing
   table was torn down between the drain thread's probe and the sink call
-  (`TopicGone`). These are broken out per reason in `sink_drop_reasons`
-  (`include/udp_bridge/relay_drops.h`).
+  (`TopicGone`), or the send to a destination threw and that destination
+  never got the message (`SendFailed`). These are broken out per reason in
+  `sink_drop_reasons` (`include/udp_bridge/relay_drops.h`).
+
+`SendFailed` is counted **per failing destination**, not per item: the
+fan-out isolates failures per remote, so one item that fails to two remotes
+records two. It is what makes the relay worker's throttled WARN safe to
+throttle — the log line says a link is failing, the counter says how much
+was lost to it.
 
 An item held back only by the per-connection `period` rate limit is counted
 apart and is **not** loss — it is the limit working as configured, and

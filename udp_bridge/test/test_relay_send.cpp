@@ -33,6 +33,7 @@
 //                                 not leave the next one holding its
 //                                 destination topic.
 
+#include "udp_bridge/relay_drops.h"
 #include "udp_bridge/relay_send.h"
 #include "udp_bridge/send_isolation.h"
 
@@ -136,6 +137,35 @@ TEST(RelaySend, OneFailingDestinationDoesNotCancelTheOthers)
     << "a stalled remote must not abort the relay to the healthy ones";
   ASSERT_EQ(errors.size(), 1u);
   EXPECT_EQ(errors.front(), "operator_a: Timeout");
+}
+
+// A destination that never received the message is unrecoverable loss --
+// nothing was handed to a Connection, so the resend layer has nothing to
+// retransmit -- and the relay worker's error handler is the only place that
+// can count it. This wires the handler the way relayToOtherRemotes wires it
+// and pins that every isolated failure lands in the diagnostic. Without the
+// record() call, the loss is invisible behind a throttled WARN.
+TEST(RelaySend, EachFailingDestinationIsCountedAsRelayLoss)
+{
+  udp_bridge::RelayDropCounters drops;
+
+  sendToEachDestination(threeDestinations(),
+    [&](const std::string& remote, const std::vector<std::string>&)
+    {
+      // Two of the three remotes are over the horizon.
+      if(remote != "operator_b")
+        throw ConnectionException("Timeout");
+    },
+    [&](const std::string&, const std::string&)
+    {
+      drops.record(udp_bridge::RelayDropReason::SendFailed);
+    });
+
+  EXPECT_EQ(drops.send_failed.load(), 2u)
+    << "one count per destination that never received the message";
+  EXPECT_EQ(drops.lost(), 2u)
+    << "a send failure belongs in the loss total, not beside rate_limited";
+  EXPECT_NE(drops.lossBreakdown().find("send_failed=2"), std::string::npos);
 }
 
 TEST(RelaySend, EveryDestinationIsSentToWhenNothingThrows)
