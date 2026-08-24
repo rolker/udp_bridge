@@ -1038,3 +1038,32 @@ don't commit to branch...................................................Passed
 ```
 
 Not pushed, no PR — per the dispatch contract.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-08-23 09:42 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**PR**: #63 at `b054298`
+**Sources**: 2 (Copilot @ `b054298`; Local Review (Pre-Push) x3 @ `cb3f738`/`0e87d79`/`928b962`)
+**Cross-source confirmations**: 1
+**CI**: all-pass (build-and-test success; copilot-pull-request-reviewer success)
+
+Copilot verdict: changes recommended. 7 inline comments, all accurate against the code; no false positives.
+
+### Findings
+- [ ] (cross-confirmed: Copilot + Local Review R2 + R3) No end-to-end `decodeData()` -> `enqueuePublish()` -> `RelayQueue` -> `send()` test; the suite can pass while the production wiring is broken. Already filed as #64 -- three independent reviewers now agree. No action in this PR beyond tracking -- `test/test_relay_routing.cpp:127`
+- [ ] (must-fix, Copilot) The label-vs-name echo fix is incomplete: `source_node[maximum_node_name_size]` is 24 and `setName()` truncates the local name to 23, but `resolveRemoteIdentity` returns the configured string UNTRUNCATED. A remote whose name exceeds 23 chars therefore sends a truncated `source_node` that never equals the hub's configured identity -- loop rule inert, hub echoes. Second hole in the same place: collision detection compares untruncated strings, so two identities differing only after char 23 pass validation and then collide on the wire. Canonicalize to the wire limit in ONE place, applied to both collision detection and the loop comparison. Trigger is an ordinary naming choice, not an attack (`bizzyboat_operator_bridge` is 25 chars) -- `include/udp_bridge/remote_identity.h:41`
+- [ ] (must-fix, Copilot) Identity validation rejects duplicates among remotes but not an identity equal to `name_`. The self entry is installed in `remote_nodes_`, and `unwrap()`'s self-packet rejection only runs in the not-found branch, so a successful lookup bypasses it; `RemoteNode`'s own guard is an `assert`, compiled out in release. Reject at configure, before constructing the `RemoteNode` -- `src/udp_bridge.cpp:365`
+- [ ] (must-fix, Copilot) `remote_nodes_[...] = make_shared<RemoteNode>(...)` and the following `update()` run outside `remote_nodes_mutex_`, while `spin_once()`, `decode()`, `sendBridgeInfo()` and diagnostics read the same map under it. Benign on first configure; a re-configure with timers still alive is a data race. Resolve/create under the lock, keep the pointer for the slow `update()` outside -- `src/udp_bridge.cpp:483`
+- [ ] (must-fix, Copilot) `on_deactivate`'s drop-delta re-baselining races `diagnoseRelayQueue()` on a plain `uint64_t`: diagnose reads 100, deactivate stores 120, diagnose subtracts 120 from 100 -> unsigned underflow, backlog re-reported as link loss. Introduced by a round-3 suggestion (deactivate re-baselining). Serialize the pair or make it atomic -- `src/udp_bridge.cpp:698`
+- [ ] (suggestion, Copilot) Relay reuses `UDPBridge::send()`, whose per-connection failure handler logs `Connection::send()` timeouts at ERROR (`src/udp_bridge.cpp:1997-2000`). An over-horizon spoke is a normal field condition and a hub hits it for every forwarded topic, so this emits error-level noise. Use a non-error severity for expected relay link failures, or give `send()` a relay-specific reporting policy -- `src/udp_bridge.cpp:1291`
+- [ ] (suggestion, Copilot) `RelayItem::byte_size()` omits `message.reliability` and `message.durability`, so the relay queue's byte bound understates the memory actually held -- `include/udp_bridge/relay_item.h:51`
+
+### Notes
+- Copilot framed the identity-length and byte_size findings as attacker-driven ("a sender can fill a stalled relay queue"). Per operator context (2026-08-23) udp_bridge targets a trusted network and malicious-packet defence was never a design goal, so that framing does not apply here -- but neither finding needs it. The identity-length trigger is a node name longer than 23 characters, an ordinary naming choice.
+- Governance: no new ROS parameter in this round, so `.agents/README.md`'s verified-parameter table needs no row (`relay_queue_max_bytes` was added there earlier in this PR).
+- Finding 4 is a regression introduced by addressing a round-3 suggestion -- worth noting that the fix pass created it, which argues for the re-review that caught it.
+
+### False positives
+- None. All seven Copilot comments were checked against the code and hold.
