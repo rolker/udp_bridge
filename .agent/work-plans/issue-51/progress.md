@@ -1052,13 +1052,13 @@ Not pushed, no PR — per the dispatch contract.
 Copilot verdict: changes recommended. 7 inline comments, all accurate against the code; no false positives.
 
 ### Findings
-- [ ] (cross-confirmed: Copilot + Local Review R2 + R3) No end-to-end `decodeData()` -> `enqueuePublish()` -> `RelayQueue` -> `send()` test; the suite can pass while the production wiring is broken. Already filed as #64 -- three independent reviewers now agree. No action in this PR beyond tracking -- `test/test_relay_routing.cpp:127`
-- [ ] (must-fix, Copilot) The label-vs-name echo fix is incomplete: `source_node[maximum_node_name_size]` is 24 and `setName()` truncates the local name to 23, but `resolveRemoteIdentity` returns the configured string UNTRUNCATED. A remote whose name exceeds 23 chars therefore sends a truncated `source_node` that never equals the hub's configured identity -- loop rule inert, hub echoes. Second hole in the same place: collision detection compares untruncated strings, so two identities differing only after char 23 pass validation and then collide on the wire. Canonicalize to the wire limit in ONE place, applied to both collision detection and the loop comparison. Trigger is an ordinary naming choice, not an attack (`bizzyboat_operator_bridge` is 25 chars) -- `include/udp_bridge/remote_identity.h:41`
-- [ ] (must-fix, Copilot) Identity validation rejects duplicates among remotes but not an identity equal to `name_`. The self entry is installed in `remote_nodes_`, and `unwrap()`'s self-packet rejection only runs in the not-found branch, so a successful lookup bypasses it; `RemoteNode`'s own guard is an `assert`, compiled out in release. Reject at configure, before constructing the `RemoteNode` -- `src/udp_bridge.cpp:365`
-- [ ] (must-fix, Copilot) `remote_nodes_[...] = make_shared<RemoteNode>(...)` and the following `update()` run outside `remote_nodes_mutex_`, while `spin_once()`, `decode()`, `sendBridgeInfo()` and diagnostics read the same map under it. Benign on first configure; a re-configure with timers still alive is a data race. Resolve/create under the lock, keep the pointer for the slow `update()` outside -- `src/udp_bridge.cpp:483`
-- [ ] (must-fix, Copilot) `on_deactivate`'s drop-delta re-baselining races `diagnoseRelayQueue()` on a plain `uint64_t`: diagnose reads 100, deactivate stores 120, diagnose subtracts 120 from 100 -> unsigned underflow, backlog re-reported as link loss. Introduced by a round-3 suggestion (deactivate re-baselining). Serialize the pair or make it atomic -- `src/udp_bridge.cpp:698`
-- [ ] (suggestion, Copilot) Relay reuses `UDPBridge::send()`, whose per-connection failure handler logs `Connection::send()` timeouts at ERROR (`src/udp_bridge.cpp:1997-2000`). An over-horizon spoke is a normal field condition and a hub hits it for every forwarded topic, so this emits error-level noise. Use a non-error severity for expected relay link failures, or give `send()` a relay-specific reporting policy -- `src/udp_bridge.cpp:1291`
-- [ ] (suggestion, Copilot) `RelayItem::byte_size()` omits `message.reliability` and `message.durability`, so the relay queue's byte bound understates the memory actually held -- `include/udp_bridge/relay_item.h:51`
+- [x] (deferred: filed as #64 and deliberately out of scope for this PR) (cross-confirmed: Copilot + Local Review R2 + R3) No end-to-end `decodeData()` -> `enqueuePublish()` -> `RelayQueue` -> `send()` test; the suite can pass while the production wiring is broken. Already filed as #64 -- three independent reviewers now agree. No action in this PR beyond tracking -- `test/test_relay_routing.cpp:127`
+- [x] (must-fix, Copilot) The label-vs-name echo fix is incomplete: `source_node[maximum_node_name_size]` is 24 and `setName()` truncates the local name to 23, but `resolveRemoteIdentity` returns the configured string UNTRUNCATED. A remote whose name exceeds 23 chars therefore sends a truncated `source_node` that never equals the hub's configured identity -- loop rule inert, hub echoes. Second hole in the same place: collision detection compares untruncated strings, so two identities differing only after char 23 pass validation and then collide on the wire. Canonicalize to the wire limit in ONE place, applied to both collision detection and the loop comparison. Trigger is an ordinary naming choice, not an attack (`bizzyboat_operator_bridge` is 25 chars) -- `include/udp_bridge/remote_identity.h:41`
+- [x] (must-fix, Copilot) Identity validation rejects duplicates among remotes but not an identity equal to `name_`. The self entry is installed in `remote_nodes_`, and `unwrap()`'s self-packet rejection only runs in the not-found branch, so a successful lookup bypasses it; `RemoteNode`'s own guard is an `assert`, compiled out in release. Reject at configure, before constructing the `RemoteNode` -- `src/udp_bridge.cpp:365`
+- [x] (must-fix, Copilot) `remote_nodes_[...] = make_shared<RemoteNode>(...)` and the following `update()` run outside `remote_nodes_mutex_`, while `spin_once()`, `decode()`, `sendBridgeInfo()` and diagnostics read the same map under it. Benign on first configure; a re-configure with timers still alive is a data race. Resolve/create under the lock, keep the pointer for the slow `update()` outside -- `src/udp_bridge.cpp:483`
+- [x] (must-fix, Copilot) `on_deactivate`'s drop-delta re-baselining races `diagnoseRelayQueue()` on a plain `uint64_t`: diagnose reads 100, deactivate stores 120, diagnose subtracts 120 from 100 -> unsigned underflow, backlog re-reported as link loss. Introduced by a round-3 suggestion (deactivate re-baselining). Serialize the pair or make it atomic -- `src/udp_bridge.cpp:698`
+- [x] (suggestion, Copilot) Relay reuses `UDPBridge::send()`, whose per-connection failure handler logs `Connection::send()` timeouts at ERROR (`src/udp_bridge.cpp:1997-2000`). An over-horizon spoke is a normal field condition and a hub hits it for every forwarded topic, so this emits error-level noise. Use a non-error severity for expected relay link failures, or give `send()` a relay-specific reporting policy -- `src/udp_bridge.cpp:1291`
+- [x] (suggestion, Copilot) `RelayItem::byte_size()` omits `message.reliability` and `message.durability`, so the relay queue's byte bound understates the memory actually held -- `include/udp_bridge/relay_item.h:51`
 
 ### Notes
 - Copilot framed the identity-length and byte_size findings as attacker-driven ("a sender can fill a stalled relay queue"). Per operator context (2026-08-23) udp_bridge targets a trusted network and malicious-packet defence was never a design goal, so that framing does not apply here -- but neither finding needs it. The identity-length trigger is a node name longer than 23 characters, an ordinary naming choice.
@@ -1067,3 +1067,161 @@ Copilot verdict: changes recommended. 7 inline comments, all accurate against th
 
 ### False positives
 - None. All seven Copilot comments were checked against the code and hold.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-23 21:29 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**PR**: #63 at `7da0b61`
+**Addressed**: `## Integrated Review` (complete, 2026-08-23 09:42 -04:00, PR #63 at `b054298`)
+**Commits**: `05dde00`, `3874568`, `8618375`, `4b73a61`, `1f0ade5`, `ead97a1`, `d3c7d3a`, `7da0b61`
+
+### Actions
+- [x] Node-name length is a hard limit, not a truncation point — `include/udp_bridge/packet.h`, `include/udp_bridge/remote_identity.h:84`, `src/udp_bridge.cpp:764` (`setName`), `src/udp_bridge.cpp:2305` (`addRemote`), `src/wrapped_packet.cpp:29` (`05dde00`)
+- [x] Bounded reads of the fixed-size wire fields — `src/udp_bridge.cpp:1702` (`unwrap`), `src/remote_node.cpp:341` (`RemoteNode::unwrap`) (`3874568`)
+- [x] A remote resolving to this bridge's own name is rejected at configure — `include/udp_bridge/remote_identity.h:108`, `src/udp_bridge.cpp:365` (`8618375`)
+- [x] `on_configure` inserts into `remote_nodes_` under `remote_nodes_mutex_` — `src/udp_bridge.cpp:496` (`4b73a61`)
+- [x] Drop-delta baseline is atomic and cannot underflow — `include/udp_bridge/drop_baseline.h`, `src/udp_bridge.cpp:721`/`2763`/`2810` (`1f0ade5`)
+- [x] Expected relay link failures report at WARN, not ERROR — `src/udp_bridge.cpp:1327`/`1349`/`2033`, `include/udp_bridge/udp_bridge.h` (`SendFailureReport`) (`ead97a1`)
+- [x] `RelayItem::byte_size()` counts every string the item holds — `include/udp_bridge/relay_item.h:46` (`d3c7d3a`)
+- [x] (deferred: filed as udp_bridge#64, deliberately out of scope for this PR per the review entry) End-to-end `decodeData()` -> `enqueuePublish()` -> `RelayQueue` -> `send()` test — `test/test_relay_routing.cpp:127`
+
+### The operator decision that expanded finding 1
+
+Copilot proposed canonicalizing the configured name to the wire limit. The
+operator rejected that in favour of **refusing an over-long name loudly**:
+truncation is what manufactures the identity mismatch the relay loop rule
+cannot tolerate, and canonicalizing preserves the trap that two configured
+names differing only after character 23 collapse onto one wire identity —
+the very collision `resolveRemoteIdentities` exists to reject. Rejection
+makes that unrepresentable instead of patching it.
+
+Every path a name enters configuration by now rejects:
+
+| path | behaviour |
+|---|---|
+| `setName` (`src/udp_bridge.cpp:764`) | returns false; `on_configure` returns `CallbackReturn::FAILURE` naming the parameter, the value, its length and the limit — above the socket bind, so the fix-and-reconfigure remedy cannot hit EADDRINUSE |
+| `resolveRemoteIdentities` (`remote_identity.h`) | reported like the existing duplicate-identity error and fails `on_configure`; the message distinguishes `remotes.<label>.name` from a bare `remotes_list` label |
+| `addRemote` service (`src/udp_bridge.cpp:2305`) | `AddRemote.srv` has no success/message field, so per the operator's instruction: ERROR log, no remote created, early return |
+| `WrappedPacket` ctor (`src/wrapped_packet.cpp:29`) | clamp kept as the last line of defence, documented as unreachable from validated config; it does not throw |
+
+Wire-side names get **no** length policy, as instructed — a long one arrives
+already shortened and is indistinguishable from a short one — so the receive
+side gets bounded reads instead. The CONNECT and `decodeSubscribeRequest`
+dynamic-remote paths were checked: both take the name from
+`source_info.node_name`, which is now the bounded read from `unwrap`, so both
+are covered by that one change. `remoteAdvertise` / `remoteSubscribe` were
+also checked and create no remote (`remoteAdvertise` returns early when the
+remote is not already present), so `add_remote` was the only service needing
+a length check.
+
+Behaviour change documented in `udp_bridge/README.md` (alongside the existing
+#51 upgrade note), `doc/relay_design.md` (a new subsection under the loop
+rule's identity invariant) and the `.agents/README.md` parameter table. No
+config in this workspace is affected — the longest name is `shoreside_bridge`
+at 16 characters.
+
+### Tests
+
+Three new targets/cases, all failing without their fix:
+
+- `test/test_node_name_limits.cpp` (new, 6 tests) — drives the **real
+  lifecycle transition**: an over-long `name`, `remotes.<label>.name` or
+  `remotes_list` label each leave the node UNCONFIGURED; names at exactly the
+  23-character limit configure to INACTIVE; a remote configured with our own
+  name (by `name` or by label) fails to configure.
+- `test/test_relay_routing.cpp` — `OverLongRemoteIdentityIsRejected` (message
+  quotes the name, the limit and the parameter), `MaximumLengthIdentity-
+  StillClosesTheLoopRule` (the boundary truncation used to break: round trips
+  the field and asserts the loop rule still excludes the sender),
+  `UnterminatedWireNameIsReadWithinItsField` (a heap field of exactly the wire
+  size with no null byte, so an unbounded scan reads past the allocation),
+  `RemoteResolvingToOurOwnNameIsRejected`.
+- `test/test_drop_baseline.cpp` (new, 4 tests) — the delta arithmetic, the
+  stale-total-against-newer-baseline case that used to underflow to ~2^64,
+  the never-moves-backwards invariant, and a four-thread test asserting the
+  sum of every reported delta equals the total exactly (each drop reported
+  once, never twice).
+- `test/test_relay_queue.cpp` — `ByteSizeCountsEveryHeldString`, pinning each
+  field's contribution individually.
+
+Two findings have **no** unit test, both recorded in their commit messages:
+
+- The `remote_nodes_mutex_` fix (`4b73a61`) is a pure locking correction with
+  no observable behaviour to assert on; the suite has no thread-sanitizer
+  harness and the readers are private — the same limitation already recorded
+  at the top of `test_giveup_diagnostic.cpp`.
+- The WARN-vs-ERROR severity change (`ead97a1`) alters only log level; there
+  is no log-capture harness, and driving a real `Connection::send()` to its
+  timeout path is not deterministic. The testable contract — that a relay
+  failure isolates per destination and the fan-out continues — is already
+  pinned by `test_relay_send.cpp`.
+
+### Scope taken beyond the literal findings
+
+- Copilot's byte_size finding named `reliability` and `durability`; `md5sum`
+  and `message_definition` were uncounted too, and `message_definition` is the
+  one that matters (a full ROS message definition can rival a small payload).
+  All four are now counted.
+- The relay worker's own per-destination failure handler
+  (`src/udp_bridge.cpp:1349`) logged the same expected condition at
+  **unthrottled** ERROR. Downgraded and throttled to match `send()`.
+- `connection_id` is read from the same untrusted header as `source_node` and
+  had the identical unbounded-read bug; bounded in the same commit. (This is
+  not what #65 covers — #65 is the Compressed-packet length underflow.)
+- `last_reported_publish_drops_` had the identical race and underflow as the
+  relay counter Copilot flagged; both are fixed by the same helper.
+
+### Build / test — verbatim
+
+```
+$ ./build.sh udp_bridge
+Finished <<< udp_bridge [5.67s]
+
+Summary: 1 package finished [5.93s]
+  1 package had stderr output: udp_bridge
+BUILD_EXIT=0
+
+$ ./test.sh udp_bridge
+Finished <<< udp_bridge [33.8s]
+
+Summary: 1 package finished [34.0s]
+Summary: 249 tests, 0 errors, 0 failures, 14 skipped
+TEST_EXIT=0
+
+$ colcon test-result --verbose
+Summary: 249 tests, 0 errors, 0 failures, 14 skipped
+RESULT_EXIT=0
+```
+
+249 tests, up from the 232 floor (+17: 6 node-name-limit, 4 drop-baseline, 4
+relay-routing identity/bounded-read, 1 relay-queue byte accounting, and the
+gtest-level splits within them).
+
+```
+$ pre-commit run --from-ref origin/jazzy --to-ref HEAD
+trim trailing whitespace.................................................Passed
+fix end of files.........................................................Passed
+check yaml...............................................................Passed
+check xml............................................(no files to check)Skipped
+check for merge conflicts................................................Passed
+check that executables have shebangs.................(no files to check)Skipped
+mixed line ending........................................................Passed
+check for added large files..............................................Passed
+cmake-lint...............................................................Passed
+yamllint.................................................................Passed
+don't commit to branch...................................................Passed
+EXIT=0
+```
+
+(The first pre-commit pass fixed one pre-existing trailing-whitespace line in
+`src/wrapped_packet.cpp`, a file this round touched; that fix is in `7da0b61`.)
+
+### Environment note
+
+The dev host's root filesystem hit 100% partway through this session
+(`/dev/nvme0n1p2  1.9T  1.8T  274M avail`), which made `colcon` fail to create
+its log directory. Removing this worktree's regenerable `core_ws/log` was
+enough to finish; the underlying disk pressure is a host condition, not
+something this branch caused, and it is worth the operator's attention.
