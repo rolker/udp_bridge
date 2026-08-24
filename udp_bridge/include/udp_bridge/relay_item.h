@@ -50,8 +50,8 @@ struct RelayItem
   /// that matters in practice — a full ROS message definition dwarfs the
   /// other fields and can rival a small payload — but `md5sum`,
   /// `reliability` and `durability` are held too, so they count as well.
-  /// (`history_depth` is a uint32 inside the struct this method is a member
-  /// of, so it is not separately allocated and is not counted.)
+  /// (`history_depth` is a uint32 inside `message`, not a string, so it is
+  /// not separately allocated and is not counted.)
   size_t byte_size() const
   {
     return message.data.size()
