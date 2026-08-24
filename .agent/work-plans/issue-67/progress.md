@@ -274,3 +274,41 @@ The plan is unusually well-verified against source — every deletion's replacem
 ### Recommended Actions
 - [ ] Replace the `test_stale_packet_gate.cpp` pointer in step 6 with a concrete WARN-capture mechanism (e.g. `CaptureStderr`/`GetCapturedStderr`).
 - [ ] Add the README.md node-name-length upgrade note (~122–129) to step 7's edit list — drop its `remotes.<label>.name` clause.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-24 10:34 -04:00
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**Plan**: `.agent/work-plans/issue-67/plan.md` at `b1d4773`
+**Branch**: feature/issue-67 at `b1d4773`
+**Phases**: single PR
+
+Host-inline edit closing both must-fixes from the `## Plan Review` (`a1b8a90`).
+Textual only; no design change, and the review raised no design objection.
+
+1. The new `StaleRemoteNameParameterWarns` test pointed at
+   `test_stale_packet_gate.cpp` for "this repo's existing WARN-assertion
+   pattern". No such pattern exists — nothing in the package captures log
+   content. The one logging-adjacent test does the opposite: it silences the
+   logger and asserts through an accessor, stating so outright
+   (`test_remote_node_resend.cpp:838-852`, "the cap-enforcement assertion uses
+   `dispatchMissWarnedIdCountForTest`, not log inspection"). The plan now
+   follows that convention rather than the review's suggested stderr capture —
+   expose a test accessor incremented where the WARN fires. Stable against
+   wording changes and consistent with the package's own idiom.
+2. `README.md`'s node-name-length upgrade note was recorded as unaffected. It
+   is not: it states an over-long `remotes.<label>.name` fails the configure
+   transition, which stops being true once that key is read only to warn
+   about. Now rewritten so rejection is described where it still applies.
+
+The review verified independently, against source, that: the collision-branch
+deletion is genuinely dead code (`resolveRemoteIdentities` has one call site;
+`add_remote` never feeds it); the declare-but-don't-read mechanism works (no
+`automatically_declare_parameters_from_overrides`); the 23/24 boundary and its
+`MaximumLengthNamesConfigure` fix are correct; every test deletion's
+coverage-survives claim holds; and the unknown-sender WARN fires identically
+before and after. Plan length (156 lines) judged as earning its place.
+
+### Open questions
+- [ ] No open questions — plan is implementation-ready.
