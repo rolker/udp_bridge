@@ -492,10 +492,15 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     // RemoteNode is then driven through the local shared_ptr, because
     // update() does per-connection work (getaddrinfo among it) that must
     // not be done while holding a mutex the socket-drain path takes.
-    std::shared_ptr<RemoteNode> remote_node;
+    //
+    // Constructed BEFORE the lock: RemoteNode's constructor creates two
+    // transient-local publishers, and DDS entity creation under a mutex the
+    // socket-drain path takes is exactly what this comment says we don't do.
+    // The insert is an unconditional assignment, so nothing needs
+    // re-checking once the lock is taken.
+    auto remote_node = std::make_shared<RemoteNode>(remote_info.name, name_, *this);
     {
       std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-      remote_node = std::make_shared<RemoteNode>(remote_info.name, name_, *this);
       remote_nodes_[remote_info.name] = remote_node;
     }
     remote_node->update(remote_info);
