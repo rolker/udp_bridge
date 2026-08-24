@@ -30,17 +30,25 @@
 //                                 pair must relay nothing; this test fails
 //                                 if the exclude_remote filter is removed
 //                                 from EITHER the probe or the selection.
-//   ConfiguredNameIsTheIdentityNotTheLabel / DuplicateRemoteIdentityIsRejected
-//                               / LabelDifferingFromWireNameStillNeverEchoes —
+//   LabelIsTheIdentity / EmptyRemoteIdentityIsRejected
+//                               / RemoteResolvingToOurOwnNameIsRejected
+//                               / RepeatedLabelIsIdempotentNotACollision —
 //                                 the identity namespace the loop rule
-//                                 compares in. A static config keys the
-//                                 routing table by the remote's WIRE name
-//                                 (`remotes.<label>.name`, else the label),
-//                                 because that is what arrives in
-//                                 WrappedPacket::source_node; keying by the
-//                                 label made the hub echo a remote's own
-//                                 traffic back to it even with one remote
-//                                 configured.
+//                                 compares in. There is exactly ONE (#67): a
+//                                 `remotes_list` entry IS the name that
+//                                 remote calls itself on the wire, so it is
+//                                 both the parameter-path label and the key
+//                                 the routing table uses, which is what
+//                                 arrives in WrappedPacket::source_node.
+//                                 (Between #51 and #67 a second namespace
+//                                 existed — `remotes.<label>.name` overrode
+//                                 the label. That key is REMOVED: a config
+//                                 that still sets it fails on_configure,
+//                                 pinned in test_node_name_limits.cpp, not
+//                                 here.) An entry that cannot mean what the
+//                                 config says — empty, or this bridge's own
+//                                 name — is refused; a repeated entry is
+//                                 idempotent and collapses to one key.
 //   OverLongRemoteIdentityIsRejected / MaximumLengthIdentityStillClosesTheLoopRule
 //                               / UnterminatedWireNameIsReadWithinItsField —
 //                                 the identity must be REPRESENTABLE, or the
