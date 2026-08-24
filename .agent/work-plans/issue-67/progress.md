@@ -435,3 +435,105 @@ Nothing failed for disk space, but the margin is thin.
 ---
 **Authored-By**: `Claude Code Agent`
 **Model**: `Claude Opus`
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-08-24 09:15 -04:00
+**By**: Claude Code Agent (Claude Opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-67 at `11bc263`
+**Mode**: pre-push
+**Depth**: Deep (reason: 12 files / ~1485 lines, six test deletions, and the change re-keys the wire identity every routing decision compares)
+**Must-fix**: 3 | **Suggestions**: 8
+**Round**: 1 | **Ship**: continue — three must-fixes at round 1; all mechanical, one address-findings pass should close them
+
+Specialists: Static analysis (pre-commit, exit 0) · Governance + Plan Drift ·
+Docs Accuracy · Claude Adversarial Lens A · Claude Adversarial Lens B.
+Copilot off (not requested). Local Adversarial skipped: Ollama unavailable on
+this host (OOM).
+
+Build/test verified independently on a clean rebuild (`rm -rf build/udp_bridge`):
+BUILD_EXIT=0, TEST_EXIT=0, `colcon test-result --verbose` = 251 tests,
+0 errors, 0 failures, 14 skipped. Only the pre-existing `-Wpedantic`
+flexible-array-member warnings from `packet.h`. The 253 → 251 drop is fully
+accounted for: `test_relay_routing` 22 → 20, `test_node_name_limits` 7 → 7
+(2 deleted, 2 added).
+
+### Deletion audit (each deletion read against its claimed replacement)
+Every deletion's coverage genuinely survives; nothing was deleted whose
+protection could not be named in the current tree.
+- `label_by_identity` collision branch + `DuplicateRemoteIdentityIsRejected` —
+  branch is provably unreachable (two distinct entries are two distinct
+  identities); exact repeat still covered by
+  `RepeatedLabelIsIdempotentNotACollision`, which now also asserts the collapse.
+- `LabelDifferingFromWireNameStillNeverEchoes` — premise unconfigurable; its
+  three residual assertions survive in `EchoIsNeverSentBackToTheSender`,
+  `ExcludedRemoteRateStateUntouched` and `MaximumLengthIdentityStillClosesTheLoopRule`.
+- `OverLongRemoteNameFailsToConfigure` / `RemoteWithOurOwnNameFailsToConfigure` —
+  label-path twins remain and now carry the deleted tests' assertion messages.
+- `EmptyRemoteIdentityIsRejected`'s "empty label, real name" half — not
+  expressible; the empty-entry rejection it shared the test with is retained.
+- The "known on the wire as" INFO — unreachable; `remote_info.name` always
+  equals the entry.
+
+### Verified against source (not from the Implementation entry)
+- No validation regression. Over-long (>23), self-name and empty entries all
+  still return `CallbackReturn::FAILURE`, at `udp_bridge.cpp:390` — ahead of
+  `socket()` (`:395`) and `bind()` (`:408`). The #63 round-3 socket-leak
+  property holds. Lens A drove the empty-entry case end-to-end through the real
+  node and confirmed clean `FAILURE`, no exception from the
+  `"remotes..name"` declare that precedes validation.
+- `MaximumLengthNamesConfigure` is now stronger, not weaker: the at-limit
+  string moved to the `remotes_list` entry, the only path reaching
+  `node_name_fits()`, and is simultaneously exercised as a 23-char parameter-path
+  segment. This was the sharpest silent-coverage-loss risk and it was handled.
+- Declare-but-don't-read: `declareIfMissing` runs for every label before the
+  `stale_name.empty()` continue; counter reset at `:363`, incremented at `:371`
+  exactly at the WARN site; `AbsentRemoteNameParameterIsSilent` is genuinely
+  discriminating (an unconditional increment yields 1 vs the asserted 0).
+- `configured_remote_names_` is the identical set for every configuration
+  expressible both before and after (label == resolved identity whenever
+  `.name` is unset). Mutex discipline preserved: clear+insert stay one critical
+  section.
+- `packet.h` is comment-only — it replaces a reference to the deleted collision
+  check with the still-true truncation hazard. No wire-format, constant or
+  predicate change. Justified.
+- Docs: both required statements present and correct in all four targets
+  (label-must-equal-peer's-own-name; a `.` in a wire name is now unconfigurable).
+  `example_params.yaml` is internally consistent and loads.
+
+### Findings
+- [ ] (must-fix) Roadmap comment names three tests deleted by this commit and states the retired `remotes.<label>.name`-else-label rule as current — the exact misconception #67 exists to remove, ~140 lines above the test that says the opposite. Cross-confirmed by Governance and Lens A — `udp_bridge/test/test_relay_routing.cpp:33-43`
+- [ ] (must-fix) The repo's own bench config still sets the retired key (`name: "boat"`, `name: "operator"`), contradicting this PR's own "delete it from your config" instruction and putting a permanent spurious WARN in the #18 bench harness. Cross-confirmed by Docs and Lens B — `udp_bridge/test/bench/configs/three_path.yaml:33,59`
+- [ ] (must-fix) The newly-prescribed upgrade remedy ("rename the `remotes_list` entry") does not work on a live re-configure and the docs do not say so: `remote_nodes_` and `subscribers_` are never cleared or erased anywhere (verified), so deactivate→cleanup→configure after a rename leaves the old `RemoteNode` resident with the same host/port and every send goes out twice to the same peer — doubled uplink on the rate-limited links this package exists for. Add "restart the node" to the three places that give this advice; code-level pruning is a follow-up, not this PR — `udp_bridge/README.md` (#67 upgrade note), `udp_bridge/doc/relay_design.md:211-219`, `udp_bridge/src/udp_bridge.cpp:372-378`
+- [ ] (suggestion) The WARN is self-contradictory in the most likely case — when the stale value equals the label it prints "…is set to 'boat' … rename the remotes_list entry … to 'boat'". Special-case equality to "delete the redundant key; it already matches the entry" — `udp_bridge/src/udp_bridge.cpp:372-378`
+- [ ] (suggestion) The thread-safety rationale is false on a re-configure, and the neighbouring `configured_remote_names_` comment says so explicitly. The member is safe for a different reason (nothing but the test accessor ever reads it). Cross-confirmed Lens A + Lens B — `udp_bridge/include/udp_bridge/udp_bridge.h:509-513`
+- [ ] (suggestion) The counter counts occurrences, not keys: the loop iterates `remotes_list` un-deduplicated, so a repeated entry double-WARNs and reports 2 from an accessor documented as counting keys — for a config `RepeatedLabelIsIdempotentNotACollision` blesses as legal — `udp_bridge/src/udp_bridge.cpp:363-379`
+- [ ] (suggestion) The counter is not reset in `on_cleanup` nor on the `on_configure` paths that fail before `:363`, so "seen by the most recent on_configure" is only approximately true — `udp_bridge/include/udp_bridge/udp_bridge.h:514`
+- [ ] (suggestion) No lifecycle-level test for an empty `remotes_list` entry, while both its siblings (over-long, self-name) have one. The `on_configure` path has an untested step for this input — it declares `"remotes..name"` before validating — and the `Bridge` helper makes the guard a two-liner — `udp_bridge/test/test_node_name_limits.cpp`
+- [ ] (suggestion) Docs omit one condition on the unknown-sender WARN: it is skipped entirely when no remote is statically configured (`!configured_remote_names_.empty()`, `udp_bridge.cpp:1804`). `relay_design.md` already documents the throttle and once-per-name nuances and is the natural home — `udp_bridge/README.md:131`, `udp_bridge/doc/relay_design.md:166`
+- [ ] (suggestion) Pre-existing, but this PR edits the file: "0 = default (500000)" is wrong — `Connection::default_rate_limit = 50000`. `.agents/README.md:179-182` carries a pitfall entry whose only purpose is to warn agents about this comment; fixing it lets that entry retire — `udp_bridge/config/example_params.yaml:83`
+- [ ] (suggestion) Pre-existing, but in a table labelled verified and this PR edits it: "20 gtest targets" — `CMakeLists.txt` has 22; missing are `test_drop_baseline` and `test_node_name_limits`, this change's own suite — `.agents/README.md:28`
+
+### Considered and not raised as findings
+- **Warn-only on a stale key that *differs* from the label** silently reproduces
+  the #51 echo bug on upgrade, and is inconsistent with the FAILURE the same
+  function returns for every other identity error (Lens B raised it as
+  must-fix). Not a defect: issue #67 ask item 3 specifies exactly this —
+  "Warn if the now-unread key is present, so a config carrying a stale `name:`
+  is told rather than silently ignored." Recorded here so the operator can
+  revisit it deliberately if wanted (fail when non-empty and `!= label`; warn
+  only when equal). No config in the workspace sets the key, so nothing is
+  currently exposed.
+- Plan's *Files to Change* table omits `include/udp_bridge/udp_bridge.h`
+  (accessor + member); the Divergences section covers `packet.h` but not this.
+  Below the suggestion threshold.
+- Ask item 6 (#64 bench-plan simplification) is correctly deferred and the
+  deferral is stated in the Implementation entry — worth a one-line note on #64
+  when the PR opens.
+- `.agents/review-context.yaml` does not exist in this repo (pre-existing gap).
+
+---
+**Authored-By**: `Claude Code Agent`
+**Model**: `Claude Opus`
