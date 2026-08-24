@@ -41,6 +41,15 @@
 //                                 label made the hub echo a remote's own
 //                                 traffic back to it even with one remote
 //                                 configured.
+//   OverLongRemoteIdentityIsRejected / MaximumLengthIdentityStillClosesTheLoopRule
+//                               / UnterminatedWireNameIsReadWithinItsField —
+//                                 the identity must be REPRESENTABLE, or the
+//                                 compare above can never succeed. An
+//                                 over-long name is refused rather than
+//                                 truncated (truncation is what manufactures
+//                                 the mismatch), a name at the limit round
+//                                 trips whole, and a wire field with no null
+//                                 terminator is read within its bounds.
 //   RoutingTableFidelity        — a remote whose topics_list omits the topic
 //                                 receives no relayed traffic for it, while
 //                                 a sibling that lists it does.
@@ -59,8 +68,10 @@
 
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/relay_item.h"
+#include "udp_bridge/packet.h"
 #include "udp_bridge/remote_identity.h"
 
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -247,6 +258,104 @@ TEST(RelayRouting, LabelDifferingFromWireNameStillNeverEchoes)
   label_keyed[label] = remote("/status", "wifi");
   EXPECT_TRUE(hasRelayDestination(label_keyed, wire_name))
     << "keying by the label is what made the loop rule miss";
+}
+
+// The wire field is `char source_node[24]`, so 23 characters is the longest
+// name that survives a round trip. An identity longer than that cannot be
+// compared successfully against what actually arrives, so the loop rule
+// would be permanently inert for that remote and the hub would echo its
+// traffic back to it. Truncating to fit is what manufactures that mismatch
+// -- and would let two identities differing only after char 23 collapse
+// onto one wire name, reopening the collision the function above rejects.
+// So it is refused, with a message an operator can act on.
+TEST(RelayRouting, OverLongRemoteIdentityIsRejected)
+{
+  const std::string too_long(udp_bridge::maximum_node_name_length + 1, 'x');
+
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"robot_a", too_long}}, &error);
+  EXPECT_TRUE(identities.empty())
+    << "an unrepresentable identity must fail on_configure, not be truncated";
+  ASSERT_FALSE(error.empty());
+  EXPECT_NE(error.find(too_long), std::string::npos)
+    << "the message must quote the offending name";
+  EXPECT_NE(error.find(std::to_string(udp_bridge::maximum_node_name_length)),
+            std::string::npos)
+    << "the message must name the limit";
+  EXPECT_NE(error.find("remotes.robot_a.name"), std::string::npos)
+    << "the message must name the parameter to fix";
+
+  // A label used as the identity (no `name` set) is checked the same way,
+  // and the message points at the label rather than at the unset parameter.
+  error.clear();
+  auto by_label = resolveRemoteIdentities({{too_long, ""}}, &error);
+  EXPECT_TRUE(by_label.empty());
+  ASSERT_FALSE(error.empty());
+  EXPECT_NE(error.find("remotes_list"), std::string::npos);
+}
+
+// The boundary case, which is the one truncation used to break: a name of
+// exactly the maximum length is carried on the wire unchanged, so it is
+// still the same string on both sides of the loop rule's compare. Before
+// #51's rejection policy the local `name` was cut at this length while the
+// configured remote identity was not, so a 24-character pair went silently
+// unequal and the hub echoed.
+TEST(RelayRouting, MaximumLengthIdentityStillClosesTheLoopRule)
+{
+  const std::string wire_name(udp_bridge::maximum_node_name_length, 'a');
+  ASSERT_EQ(wire_name.size(), 23u) << "the wire field is 24 bytes incl. NUL";
+
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"robot_a", wire_name}}, &error);
+  ASSERT_TRUE(error.empty()) << error;
+  ASSERT_EQ(identities.at("robot_a"), wire_name)
+    << "a name at the limit must be kept whole";
+
+  // A round trip through the wire field must give back the same string --
+  // that equality is the loop rule's whole premise.
+  udp_bridge::SequencedPacketHeader header;
+  memset(&header, 0, sizeof(header));
+  memcpy(header.source_node, wire_name.data(), wire_name.size());
+  EXPECT_EQ(udp_bridge::wire_field_to_string(header.source_node,
+                                             udp_bridge::maximum_node_name_size),
+            wire_name);
+
+  // Keyed as on_configure keys it, the sender is excluded from its own
+  // traffic: nothing is relayed back.
+  std::map<std::string, RemoteDetails> table;
+  table[identities.at("robot_a")] = remote("/status", "wifi");
+  EXPECT_FALSE(hasRelayDestination(table, wire_name))
+    << "a maximum-length name must still match itself on the wire";
+  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, wire_name).empty());
+}
+
+// A fixed-size wire field need not be null-terminated: a corrupted or
+// foreign packet can fill all 24 bytes. Reading it as a C string would run
+// off the end of the field -- and off the allocation, if no null byte
+// follows. The read is bounded instead.
+TEST(RelayRouting, UnterminatedWireNameIsReadWithinItsField)
+{
+  // The field, filled edge to edge, immediately followed by more non-zero
+  // bytes: an unbounded scan would keep going into them.
+  struct
+  {
+    char source_node[udp_bridge::maximum_node_name_size];
+    char trailing[8];
+  } packed;
+  memset(&packed, 'z', sizeof(packed));
+
+  const auto name = udp_bridge::wire_field_to_string(
+    packed.source_node, udp_bridge::maximum_node_name_size);
+  EXPECT_EQ(name.size(), std::size_t(udp_bridge::maximum_node_name_size))
+    << "the read must stop at the end of the field, not at the next null";
+  EXPECT_EQ(name, std::string(udp_bridge::maximum_node_name_size, 'z'));
+
+  // And the ordinary null-padded case is unchanged.
+  memset(&packed, 0, sizeof(packed));
+  memcpy(packed.source_node, "boat", 4);
+  EXPECT_EQ(udp_bridge::wire_field_to_string(packed.source_node,
+                                             udp_bridge::maximum_node_name_size),
+            "boat");
 }
 
 // A packet that never passed through unwrap() carries no source_node, so the

@@ -76,9 +76,15 @@ public:
   void spin_once();
 
 private:
-  /// Sets the node name as seen by other udp_bridge nodes
-  /// Warns if truncated to size specified in packet header.
-  void setName(const std::string &name);
+  /// Sets the node name as seen by other udp_bridge nodes.
+  ///
+  /// Returns false, having left `name_` untouched, when the name does not
+  /// fit the on-wire `source_node` field. The caller (on_configure) fails
+  /// the transition on that: the name is NOT truncated, because a
+  /// truncated name no longer equals the name every other bridge is
+  /// configured to expect, which silently disables the relay loop rule
+  /// (issue #51 — see packet.h's maximum_node_name_length).
+  bool setName(const std::string &name);
 
   /// Callback method for locally subscribed topics.
   /// ShapeShifter is used to be agnostic of message type at compile time.

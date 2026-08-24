@@ -118,6 +118,24 @@ For each remote in `remotes_list`:
     > delete or comment out the `name:` key and the label is used as before.
     > If the key was correct all along, note that the loop rule and relay
     > routing now actually work for that remote — that is the fix #51 shipped.
+
+    > **Upgrade note (#51) — node names longer than 23 characters now fail
+    > `on_configure`.** The on-wire `source_node` field is 24 bytes, so 23
+    > characters is the longest name that survives a round trip. This used to
+    > be handled by silently truncating the *local* `name` (with a WARN) while
+    > leaving configured remote names untruncated — which is what made the two
+    > unequal, put the relay loop rule to sleep, and let the hub echo. An
+    > over-long name is now **rejected, not shortened**, wherever one can be
+    > supplied: the `name` parameter and any `remotes.<label>.name` (or a
+    > `remotes_list` label used as the identity) fail the configure transition
+    > with a message naming the parameter, the value, its length and the limit;
+    > the `add_remote` service refuses the request with an ERROR and creates no
+    > remote. A config that previously started with a truncation warning will
+    > now refuse to configure — that config only ever worked if you had
+    > hand-truncated the peer's name to match. Shorten the name on both bridges.
+    > Names arriving *from the wire* are not rejected (a long one arrives
+    > already shortened and is indistinguishable from a short one); they are
+    > read with an explicit length bound instead.
 -   `remotes.<remote_label>.connections_list`: (string array) List of named connections.
 
 For each connection in `connections_list`:

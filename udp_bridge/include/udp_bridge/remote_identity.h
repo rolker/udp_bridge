@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "udp_bridge/packet.h"
+
 namespace udp_bridge
 {
 
@@ -41,13 +43,23 @@ inline std::string resolveRemoteIdentity(const std::string& label,
   return configured_name.empty() ? label : configured_name;
 }
 
-/// Resolve every configured remote's identity and reject collisions.
+/// Resolve every configured remote's identity and reject collisions and
+/// over-long names.
 ///
 /// Two labels that resolve to the same identity are a configuration error,
 /// not a merge: they would collide in `remote_nodes_` and in every topic's
 /// `remote_details`, so the second silently overwrites the first's
 /// connections and rate limits. Fail loud rather than run half a routing
 /// table.
+///
+/// An identity longer than `maximum_node_name_length` is a configuration
+/// error for the same reason (issue #51). It cannot be carried on the wire,
+/// so the remote's packets arrive stamped with a shortened `source_node`
+/// that never equals the identity this table is keyed by: the relay loop
+/// rule matches nothing and the hub echoes the sender's own traffic back to
+/// it. Truncating here instead would ALSO reopen the collision this
+/// function exists to close, because two identities differing only after
+/// the limit would become one wire name. Reject it and say so.
 ///
 /// @param labels_and_names (label, `remotes.<label>.name`) pairs, in
 ///        `remotes_list` order. An empty name means "unset".
@@ -69,6 +81,17 @@ inline std::map<std::string, std::string> resolveRemoteIdentities(
     if(identity_by_label.count(entry.first))
       continue;
     auto identity = resolveRemoteIdentity(entry.first, entry.second);
+    if(!node_name_fits(identity))
+    {
+      if(error)
+        *error = node_name_too_long_error(
+          entry.second.empty()
+            ? "remote label (remotes_list entry; set remotes." + entry.first
+              + ".name to a shorter wire name if the label must stay)"
+            : "remote name (remotes." + entry.first + ".name)",
+          identity);
+      return std::map<std::string, std::string>();
+    }
     auto existing = label_by_identity.find(identity);
     if(existing != label_by_identity.end())
     {

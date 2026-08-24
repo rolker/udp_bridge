@@ -190,6 +190,43 @@ surface keyed by the remote (per-remote topics, `BridgeInfo` /
 service arguments). See the upgrade note under `remotes.<remote_label>.name`
 in [`README.md`](../README.md#parameters) before upgrading a live config.
 
+### The identity must be *representable*, so over-long names are rejected
+
+The wire field is `char source_node[24]`, so the longest node name that
+survives a round trip is **23 characters**. A longer name cannot be the
+same string on both sides of the comparison, which is the whole invariant
+above.
+
+Earlier versions truncated: `setName` shortened the local name to 23 and
+logged a WARN, while a configured remote identity was never shortened at
+all. That is what manufactured the mismatch — two things that are supposed
+to be equal were made unequal, the loop rule went inert, and the operator
+found out by watching the hub echo. Truncating *both* sides would not have
+been enough either: it would leave two configured names differing only
+after character 23 collapsing onto one wire identity, which is exactly the
+collision `resolveRemoteIdentities` exists to reject.
+
+So an over-long name is now **rejected, never shortened**, at every path a
+name enters by:
+
+| path | behaviour |
+|---|---|
+| the `name` parameter (`setName`) | `on_configure` returns `FAILURE` |
+| `remotes.<label>.name`, or the label when it is unset | `on_configure` returns `FAILURE` |
+| the `add_remote` service | refused with an ERROR; no remote is created |
+| `WrappedPacket`'s constructor | still clamps — a last line of defence a validated config can no longer reach |
+
+Names arriving **from the wire** are a different case and get no policy:
+one that was too long arrives already shortened and is indistinguishable
+from a short one, so there is nothing to reject. What the receive side owes
+instead is a *bounded read* — `source_node` is fixed-size and need not be
+null-terminated, so it is read with an explicit length bound
+(`wire_field_to_string`) rather than as a C string.
+
+This is a deliberate behaviour change: a configuration that used to start
+with a truncation warning now fails to configure. Such a configuration only
+ever worked if the operator had hand-truncated the peer's name to match.
+
 The exclusion is applied *before* any `last_sent_time` is stamped, so a
 relay never consumes the excluded remote's rate-limit budget: the sender's
 rate state after a relay is exactly as if the relay had not happened.

@@ -87,8 +87,12 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   if(last_slash != std::string::npos)
     name = name.substr(last_slash+1);
   declareIfMissing( "name", name);
-  // This is the name of the UDPBridge node, not the ROS2 node name
-  setName(get_parameter("name").as_string());
+  // This is the name of the UDPBridge node, not the ROS2 node name.
+  // An over-long name fails the transition here — before the socket is
+  // bound, so the operator's natural remedy (shorten `name`, re-configure)
+  // does not hit EADDRINUSE. See the note above the remote-identity block.
+  if(!setName(get_parameter("name").as_string()))
+    return CallbackReturn::FAILURE;
 
 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
@@ -757,14 +761,25 @@ UDPBridge::CallbackReturn UDPBridge::on_shutdown(const rclcpp_lifecycle::State &
 }
 
 
-void UDPBridge::setName(const std::string &name)
+bool UDPBridge::setName(const std::string &name)
 {
-  name_ = name;
-  if(name_.size() >= maximum_node_name_size-1)
+  // Reject rather than truncate (issue #51). This used to shorten the name
+  // to the on-wire limit and WARN. That warning was the only notice an
+  // operator got that their bridge had just started answering to a
+  // different name than every remote is configured to expect — the relay
+  // loop rule compares the wire `source_node` against configured remote
+  // identities, so a truncated local name matches nothing and the hub
+  // relays a sender's own traffic back to it. Truncation manufactured that
+  // mismatch; refusing to start does not.
+  if(!node_name_fits(name))
   {
-    name_ = name_.substr(0, maximum_node_name_size-1);
-    RCLCPP_WARN_STREAM(get_logger(), "udp_bridge name truncated to " << name_);
+    RCLCPP_ERROR_STREAM(get_logger(),
+      node_name_too_long_error(
+        "the `name` parameter (defaults to the ROS 2 node name)", name));
+    return false;
   }
+  name_ = name;
+  return true;
 }
 
 void UDPBridge::spin_once()
@@ -2288,6 +2303,20 @@ void UDPBridge::addRemote(
   std::shared_ptr<udp_bridge::AddRemote::Response> response)
 {
   (void)response;
+  // Reject an over-long name (issue #51). AddRemote.srv has no response
+  // field to report failure through, so the refusal is an ERROR log and no
+  // remote: creating it would be worse than refusing, because the remote's
+  // own packets arrive stamped with a shortened `source_node` that never
+  // matches the key we would have filed it under, so it could never be
+  // recognised, never be excluded by the relay loop rule, and would
+  // accumulate a second phantom RemoteNode on first contact.
+  if(!node_name_fits(request->name))
+  {
+    RCLCPP_ERROR_STREAM(get_logger(), "add_remote refused: "
+      << node_name_too_long_error("the requested remote name", request->name));
+    return;
+  }
+
   auto connection_id = request->connection_id;
   if(connection_id.empty())
     connection_id = "default";

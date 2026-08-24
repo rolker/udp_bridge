@@ -173,6 +173,11 @@ if(BUILD_TESTING)
   # relay sender: the loop rule, routing-table fidelity and rate-limit
   # parity. No node, no socket.
   add_udp_bridge_gtest(test_relay_routing test/test_relay_routing.cpp)
+  # test_node_name_limits (issue #51) drives the real lifecycle transition:
+  # a node name longer than the on-wire field is rejected at every
+  # configuration entry point rather than truncated, because truncation is
+  # what silently breaks the relay loop rule's identity compare.
+  add_udp_bridge_gtest(test_node_name_limits test/test_node_name_limits.cpp)
   # test_relay_queue (issue #51) exercises the bounded relay-worker queue in
   # isolation via an injected sink, mirroring test_publish_queue: forwarding
   # must never stall the socket-drain thread.

@@ -97,7 +97,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `name` | node name | Bridge name as seen by remote bridges (unique per network) |
+| `name` | node name | Bridge name as seen by remote bridges (unique per network). **Max 23 chars** — the on-wire `source_node` field is 24 bytes. Longer fails `on_configure` (#51); it is NOT truncated, because a truncated name stops matching what remotes are configured with and silently disables the relay loop rule |
 | `port` | `4200` | UDP listen port; clamped 0–65535 |
 | `maximum_packet_size` | `1200` | Clamped 256–65500; default sized for a tunnelled link (WireGuard-over-cellular MTU), not the IPv4/UDP maximum (#58) |
 | `drop_stale_packets` | `true` | Gate dropping late out-of-order resends per destination topic |
@@ -105,7 +105,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
 | `relay_queue_max_bytes` | 64 MiB | Byte budget for the relay worker queue (#51); clamped 1 MiB–2 GiB, same default and clamps as `publish_queue_max_bytes` |
-| `remotes.<label>.name` | `""` (empty) | Wire name of the remote (#51). Empty → the `remotes_list` label is used. Duplicate resolved names fail `on_configure` (validated before the socket is opened) |
+| `remotes.<label>.name` | `""` (empty) | Wire name of the remote (#51). Empty → the `remotes_list` label is used. Duplicate resolved names fail `on_configure` (validated before the socket is opened), as does a resolved name over 23 chars |
 | `remotes_list` | `[]` | Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
 
 See `config/example_params.yaml` for the nested structure.
@@ -190,6 +190,15 @@ there works today.
   in this workspace does. Before #51 the parameter was never declared, so a
   `name:` key in YAML was silently inert — see the upgrade note in
   `udp_bridge/README.md` before changing one.
+- **Node names are capped at 23 characters and over-long ones are REJECTED,
+  not truncated (#51).** `setName`, `resolveRemoteIdentities` and the
+  `add_remote` service all refuse; only `WrappedPacket`'s constructor still
+  clamps, as a last line of defence a validated config cannot reach.
+  Truncation is what manufactures the identity mismatch the relay loop rule
+  depends on not having, and it would also let two configured names
+  differing only after char 23 collide on one wire identity. Wire-side names
+  get bounded reads (`wire_field_to_string`), not length policy — a long one
+  arrives already shortened.
 - **Connection config is one complete per-connection block**: partial
   overrides silently break return-path routing (boat replies to the wrong
   host, data flow drops to zero).
