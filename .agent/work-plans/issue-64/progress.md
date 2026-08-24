@@ -163,3 +163,47 @@ Flagged as actions above for plan-task to make explicit.
 
 ### Summary
 Sound on the two verifiable structural claims (identity keying, CI skip behavior) and the overall scope/approach (loopback + distinct domains instead of generalizing the veth topology remains the right call). But the plan's crux mechanism — the tolerance band — is too permissive at the message volumes this scenario will actually produce, and Approach step 1's own text is internally inconsistent about where the echo-guard topic config lives, risking an inert guard if implemented as literally written. Both should be resolved before implementation.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-23 23:39 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Revision** of the plan reviewed in the `## Plan Review` entry above
+(changes-requested verdict). All four findings addressed in place —
+edited the existing plan, not appended a second one:
+
+- (must-fix) Delivery assertion: replaced `0.8x-1.2x` over ~10 messages
+  with `abs(sub_count - pub_count) <= 1` over ~100 messages. Volume
+  raised via a new `launch_pub(rate_hz=...)` param that passes
+  `pub.py`'s existing `--rate-hz` override (10 Hz critical instead of
+  the 1 Hz default), same 10s duration. `pub_count` stays sourced from
+  `_parse_count(pub)` (the publisher's own tally), not rate×duration
+  arithmetic.
+- (must-fix) Echo-guard config: removed the dead inbound entry from
+  bridge_a's own `remotes.hub` block (per the push-config model, A has
+  no local publisher on that topic, so it could never fire). The entry
+  lives only once now, under the hub's `remotes.a` block, alongside an
+  explanation of why it exercises `relayToOtherRemotes()`'s
+  sender-exclusion rule rather than being redundant with hub's
+  unconditional local publish.
+- (suggestion) Corrected the stand-up rationale: `launch_bridge`'s
+  `check=True` only proves a bridge reached ACTIVE, not that it
+  exchanged a packet with a peer. Re-stated the delivery-count
+  assertions as the actual connectivity guard, with an explicit note
+  that a future edit must not drop them believing `check=True` covers
+  three-bridge connectivity.
+- (suggestion) Added a readiness gate: `wait_ready.py` gains a
+  `--field {message,overhead}` option (default `message`, so
+  `range_degradation` is unaffected) so `relay_hub` can gate on
+  CONNECT/subscribe-handshake overhead traffic — which flows before any
+  topic data exists — instead of `run_smoke`'s fixed 2s+0.5s sleeps.
+  Two gate calls (bridge_a→hub, bridge_hub→boat_b) must both report
+  ready before the publisher starts; timeout raises loudly.
+
+**Plan**: `.agent/work-plans/issue-64/plan.md` at `d85832a`
+**Branch**: feature/issue-64 at `d85832a`
+**Phases**: single
+
+### Open questions
+- [ ] No open questions — plan is review-plan-ready.
