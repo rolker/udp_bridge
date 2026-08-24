@@ -384,10 +384,17 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // absent key, because the declared default is the empty string. Non-empty
   // is what "present" means here.
   //
-  // Report EVERY offending key, not just the first. Recovery from this
-  // failure costs a process restart (see the EADDRINUSE note in the message
-  // below), so a hub carrying three stale keys would otherwise cost three
-  // restarts to discover three lines of YAML.
+  // Report EVERY offending key, not just the first, so a hub carrying three
+  // stale keys does not cost three edit-and-retry cycles to discover three
+  // lines of YAML.
+  //
+  // Note this failure returns before socket()/bind() below, so recovery IS
+  // just edit-and-reconfigure — no restart needed. (An earlier version of
+  // this comment claimed a restart was required, borrowing the EADDRINUSE
+  // note from the message below. That note is about RENAMING an entry on an
+  // already-configured node, which is a different situation: there the
+  // socket is already bound. Keep every parameter-only check above the
+  // socket so that stays true.)
   std::string retired_keys;
   for(const auto& remote_label: remotes_list)
   {
@@ -408,13 +415,17 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
          " remote calls itself on the wire. Delete every key listed above,"
          " and make each remote's remotes_list entry the name that peer"
          " calls itself — renaming its remotes.<label>.* parameter paths"
-         " with it. A rename only takes effect on a fresh process: restart"
-         " the node rather than re-configuring a running one. Nothing ever"
-         " closes the bound socket, so a deactivate/cleanup/configure cycle"
-         " re-binds the same port, gets EADDRINUSE and exit(1)s at the"
-         " bind (issue #66). Under the shipped launch file (respawn=True)"
-         " the process comes back on its own, so the outcome is an"
-         " unplanned restart rather than a graceful rename.");
+         " with it. Fixing this error itself needs only a re-configure —"
+         " this check runs before the socket is created. But a RENAME on an"
+         " already-configured node takes effect only in a fresh process:"
+         " nothing ever closes the bound socket, so on a fixed (non-zero)"
+         " port a deactivate/cleanup/configure cycle re-binds the same port,"
+         " gets EADDRINUSE and exit(1)s at the bind (issue #66). With"
+         " port: 0 the kernel picks a fresh ephemeral port and the cycle"
+         " succeeds, but every peer must then be told the new port. Under"
+         " the shipped launch file (respawn=True) the process comes back on"
+         " its own, so on a fixed port the outcome is an unplanned restart"
+         " rather than a graceful rename.");
     return CallbackReturn::FAILURE;
   }
 

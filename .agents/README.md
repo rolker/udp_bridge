@@ -214,7 +214,8 @@ there works today.
     touch `socket_`, no `SO_REUSEADDR`), so on a fixed port — every
     deployed config — cycling deactivate→cleanup→configure re-binds the
     same port, gets `EADDRINUSE` and `exit(1)`s at the bind
-    (`src/udp_bridge.cpp:430`), before any renamed state exists. Restart
+    (the `bind()` failure path in `on_configure`), before any renamed state
+    exists. Restart
     the node instead. `launch/udp_bridge_launch.py` sets `respawn=True,
     respawn_delay=2`, so that exit is self-healing — the cost is an
     unplanned restart, not a dead bridge. Closing the socket on cleanup is
