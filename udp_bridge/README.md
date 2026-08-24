@@ -149,7 +149,10 @@ For each remote in `remotes_list`:
     > #51 bug again: the relay loop rule compares the wire `source_node`
     > against the configured identity, matches nothing, and the hub can
     > relay that remote's own traffic back to it. The bridge WARNs on the
-    > first sequenced packet from a sender matching no configured remote.
+    > first sequenced packet from a sender matching no configured remote —
+    > but only when `remotes_list` is non-empty, since on a purely dynamic
+    > bridge every sender is unknown by definition. See
+    > [`doc/relay_design.md`](doc/relay_design.md).
     >
     > **One capability is retired with it.** An entry is now both a wire
     > identity (≤23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2

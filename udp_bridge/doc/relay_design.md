@@ -175,7 +175,13 @@ the sender has no `RemoteNode`, so it fires **once per unknown name for the
 process lifetime** — it is a startup-time signal, not a recurring one, and
 an operator who missed it (or whose logs have rolled) will not see it
 again. The throttle on it only collapses a burst of *different* unknown
-senders. Making the condition continuously visible would mean a
+senders. It is also **skipped entirely when no remote is statically
+configured** (`configured_remote_names_` empty): with nothing to compare
+against, every sender is unknown, so a purely dynamic bridge — one whose
+remotes all arrive by CONNECT, `add_remote` or an inbound subscribe
+request — would warn about every peer it has. So the absence of the WARN
+is not evidence that identities agree; it is only meaningful on a config
+that lists remotes. Making the condition continuously visible would mean a
 `DiagnosticStatus` row for it; that is deliberately left as a follow-up
 rather than added here.
 
