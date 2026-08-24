@@ -210,6 +210,30 @@ TEST(RelayRouting, DuplicateRemoteIdentityIsRejected)
 // RemoteNode's constructor asserts on it, but asserts are compiled out of
 // the release builds this would be met in. Reject at configure, before the
 // RemoteNode is constructed.
+// The empty identity is the third unrepresentable one. `""` is a reserved
+// sentinel on the send path -- an empty remote name there marks a
+// connection request rather than a message to a named remote -- so a remote
+// filed under it is silently unroutable, and no arriving packet can match
+// it either, because the wire always carries the sender's real name.
+TEST(RelayRouting, EmptyRemoteIdentityIsRejected)
+{
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"", ""}}, "hub", &error);
+  EXPECT_TRUE(identities.empty())
+    << "an empty remote identity can never be routed to";
+  ASSERT_FALSE(error.empty());
+  EXPECT_NE(error.find("empty"), std::string::npos)
+    << "the message must say what is wrong with the entry";
+
+  // An empty LABEL with a real name is fine: the label is only a parameter
+  // path spelling, and the identity that results is representable.
+  error.clear();
+  auto ok = resolveRemoteIdentities({{"", "robot_a"}}, "hub", &error);
+  EXPECT_TRUE(error.empty()) << error;
+  ASSERT_EQ(ok.size(), 1u);
+  EXPECT_EQ(ok.at(""), "robot_a");
+}
+
 TEST(RelayRouting, RemoteResolvingToOurOwnNameIsRejected)
 {
   std::string error;

@@ -231,6 +231,30 @@ This is a deliberate behaviour change: a configuration that used to start
 with a truncation warning now fails to configure. Such a configuration only
 ever worked if the operator had hand-truncated the peer's name to match.
 
+Names read **from the wire** are decoded as the exact inverse of the
+encode: `wire_field_to_string` stops one byte short of the field, because
+the trailing byte is the terminator. An unterminated field therefore yields
+a 23-character name, never a 24-character one that no config path could
+have produced and that would then be used as a map key and a topic
+component.
+
+### Two more identities a remote may not have
+
+Same class as over-long, and rejected the same way — an identity that
+cannot mean what the config says it means:
+
+| identity | why it is refused |
+|---|---|
+| **this bridge's own name** | it installs a `RemoteNode` for ourselves in `remote_nodes_`, and `unwrap()`'s self-packet refusal only runs when the lookup *misses* — so once the entry exists the bridge accepts its own traffic as a peer's. `RemoteNode`'s constructor asserts, but asserts are compiled out of the release build this would be met in |
+| **the empty string** | `""` is a reserved sentinel on the send path, where an empty remote name marks a connection request rather than a message to a named remote. A remote filed under it is silently unroutable, and no arriving packet can match it either, since the wire always carries the sender's real name |
+
+Both fail `on_configure` (`resolveRemoteIdentities`). The self-name rule is
+also enforced by the `add_remote` service, which refuses with an ERROR and
+creates no remote — the same shape as its length refusal, because
+`AddRemote.srv` has no field to report failure through, and the only other
+runtime remote-creation paths take the name from `unwrap`'s bounded read of
+`source_node`.
+
 The exclusion is applied *before* any `last_sent_time` is stamped, so a
 relay never consumes the excluded remote's rate-limit budget: the sender's
 rate state after a relay is exactly as if the relay had not happened.

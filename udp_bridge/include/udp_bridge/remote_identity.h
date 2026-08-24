@@ -70,6 +70,16 @@ inline std::string resolveRemoteIdentity(const std::string& label,
 /// assert on it, but an assert is compiled out of a release build, which is
 /// where this would be met. Catch it here, before the RemoteNode exists.
 ///
+/// An identity that is the EMPTY string is rejected for a fourth (issue
+/// #51). It can only arise from an empty `remotes_list` entry with no
+/// `name` set, and `""` is a reserved sentinel on the send path: an empty
+/// remote name there means "this is a connection request, not a message to
+/// a named remote". A remote filed under it is therefore silently
+/// unroutable — `allRemotes()` hands it straight to that path — and no
+/// packet can ever match it either, since the wire always carries the
+/// sender's real name. Same class as the two above: an identity that
+/// cannot mean what the config says it means.
+///
 /// @param labels_and_names (label, `remotes.<label>.name`) pairs, in
 ///        `remotes_list` order. An empty name means "unset".
 /// @param local_name this bridge's own wire name, which no remote may
@@ -94,6 +104,17 @@ inline std::map<std::string, std::string> resolveRemoteIdentities(
     if(identity_by_label.count(entry.first))
       continue;
     auto identity = resolveRemoteIdentity(entry.first, entry.second);
+    if(identity.empty())
+    {
+      if(error)
+        *error = "a remotes_list entry is empty and sets no name, so it"
+                 " resolves to the empty remote name. The empty name is"
+                 " reserved on the send path (it marks a connection"
+                 " request), so such a remote can never be routed to and"
+                 " no arriving packet can ever match it. Give the entry a"
+                 " label, or set remotes.<label>.name.";
+      return std::map<std::string, std::string>();
+    }
     if(!node_name_fits(identity))
     {
       if(error)

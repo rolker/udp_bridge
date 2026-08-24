@@ -136,6 +136,15 @@ For each remote in `remotes_list`:
     > Names arriving *from the wire* are not rejected (a long one arrives
     > already shortened and is indistinguishable from a short one); they are
     > read with an explicit length bound instead.
+    >
+    > Two further names are refused for the same reason — they cannot mean
+    > what the config says they mean. A remote resolving to **this bridge's
+    > own name** fails `on_configure`, and is refused by `add_remote` with an
+    > ERROR: it would install this bridge in `remote_nodes_` as its own peer.
+    > An **empty** resolved name (an empty `remotes_list` entry with no
+    > `name` set) fails `on_configure` too: the empty name is reserved on the
+    > send path to mark a connection request, so such a remote could never be
+    > routed to.
 -   `remotes.<remote_label>.connections_list`: (string array) List of named connections.
 
 For each connection in `connections_list`:
