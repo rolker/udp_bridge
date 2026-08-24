@@ -207,12 +207,25 @@ wanted. This is the deliberate retirement of a working ROS 1 feature, not
 the repair of an accident — a `name:` key in an old config did once do
 something.
 
-**The capability that retirement costs.** An entry is now both a wire
-identity (at most 23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2
-uses `.` to separate segments. A peer whose wire name contains a `.` is
-therefore no longer configurable at all — not truncated, not warned about,
-simply inexpressible as a `remotes_list` entry. Before #67 it was reachable
-via `remotes.<label>.name`. No known configuration uses such a name.
+**What retirement costs.** An entry is now both a wire identity (at most
+23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2 uses `.` to
+separate segments. A peer whose wire name contains a `.` is **still
+configurable**, but only by nesting its parameters as if the dot were a
+level boundary:
+
+```yaml
+remotes_list: ["boat.one"]
+remotes:
+  boat:
+    one:                 # not `boat.one:` — the dot is a path separator
+      connections_list: ["link"]
+```
+
+That resolves `remotes.boat.one.connections_list` correctly (verified), but
+the file then reads as a nested structure rather than as one peer named
+`boat.one`. Before #67 such a name could be given flatly via
+`remotes.<label>.name`. No known configuration uses one; prefer names
+without `.` so the config says what it means.
 
 **Upgrading:** `remotes.<label>.name` is still *declared* — rclcpp surfaces
 a YAML override only for a declared parameter, and that is the only way a

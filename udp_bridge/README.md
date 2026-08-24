@@ -163,11 +163,15 @@ For each remote in `remotes_list`:
     > bridge every sender is unknown by definition. See
     > [`doc/relay_design.md`](doc/relay_design.md).
     >
-    > **One capability is retired with it.** An entry is now both a wire
-    > identity (≤23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2
-    > uses `.` to separate segments — so a peer whose wire name contains a
-    > `.` is no longer configurable at all. Before #67 it was reachable via
-    > `remotes.<label>.name`. No known configuration uses such a name.
+    > **What is retired with it.** An entry is now both a wire identity
+    > (≤23 bytes) *and* a ROS 2 parameter-path segment, and ROS 2 uses `.`
+    > to separate segments. A peer whose wire name contains a `.` is still
+    > configurable, but only by nesting its parameters as if the dot were a
+    > level boundary — `remotes_list: ["boat.one"]` with `remotes: boat:
+    > one: …`, which resolves correctly but reads as a nested structure
+    > rather than one name. Before #67 it could be given flatly via
+    > `remotes.<label>.name`. No known configuration uses such a name;
+    > prefer names without `.`.
 
     > **Upgrade note (#51) — node names longer than 23 characters now fail
     > `on_configure`.** The on-wire `source_node` field is 24 bytes, so 23

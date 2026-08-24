@@ -224,9 +224,12 @@ there works today.
     uses that.)
   - An entry is now both a ≤23-byte wire identity **and** a ROS 2
     parameter-path segment, and ROS 2 uses `.` to separate segments. A peer
-    whose wire name contains a `.` is therefore unconfigurable — not
-    truncated, not warned about, inexpressible. No config in this workspace
-    hits this.
+    whose wire name contains a `.` is **still configurable**, but its
+    parameters must be nested as if the dot were a level boundary
+    (`remotes: boat: one:` for an entry `"boat.one"`) — verified to resolve
+    correctly, but the file then reads as a nested structure rather than one
+    name. Before #67 it could be given flatly via `remotes.<label>.name`.
+    No config in this workspace hits this; prefer names without `.`.
 - **Node names are capped at 23 characters and over-long ones are REJECTED,
   not truncated (#51).** `setName`, `resolveRemoteIdentities` and the
   `add_remote` service all refuse; only `WrappedPacket`'s constructor still

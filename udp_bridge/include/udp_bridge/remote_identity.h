@@ -57,15 +57,19 @@ namespace udp_bridge
 /// above — a value differing from its label — running. See
 /// `UDPBridge::on_configure`.
 ///
-/// ### The capability that retirement costs
+/// ### What retirement costs
 ///
-/// A label is now both a wire identity (at most
-/// `maximum_node_name_length` bytes) AND a ROS 2 parameter-path segment.
-/// ROS 2 uses `.` to separate path segments, so a peer whose wire name
-/// contains a `.` can no longer be configured at all — not truncated, not
-/// warned about, simply inexpressible as a `remotes_list` entry. Before
-/// #67 such a name was reachable via `remotes.<label>.name`. No known
-/// configuration uses one.
+/// An entry is now both a wire identity (at most
+/// `maximum_node_name_length` bytes) AND a ROS 2 parameter-path segment,
+/// and ROS 2 uses `.` to separate segments. A peer whose wire name
+/// contains a `.` is still configurable — verified: `remotes_list:
+/// ["boat.one"]` with the YAML nested as `remotes: boat: one: ...`
+/// resolves `remotes.boat.one.connections_list` correctly — but its
+/// parameters must then be written as if `boat` and `one` were separate
+/// levels, which reads as a nested structure rather than one name.
+/// Before #67 such a name could be given flatly via
+/// `remotes.<label>.name`. No known configuration uses one; prefer names
+/// without `.` so the config says what it means.
 
 /// Validate every configured remote label, rejecting over-long labels, the
 /// empty label, and any label equal to this bridge's own name.
