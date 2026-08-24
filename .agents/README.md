@@ -189,7 +189,10 @@ there works today.
   peer must be the name that peer calls itself** — every config in this
   workspace already does this. Two consequences worth knowing:
   - `remotes.<label>.name` is **removed, and a config that still sets it
-    fails `on_configure`**. It is still declared (that is the only way
+    for a label listed in `remotes_list` fails `on_configure`**. The check
+    iterates `remotes_list`, so the key under a block that list does not
+    name is never declared, never read and never rejected — that block is
+    wholly inert anyway. It is still declared (that is the only way
     rclcpp surfaces a YAML override, since the node does not set
     `automatically_declare_parameters_from_overrides`) purely so the stale
     key can be *detected*; a non-empty value is then an ERROR and a

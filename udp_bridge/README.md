@@ -92,13 +92,16 @@ ros2 run udp_bridge udp_bridge_node --ros-args --params-file src/udp_bridge/udp_
     entry is idempotent, as it always was.
 
 For each remote in `remotes_list`:
--   `remotes.<remote_label>.name`: **removed (#67), and setting it is a
-    configuration error.** A non-empty value fails `on_configure` with an
-    ERROR naming the parameter, the `remotes_list` entry actually in use and
-    the value. The parameter is still *declared* — rclcpp surfaces a YAML
-    override only for a parameter the node declares, so declaring it is the
-    only way a config still carrying the key can be detected at all — but it
-    is never read for identity. Delete it from your config; the
+-   `remotes.<remote_label>.name`: **removed (#67), and setting it for a
+    remote listed in `remotes_list` is a configuration error.** A non-empty
+    value fails `on_configure` with an ERROR naming the parameter, the
+    `remotes_list` entry actually in use and the value. Only the labels in
+    `remotes_list` are checked — a `remotes.<label>.name` under a block that
+    `remotes_list` does not name is never declared and never read, and that
+    whole block is inert for the same reason. The parameter is still
+    *declared* — rclcpp surfaces a YAML override only for a parameter the
+    node declares, so declaring it is the only way a config still carrying
+    the key can be detected at all — but it is never read for identity. Delete it from your config; the
     `remotes_list` entry is the remote's wire name. (An explicitly empty
     value, `name: ""`, is indistinguishable from an absent key — the
     declared default is the empty string — so it configures normally.)
@@ -114,13 +117,13 @@ For each remote in `remotes_list`:
     > again. This is a deliberate retirement of a working feature, not the
     > repair of an accident.
     >
-    > **If any of your remotes sets `remotes.<label>.name` at all**, the
-    > bridge refuses to configure until you delete the key — including when
-    > the value happens to equal its label and would have changed nothing.
-    > The parameter is removed and unsupported; it is rejected on presence,
-    > not on whether it would have altered an identity. It is a hard failure
-    > rather than a warning because the one shape a warning would leave
-    > running — a value *differing* from its label — is precisely the echo
+    > **If any remote in your `remotes_list` sets `remotes.<label>.name` at
+    > all**, the bridge refuses to configure until you delete the key —
+    > including when the value happens to equal its label and would have
+    > changed nothing. The parameter is removed and unsupported; it is
+    > rejected on presence, not on whether it would have altered an
+    > identity. It is a hard failure rather than a warning because the one
+    > shape a warning would leave running — a value *differing* from its label — is precisely the echo
     > bug below, silently reintroduced on upgrade.
     >
     > Where the old value was the peer's real wire name, rename the
