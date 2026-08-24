@@ -312,3 +312,126 @@ before and after. Plan length (156 lines) judged as earning its place.
 
 ### Open questions
 - [ ] No open questions — plan is implementation-ready.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-24 09:04 -04:00
+**By**: Claude Opus
+
+**Plan**: `.agent/work-plans/issue-67/plan.md` at `8427ae8`
+**Branch**: feature/issue-67 (not pushed; no PR opened, as instructed)
+**Commits**:
+- `96f7648` — identity: a remotes_list entry is the remote's wire name again (#67)
+- `f454f5b` — doc: a remotes_list entry is the peer's wire name (#67)
+- `8427ae8` — plan: record implementation divergences for #67
+
+### What landed
+
+`resolveRemoteIdentity()` is gone and `resolveRemoteIdentities()` now takes
+`const std::vector<std::string>& labels` and returns `std::vector<std::string>`
+(first-seen order, repeats collapsed). A `remotes_list` entry is the remote's
+wire identity again, as in ROS 1. `on_configure` still declares
+`remotes.<label>.name` per entry — rclcpp surfaces a YAML override only for a
+declared parameter, and this node sets no
+`automatically_declare_parameters_from_overrides` — but reads it solely to
+WARN that it is inert, naming the entry in use and what to rename.
+
+Validation did not regress. Over-long (>23), self-name, and empty entries all
+still return `CallbackReturn::FAILURE` from `on_configure`, ahead of the socket
+bind as before; a repeated entry is still idempotent. Verified by
+`NodeNameLimits.OverLongRemoteLabelFailsToConfigure`,
+`NodeNameLimits.RemoteLabelMatchingOurOwnNameFailsToConfigure`,
+`RelayRouting.EmptyRemoteIdentityIsRejected`,
+`RelayRouting.OverLongRemoteIdentityIsRejected`,
+`RelayRouting.RemoteResolvingToOurOwnNameIsRejected`, and
+`RelayRouting.RepeatedLabelIsIdempotentNotACollision` — all passing.
+
+The unknown-sender WARN (`src/udp_bridge.cpp`) fires on the identical
+condition: `configured_remote_names_` is the same set of strings, now built
+directly from the entries instead of from resolved names. Only the advice text
+changed (rename the `remotes_list` entry, not set `remotes.<label>.name`).
+
+New tests, both asserting through `staleRemoteNameKeyCountForTest()` rather
+than log capture, per the package's own convention
+(`test_remote_node_resend.cpp:838-852` / `dispatchMissWarnedIdCountForTest`):
+`NodeNameLimits.StaleRemoteNameParameterWarns` and
+`NodeNameLimits.AbsentRemoteNameParameterIsSilent`. The negative case was
+added beyond the plan because asserting the counter is 1 proves nothing
+unless something pins that it is 0 when the key is absent.
+
+Docs rewritten in `doc/relay_design.md`, `.agents/README.md` (pitfalls AND the
+verified-parameter table — both the `remotes.<label>.name` row and the
+`remotes_list` row), `README.md` (the `remotes.<remote_label>.name`
+description, the #51 upgrade note rewritten as the #67 one, the node-name-length
+upgrade note corrected per the plan's own must-fix, and a fourth
+empty/self-name passage the plan did not name), and
+`config/example_params.yaml`. Both required statements are in all four: **your
+label for a peer must be the name that peer calls itself**, and the retired
+capability (an entry is now both a 23-byte wire identity and a ROS 2
+parameter-path segment, so a peer whose wire name contains a `.` is
+unconfigurable; no current config hits this).
+
+### Deletions and where the protection now lives
+
+| Deleted | Coverage now |
+|---|---|
+| `resolveRemoteIdentity()` | Its unset-name behaviour (label is the identity) is now the only behaviour; pinned by `RelayRouting.LabelIsTheIdentity` |
+| `label_by_identity` map + collision branch in `resolveRemoteIdentities()` | Provably dead, re-verified against the changed code: with the entry as the identity, two distinct entries are two distinct identities by construction; the only repeat possible is an exact one, handled by the idempotent-skip path. `RelayRouting.RepeatedLabelIsIdempotentNotACollision` covers it and now also asserts the collapse. Reasoning recorded at the deletion site in `remote_identity.h` so it is not "restored" later |
+| `RelayRouting.DuplicateRemoteIdentityIsRejected` | Tests exactly that dead branch; deleted with it |
+| `RelayRouting.LabelDifferingFromWireNameStillNeverEchoes` | Premise no longer expressible. Echo prevention: `RelayRouting.EchoIsNeverSentBackToTheSender` and `RelayRouting.MaximumLengthIdentityStillClosesTheLoopRule`, neither of which depends on a label/name split |
+| `RelayRouting.EmptyRemoteIdentityIsRejected`'s "empty label, real name" half | Not expressible; the empty-entry rejection it shared the test with is retained and still asserted |
+| `NodeNameLimits.OverLongRemoteNameFailsToConfigure` | `NodeNameLimits.OverLongRemoteLabelFailsToConfigure` drives the same rejection through the only remaining path |
+| `NodeNameLimits.RemoteWithOurOwnNameFailsToConfigure` | `NodeNameLimits.RemoteLabelMatchingOurOwnNameFailsToConfigure`, which now also carries the deleted test's assertion message |
+| The "known on the wire as" INFO in `on_configure` | Unreachable — `remote_info.name` always equals the entry. No behaviour to cover |
+
+Nothing was deleted whose protection could not be named.
+
+`NodeNameLimits.MaximumLengthNamesConfigure` moved its at-limit string from the
+`.name` argument to the entry. Left where it was, the test would have compiled
+and passed while silently no longer exercising the 23-char boundary — the
+sharpest silent-coverage-loss risk in this change.
+
+### Build and test (verbatim)
+
+    $ ./build.sh udp_bridge_interfaces udp_bridge ; echo "BUILD_EXIT=$?"
+    BUILD_EXIT=0
+    Summary: 2 packages finished [53.9s]
+      1 package had stderr output: udp_bridge
+
+    $ ./test.sh udp_bridge ; echo "TEST_EXIT=$?"
+    TEST_EXIT=0
+    Summary: 1 package finished [32.4s]
+
+    $ colcon test-result --verbose | tail -3
+    Summary: 251 tests, 0 errors, 0 failures, 14 skipped
+    RESULT_EXIT=0
+
+Exit codes read directly, not grepped from output. The udp_bridge stderr is
+the pre-existing `-Wpedantic` flexible-array-member warning stream from
+`packet.h`, unchanged by this work.
+
+    $ .venv/bin/pre-commit run --from-ref origin/jazzy --to-ref HEAD
+    ... 11 hooks: 8 Passed, 3 Skipped (no files to check), 0 Failed
+    PRECOMMIT_EXIT=0
+
+Confirmed the new tests actually executed by reading the gtest XML:
+`StaleRemoteNameParameterWarns`, `AbsentRemoteNameParameterIsSilent`,
+`LabelIsTheIdentity`, and the renamed/trimmed survivors are all present.
+
+Note for the record: the host root filesystem is at 100% with ~7.1 GB free.
+Nothing failed for disk space, but the margin is thin.
+
+### Deferred / not done
+
+- **Not pushed, no PR opened** — per the task instructions.
+- **Issue #64 (bench: three-bridge hub scenario)** builds a deliberate
+  label/name mismatch into one of its scenarios, which this change makes
+  inexpressible. Out of scope per the issue's own ask item 6; #64's plan needs
+  simplifying when it resumes. No action taken here.
+- **No project ADR** recorded. `udp_bridge` has no `docs/decisions/` log; per
+  the Issue Review the decision is captured in `remote_identity.h`'s header
+  comment and `doc/relay_design.md` instead.
+
+---
+**Authored-By**: `Claude Code Agent`
+**Model**: `Claude Opus`
