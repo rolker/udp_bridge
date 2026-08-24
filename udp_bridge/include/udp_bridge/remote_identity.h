@@ -50,8 +50,12 @@ namespace udp_bridge
 /// there is one string per remote again, as in ROS 1. This is a deliberate
 /// retirement of a working ROS 1 feature, not the repair of an accident —
 /// a `name:` key found in an old config did once do something. It is now
-/// declared (so rclcpp surfaces the override at all) and read ONLY to warn
-/// that it is inert; see `UDPBridge::on_configure`.
+/// declared (so rclcpp surfaces the override at all) and read ONLY to
+/// REFUSE a config that still sets it: a non-empty value fails
+/// `on_configure`, on presence, with no carve-out for a value equal to its
+/// label. Warning would leave the one shape that reintroduces the echo
+/// above — a value differing from its label — running. See
+/// `UDPBridge::on_configure`.
 ///
 /// ### The capability that retirement costs
 ///

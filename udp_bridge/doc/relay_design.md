@@ -209,15 +209,36 @@ simply inexpressible as a `remotes_list` entry. Before #67 it was reachable
 via `remotes.<label>.name`. No known configuration uses such a name.
 
 **Upgrading:** `remotes.<label>.name` is still *declared* — rclcpp surfaces
-a YAML override only for a declared parameter — but it is read only to WARN
-that it is inert, naming the entry actually being used and what to rename
-it to. A config that set it and relied on #51's behaviour must rename the
-`remotes_list` entry (and its `remotes.<label>.*` paths) to the peer's wire
-name; that renames every surface keyed by the remote (per-remote topics,
-`BridgeInfo` / `TopicStatistics` fields, diagnostic task names, and the
-`remote` / `name` service arguments). See the upgrade note under
-`remotes.<remote_label>.name` in [`README.md`](../README.md#parameters)
-before upgrading a live config.
+a YAML override only for a declared parameter, and that is the only way a
+config still carrying the key can be seen at all — but it is never read for
+identity, and a non-empty value **fails `on_configure`**. The failure
+returns before the socket is opened, alongside the other identity
+rejections, so a refused config leaks no bound port.
+
+Rejection rather than a warning is deliberate. A warning would leave one
+config shape running: a value that *differs* from its label. That shape is
+the echo bug above, reintroduced silently at the moment of upgrade — the
+hub keys the routing table by the label while the peer stamps the other
+string into `source_node`. There is no carve-out for a value that equals
+its label either: the parameter is removed and unsupported, so its presence
+is the error, not its effect.
+
+A config that set it and relied on #51's behaviour must delete the key and
+rename the `remotes_list` entry (and its `remotes.<label>.*` paths) to the
+peer's wire name; that renames every surface keyed by the remote (per-remote
+topics, `BridgeInfo` / `TopicStatistics` fields, diagnostic task names, and
+the `remote` / `name` service arguments).
+
+**A rename takes effect only in a fresh process — restart the node.**
+`on_cleanup` clears neither `remote_nodes_` nor `subscribers_`, so a
+deactivate→cleanup→configure cycle after a rename leaves the old
+`RemoteNode` resident with the same host and port as the new one, and every
+send goes out twice to the same peer: doubled uplink on the rate-limited
+links this bridge exists for. Pruning the stale entries in `on_cleanup` is a
+follow-up, not something the current code does.
+
+See the upgrade note under `remotes.<remote_label>.name` in
+[`README.md`](../README.md#parameters) before upgrading a live config.
 
 ### The identity must be *representable*, so over-long names are rejected
 

@@ -49,8 +49,12 @@
     # Because an entry is also a ROS 2 parameter-path segment, and ROS 2
     # separates path segments with `.`, a peer whose wire name contains a
     # `.` cannot be configured here at all. (Before issue #67 such a name
-    # was reachable via a separate remotes.<label>.name key; that key is
-    # retired -- a non-empty value now only produces a WARN saying so.)
+    # was reachable via a separate remotes.<label>.name key. That key is
+    # REMOVED: a non-empty value now fails startup outright, whatever it is
+    # set to -- even a value equal to its own entry. Delete it. An
+    # explicitly empty value is indistinguishable from an absent key and is
+    # accepted. Renaming an entry takes effect only in a fresh process:
+    # restart the node rather than re-configuring a running one.)
     #
     # Listing a SECOND remote here also turns this bridge into a relay hub.
     # A topic received from one remote is forwarded to every OTHER remote

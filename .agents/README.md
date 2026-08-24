@@ -105,7 +105,7 @@ best-effort with loss reduction, never RELIABLE (see `doc/qos_design.md`).
 | `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` | `5.0` / `50.0` | Diagnostic thresholds; live-tunable via `ros2 param set` |
 | `publish_queue_max_bytes` | 64 MiB | Clamped 1 MiB–2 GiB |
 | `relay_queue_max_bytes` | 64 MiB | Byte budget for the relay worker queue (#51); clamped 1 MiB–2 GiB, same default and clamps as `publish_queue_max_bytes` |
-| `remotes.<label>.name` | `""` (empty) | **Retired (#67)** — still declared (rclcpp surfaces a YAML override only for a declared parameter; this node does not set `automatically_declare_parameters_from_overrides`), but never read for identity. A non-empty value logs a WARN at `on_configure` saying the key is inert and what to rename instead. Was, in #51 only, the wire name overriding the label |
+| `remotes.<label>.name` | `""` (empty) | **Removed (#67)** — still declared (rclcpp surfaces a YAML override only for a declared parameter; this node does not set `automatically_declare_parameters_from_overrides`), never read for identity, and a **non-empty value fails `on_configure`** with an ERROR naming the parameter, the entry in use and the value — validated before the socket is opened. No carve-out when the value equals its label: presence is the error. An explicitly empty value is indistinguishable from an absent key (the declared default is `""`) and is accepted. Was, in #51 only, the wire name overriding the label |
 | `remotes_list` | `[]` | Each entry IS the remote's wire name (#67), not just a parameter-path label: your label for a peer must be the name that peer calls itself. An entry that is empty, over 23 chars, or equal to this bridge's own `name` fails `on_configure` (validated before the socket is opened; `""` is a reserved sentinel on the send path); a repeated entry is idempotent. The `add_remote` service applies the same over-long and self-name refusals at runtime (ERROR, no remote created). Then per-remote `remotes.<r>.connections_list`, per-connection `host`, `port`, `return_host`, `return_port`, `maximum_bytes_per_second` (0 → default **50000** B/s, `Connection::default_rate_limit`), `resend_budget_fraction` (0.25 — max fraction of measured **goodput** resends may consume; the basis moved from the admission cap to goodput in #52, #44, `doc/resend_budget_design.md`), `admission_floor_bytes_per_second` (**8192** B/s — absolute floor of the AIMD-adjusted admission cap, clamped at use to the connection's own `maximum_bytes_per_second`; negative/NaN fall back to the default; replaced the removed cap-relative `admission_floor_fraction` in #52), `link_headroom_fraction` (0.2 — on a congested sample the cap targets `(1 − this) × goodput`, leaving a share for co-tenant/operator traffic, #52, `doc/admission_control_design.md`), `topics_list`, and per-topic `source` (default: topic label), `destination` (default: source), `queue_size` (10), `period` (0.0), `reliability`, `durability`, `history_depth` (0, clamped ≤ 10000) |
 
 See `config/example_params.yaml` for the nested structure.
@@ -187,13 +187,24 @@ there works today.
   and the service `remote`/`name` arguments key on. So **your label for a
   peer must be the name that peer calls itself** — every config in this
   workspace already does this. Two consequences worth knowing:
-  - `remotes.<label>.name` is **retired**. It is still declared (that is the
-    only way rclcpp surfaces a YAML override, since the node does not set
-    `automatically_declare_parameters_from_overrides`) and read solely to
-    WARN that a non-empty value is inert. Do not add it back as an identity
-    input; see the upgrade note in `udp_bridge/README.md`. It briefly *was*
-    authoritative, between #51 and #67 — a `name:` in an old config is not
-    a typo, it is a retired feature.
+  - `remotes.<label>.name` is **removed, and a config that still sets it
+    fails `on_configure`**. It is still declared (that is the only way
+    rclcpp surfaces a YAML override, since the node does not set
+    `automatically_declare_parameters_from_overrides`) purely so the stale
+    key can be *detected*; a non-empty value is then an ERROR and a
+    `CallbackReturn::FAILURE`, returned ahead of the socket bind. Warning
+    instead would leave the one shape that reintroduces the #51 echo — a
+    value differing from its label — announced and then ignored, so it is
+    rejected on presence, with no carve-out for a value equal to its label.
+    Do not add it back as an identity input; see the upgrade note in
+    `udp_bridge/README.md`. It briefly *was* authoritative, between #51 and
+    #67 — a `name:` in an old config is not a typo, it is a removed
+    feature, and the node will tell the operator so by refusing to start.
+  - **A rename does not survive a live re-configure.** `on_cleanup` clears
+    neither `remote_nodes_` nor `subscribers_`, so renaming an entry and
+    cycling deactivate→cleanup→configure leaves the old `RemoteNode`
+    resident on the same host/port and doubles every send to that peer.
+    Restart the node instead. Pruning on cleanup is an open follow-up.
   - An entry is now both a ≤23-byte wire identity **and** a ROS 2
     parameter-path segment, and ROS 2 uses `.` to separate segments. A peer
     whose wire name contains a `.` is therefore unconfigurable — not

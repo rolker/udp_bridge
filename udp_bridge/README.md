@@ -92,12 +92,16 @@ ros2 run udp_bridge udp_bridge_node --ros-args --params-file src/udp_bridge/udp_
     entry is idempotent, as it always was.
 
 For each remote in `remotes_list`:
--   `remotes.<remote_label>.name`: **retired (#67).** Still declared — rclcpp
-    surfaces a YAML override only for a parameter the node declares — but
-    never read for identity. A non-empty value logs a WARN at
-    `on_configure` saying the key is inert, naming the entry actually being
-    used and what to rename it to. Delete it from your config; the
-    `remotes_list` entry is the remote's wire name.
+-   `remotes.<remote_label>.name`: **removed (#67), and setting it is a
+    configuration error.** A non-empty value fails `on_configure` with an
+    ERROR naming the parameter, the `remotes_list` entry actually in use and
+    the value. The parameter is still *declared* — rclcpp surfaces a YAML
+    override only for a parameter the node declares, so declaring it is the
+    only way a config still carrying the key can be detected at all — but it
+    is never read for identity. Delete it from your config; the
+    `remotes_list` entry is the remote's wire name. (An explicitly empty
+    value, `name: ""`, is indistinguishable from an absent key — the
+    declared default is the empty string — so it configures normally.)
 
     > **Upgrade note (#67) — the second identity namespace is gone.** Two
     > ways of naming a remote (the `remotes_list` label for parameter paths,
@@ -110,10 +114,18 @@ For each remote in `remotes_list`:
     > again. This is a deliberate retirement of a working feature, not the
     > repair of an accident.
     >
-    > **If any of your remotes sets `remotes.<label>.name` to something
-    > other than its label**, that value stops taking effect on upgrade.
-    > Rename the `remotes_list` entry (and its `remotes.<label>.*` paths) to
-    > the peer's wire name, which renames everything keyed by that remote:
+    > **If any of your remotes sets `remotes.<label>.name` at all**, the
+    > bridge refuses to configure until you delete the key — including when
+    > the value happens to equal its label and would have changed nothing.
+    > The parameter is removed and unsupported; it is rejected on presence,
+    > not on whether it would have altered an identity. It is a hard failure
+    > rather than a warning because the one shape a warning would leave
+    > running — a value *differing* from its label — is precisely the echo
+    > bug below, silently reintroduced on upgrade.
+    >
+    > Where the old value was the peer's real wire name, rename the
+    > `remotes_list` entry (and its `remotes.<label>.*` paths) to it, which
+    > renames everything keyed by that remote:
     >
     > - the per-remote topics `~/remotes/<remote>/bridge_info` and
     >   `~/remotes/<remote>/topic_statistics`;
@@ -123,6 +135,14 @@ For each remote in `remotes_list`:
     > - the `remote` / `name` arguments of `remote_subscribe`,
     >   `remote_advertise`, `remove_subscribe`, `remove_advertise` and
     >   `add_remote`.
+    >
+    > **Restart the node after a rename — do not re-configure a running
+    > one.** `on_cleanup` does not clear `remote_nodes_` or `subscribers_`,
+    > so a deactivate→cleanup→configure cycle leaves the *old* remote
+    > resident alongside the new one, on the same host and port: every send
+    > then goes out twice to the same peer, doubling uplink on exactly the
+    > rate-limited links this bridge exists for. A fresh process starts from
+    > an empty table.
     >
     > Anything that consumes those (dashboards, scripts, launch-time service
     > calls) must use the entry. A remote left under the wrong entry is the
@@ -147,9 +167,10 @@ For each remote in `remotes_list`:
     > supplied: the `name` parameter and any `remotes_list` entry fail the
     > configure transition with a message naming the parameter, the value,
     > its length and the limit; the `add_remote` service refuses the request
-    > with an ERROR and creates no remote. (A stale `remotes.<label>.name`
-    > is not among them since #67 — of any length, it is only WARNed about,
-    > because it is no longer read for identity.) A config that previously
+    > with an ERROR and creates no remote. (A `remotes.<label>.name` key is
+    > not among them since #67 — whatever its length, it is refused on
+    > *presence*, because the parameter is removed rather than merely
+    > length-checked.) A config that previously
     > started with a truncation warning will
     > now refuse to configure — that config only ever worked if you had
     > hand-truncated the peer's name to match. Shorten the name on both bridges.
