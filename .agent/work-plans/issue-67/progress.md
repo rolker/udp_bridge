@@ -246,3 +246,31 @@ reading of the issue), not objections to doing the work.
 ---
 **Authored-By**: `Claude Code Agent`
 **Model**: `Claude Sonnet`
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-24 00:42 -04:00
+**By**: Claude Code Agent (Claude Sonnet) (in-context — author self-review)
+
+**Plan**: `.agent/work-plans/issue-67/plan.md` at `da17901`
+**PR**: PR-less
+**Verdict**: changes-requested
+
+### Findings
+- [ ] (must-fix) Plan tells the implementer to model the new `StaleRemoteNameParameterWarns` test on "this repo's existing WARN-assertion pattern" in `test/test_stale_packet_gate.cpp` — that file has no WARN content whatsoever (it's about `admitForPublish`'s stale-packet drop gate). Grepped every test file in the repo: nothing captures log content today (`rcutils_logging_set/get_logger_level` is used only to suppress noisy WARN spam in `test_remote_node_resend.cpp`, not to assert on it; other "WARN" hits are a `DiagnosticStatus::WARN` enum, unrelated). No existing precedent exists to follow. The plan needs to name a concrete mechanism instead — e.g. `testing::internal::CaptureStderr()`/`GetCapturedStderr()` around `configure()`, asserting the captured text names the label and `remotes.<label>.name` (RCLCPP_WARN_STREAM writes through rcutils to stderr by default, confirmed no custom logging sink is installed anywhere in this package). — `plan.md:74` (step 6, `StaleRemoteNameParameterWarns` bullet)
+- [ ] (must-fix) `README.md`'s node-name-length upgrade note (~122–129) is not "unaffected" as the plan claims. It explicitly documents `remotes.<label>.name` as one of the paths whose over-long value "fail[s] the configure transition with a message naming the parameter, the value, its length and the limit." After this change that's false: the key is no longer read for identity or length at all, only WARNed on if non-empty — a stale `name:` of any length, even 1000 characters, no longer fails configure or is even mentioned by the length-limit machinery. The plan's step 7 needs to add a small edit here (drop the `remotes.<label>.name` clause from that path list), not leave it as-is. — `plan.md:66` (step 7, README.md bullet)
+
+### Notes (not findings — verified, plan is accurate)
+- The dead-code claim for the `label_by_identity` collision branch (`remote_identity.h:140-148`) checks out: `resolveRemoteIdentities` has exactly one call site (`on_configure`); `add_remote`'s dynamic-remote path (`udp_bridge.cpp:2374-2436`) has its own independent self-name/length checks and never calls it. Once identity is always exactly the label, two distinct `remotes_list` entries cannot converge; only an exact repeat can, and that's the separate, already-correct idempotent-skip path (`identity_by_label.count(entry.first)` at line 104). Deletion is sound, not merely believed.
+- The declare-but-don't-read mechanism holds: `udp_bridge.cpp` does not set `automatically_declare_parameters_from_overrides` (confirmed — only `NodeOptions().enable_logger_service(true)`), and the current code (`udp_bridge.cpp:360-362`) already proves `declare_parameter`/`get_parameter` surfaces a YAML override on a per-label-declared key independent of that node option. Keeping the per-label `declareIfMissing("remotes.<label>.name", "")` call for warning purposes only is correct and necessary, as the plan says.
+- The 23/24 boundary is right (`packet.h:20,61`: `maximum_node_name_size = 24`, `maximum_node_name_length = 23`), and the `MaximumLengthNamesConfigure` boundary fix (move the at-limit string from the `.name` argument to the label argument) is necessary — verified the pre-fix test would silently stop testing the boundary once `.name` goes unread.
+- Every test deletion/rename claim was checked against actual file content and line numbers (`test_relay_routing.cpp`, `test_node_name_limits.cpp`) and matches exactly — line ranges, test bodies, and the "which surviving test covers it" claims all hold.
+- The unknown-sender WARN (`udp_bridge.cpp:1789-1796`) fires on the same condition before and after (`configured_remote_names_` is mathematically the same set of strings, just built from labels instead of resolved names) — only the advice text needs to change, as the plan says.
+- Plan length (156 lines) earns its place: this is a removal, and the file:line specificity is what let this review verify claims against source rather than trust them — padding would not have supported that.
+
+### Summary
+The plan is unusually well-verified against source — every deletion's replacement-coverage claim, every line-number reference, and the resolver-mechanism claim held up under independent checking, including cross-referencing the one place I expected a gap (services/dynamic remotes feeding `resolveRemoteIdentities`) and finding there genuinely isn't one. Two concrete gaps remain before implementation: the new WARN test needs a real mechanism (there is no existing repo pattern to point at), and one README passage the plan calls "unaffected" is not. Both are small, textual fixes to the plan, not design problems.
+
+### Recommended Actions
+- [ ] Replace the `test_stale_packet_gate.cpp` pointer in step 6 with a concrete WARN-capture mechanism (e.g. `CaptureStderr`/`GetCapturedStderr`).
+- [ ] Add the README.md node-name-length upgrade note (~122–129) to step 7's edit list — drop its `remotes.<label>.name` clause.
