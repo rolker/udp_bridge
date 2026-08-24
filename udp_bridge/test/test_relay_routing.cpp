@@ -182,7 +182,7 @@ TEST(RelayRouting, ConfiguredNameIsTheIdentityNotTheLabel)
 
   std::string error;
   auto identities = resolveRemoteIdentities({{"robot_a", "robot_a_bridge"},
-                                             {"operator_1", ""}}, &error);
+                                             {"operator_1", ""}}, "", &error);
   EXPECT_TRUE(error.empty());
   ASSERT_EQ(identities.size(), 2u);
   EXPECT_EQ(identities.at("robot_a"), "robot_a_bridge");
@@ -196,10 +196,45 @@ TEST(RelayRouting, DuplicateRemoteIdentityIsRejected)
 {
   std::string error;
   auto identities = resolveRemoteIdentities({{"robot_a", "hub"},
-                                             {"robot_b", "hub"}}, &error);
+                                             {"robot_b", "hub"}}, "", &error);
   EXPECT_TRUE(identities.empty());
   EXPECT_FALSE(error.empty()) << "a duplicate identity must be reported, not merged";
   EXPECT_NE(error.find("hub"), std::string::npos);
+}
+
+// A remote resolving to the bridge's own name is a third kind of
+// configuration error. It installs a RemoteNode for ourselves in
+// remote_nodes_, and once that entry exists unwrap()'s self-packet refusal
+// -- which sits in the not-found branch -- is bypassed by the successful
+// lookup, so the bridge starts accepting its own traffic as a peer's.
+// RemoteNode's constructor asserts on it, but asserts are compiled out of
+// the release builds this would be met in. Reject at configure, before the
+// RemoteNode is constructed.
+TEST(RelayRouting, RemoteResolvingToOurOwnNameIsRejected)
+{
+  std::string error;
+  auto identities = resolveRemoteIdentities({{"robot_a", "hub"},
+                                             {"operator_1", ""}},
+                                            "hub", &error);
+  EXPECT_TRUE(identities.empty())
+    << "a bridge must not be installed as its own remote";
+  ASSERT_FALSE(error.empty());
+  EXPECT_NE(error.find("robot_a"), std::string::npos)
+    << "the message must name the offending remote";
+  EXPECT_NE(error.find("hub"), std::string::npos);
+
+  // A bare label matching the local name is caught the same way.
+  error.clear();
+  EXPECT_TRUE(resolveRemoteIdentities({{"hub", ""}}, "hub", &error).empty());
+  EXPECT_FALSE(error.empty());
+
+  // And a config that merely resembles it is not: only equality is
+  // rejected, so ordinary neighbours still configure.
+  error.clear();
+  auto ok = resolveRemoteIdentities({{"robot_a", "hub_a"},
+                                     {"robot_b", ""}}, "hub", &error);
+  EXPECT_TRUE(error.empty()) << error;
+  EXPECT_EQ(ok.size(), 2u);
 }
 
 // A label repeated in `remotes_list` names one parameter block, so it is
@@ -212,7 +247,7 @@ TEST(RelayRouting, RepeatedLabelIsIdempotentNotACollision)
   std::string error;
   auto identities = resolveRemoteIdentities({{"robot_a", "robot_a_bridge"},
                                              {"robot_a", "robot_a_bridge"},
-                                             {"operator_1", ""}}, &error);
+                                             {"operator_1", ""}}, "", &error);
   EXPECT_TRUE(error.empty()) << "a remote cannot collide with itself";
   ASSERT_EQ(identities.size(), 2u);
   EXPECT_EQ(identities.at("robot_a"), "robot_a_bridge");
@@ -222,7 +257,7 @@ TEST(RelayRouting, RepeatedLabelIsIdempotentNotACollision)
   error.clear();
   auto colliding = resolveRemoteIdentities({{"robot_a", "hub"},
                                             {"robot_a", "hub"},
-                                            {"robot_b", "hub"}}, &error);
+                                            {"robot_b", "hub"}}, "", &error);
   EXPECT_TRUE(colliding.empty());
   EXPECT_FALSE(error.empty());
 }
@@ -238,7 +273,7 @@ TEST(RelayRouting, LabelDifferingFromWireNameStillNeverEchoes)
   const std::string wire_name = "robot_a_bridge";  // remotes.robot_a.name
 
   std::string error;
-  auto identities = resolveRemoteIdentities({{label, wire_name}}, &error);
+  auto identities = resolveRemoteIdentities({{label, wire_name}}, "", &error);
   ASSERT_TRUE(error.empty());
 
   // addSubscriberConnection is called with this key by on_configure.
@@ -273,7 +308,7 @@ TEST(RelayRouting, OverLongRemoteIdentityIsRejected)
   const std::string too_long(udp_bridge::maximum_node_name_length + 1, 'x');
 
   std::string error;
-  auto identities = resolveRemoteIdentities({{"robot_a", too_long}}, &error);
+  auto identities = resolveRemoteIdentities({{"robot_a", too_long}}, "", &error);
   EXPECT_TRUE(identities.empty())
     << "an unrepresentable identity must fail on_configure, not be truncated";
   ASSERT_FALSE(error.empty());
@@ -288,7 +323,7 @@ TEST(RelayRouting, OverLongRemoteIdentityIsRejected)
   // A label used as the identity (no `name` set) is checked the same way,
   // and the message points at the label rather than at the unset parameter.
   error.clear();
-  auto by_label = resolveRemoteIdentities({{too_long, ""}}, &error);
+  auto by_label = resolveRemoteIdentities({{too_long, ""}}, "", &error);
   EXPECT_TRUE(by_label.empty());
   ASSERT_FALSE(error.empty());
   EXPECT_NE(error.find("remotes_list"), std::string::npos);
@@ -306,7 +341,7 @@ TEST(RelayRouting, MaximumLengthIdentityStillClosesTheLoopRule)
   ASSERT_EQ(wire_name.size(), 23u) << "the wire field is 24 bytes incl. NUL";
 
   std::string error;
-  auto identities = resolveRemoteIdentities({{"robot_a", wire_name}}, &error);
+  auto identities = resolveRemoteIdentities({{"robot_a", wire_name}}, "", &error);
   ASSERT_TRUE(error.empty()) << error;
   ASSERT_EQ(identities.at("robot_a"), wire_name)
     << "a name at the limit must be kept whole";

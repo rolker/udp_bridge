@@ -362,7 +362,8 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     labels_and_names.emplace_back(remote_label, get_parameter(name_param).as_string());
   }
   std::string identity_error;
-  auto identity_by_label = resolveRemoteIdentities(labels_and_names, &identity_error);
+  auto identity_by_label = resolveRemoteIdentities(labels_and_names, name_,
+                                                   &identity_error);
   if(!identity_error.empty())
   {
     // Fail loud: a duplicate identity silently overwrites a remote's

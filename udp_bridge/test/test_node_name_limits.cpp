@@ -127,6 +127,27 @@ TEST(NodeNameLimits, MaximumLengthNamesConfigure)
     << "a name at the limit is representable and must be accepted";
 }
 
+// A remote configured with this bridge's own name used to be installed in
+// remote_nodes_ under our name, at which point unwrap()'s self-packet
+// refusal (which only runs when the lookup misses) stopped protecting us.
+// RemoteNode's constructor asserts on it -- and asserts are compiled out of
+// release builds, so the field build was the one without the guard. It now
+// fails the transition instead.
+TEST(NodeNameLimits, RemoteWithOurOwnNameFailsToConfigure)
+{
+  Bridge bridge("remote_with_our_own_name");
+  EXPECT_EQ(bridge.name("hub").remote("robot_a", "hub").configure(),
+            kUnconfigured)
+    << "a bridge must not be configured as its own remote";
+}
+
+// The same, via a `remotes_list` label used as the identity.
+TEST(NodeNameLimits, RemoteLabelMatchingOurOwnNameFailsToConfigure)
+{
+  Bridge bridge("remote_label_matching_our_name");
+  EXPECT_EQ(bridge.name("hub").remote("hub", "").configure(), kUnconfigured);
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);

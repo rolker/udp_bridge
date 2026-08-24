@@ -43,8 +43,8 @@ inline std::string resolveRemoteIdentity(const std::string& label,
   return configured_name.empty() ? label : configured_name;
 }
 
-/// Resolve every configured remote's identity and reject collisions and
-/// over-long names.
+/// Resolve every configured remote's identity and reject collisions,
+/// over-long names, and any identity equal to this bridge's own name.
 ///
 /// Two labels that resolve to the same identity are a configuration error,
 /// not a merge: they would collide in `remote_nodes_` and in every topic's
@@ -61,13 +61,26 @@ inline std::string resolveRemoteIdentity(const std::string& label,
 /// function exists to close, because two identities differing only after
 /// the limit would become one wire name. Reject it and say so.
 ///
+/// A remote resolving to THIS bridge's own name is rejected for a third
+/// reason (issue #51). Such an entry installs a `RemoteNode` for ourselves
+/// in `remote_nodes_`, and once it is there `unwrap()` can no longer refuse
+/// our own packets: its self-packet check sits in the not-found branch, so
+/// a successful lookup walks straight past it and the bridge starts
+/// treating its own traffic as a peer's. `RemoteNode`'s constructor does
+/// assert on it, but an assert is compiled out of a release build, which is
+/// where this would be met. Catch it here, before the RemoteNode exists.
+///
 /// @param labels_and_names (label, `remotes.<label>.name`) pairs, in
 ///        `remotes_list` order. An empty name means "unset".
-/// @param error set to a human-readable description when a collision is
-///        found; untouched otherwise. May be null.
-/// @return label -> identity for every entry, or an empty map on collision.
+/// @param local_name this bridge's own wire name, which no remote may
+///        resolve to. Empty disables the check (for callers that have no
+///        local name to compare against).
+/// @param error set to a human-readable description when an identity is
+///        rejected; untouched otherwise. May be null.
+/// @return label -> identity for every entry, or an empty map on rejection.
 inline std::map<std::string, std::string> resolveRemoteIdentities(
   const std::vector<std::pair<std::string, std::string> >& labels_and_names,
+  const std::string& local_name = std::string(),
   std::string* error = nullptr)
 {
   std::map<std::string, std::string> identity_by_label;
@@ -90,6 +103,17 @@ inline std::map<std::string, std::string> resolveRemoteIdentities(
               + ".name to a shorter wire name if the label must stay)"
             : "remote name (remotes." + entry.first + ".name)",
           identity);
+      return std::map<std::string, std::string>();
+    }
+    if(!local_name.empty() && identity == local_name)
+    {
+      if(error)
+        *error = "remote '" + entry.first + "' resolves to remote name '"
+               + identity + "', which is this bridge's own name. A bridge"
+                 " cannot be its own remote: it would be installed in"
+                 " remote_nodes_ under our name and the receive path would"
+                 " then accept our own packets as a peer's. Change either"
+                 " the `name` parameter or remotes." + entry.first + ".name.";
       return std::map<std::string, std::string>();
     }
     auto existing = label_by_identity.find(identity);

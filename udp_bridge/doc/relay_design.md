@@ -160,9 +160,13 @@ too.
 parameter paths (`remotes.<label>.connections_list`). The identity of a
 configured remote is `remotes.<label>.name`, falling back to the label when
 unset (see `include/udp_bridge/remote_identity.h`). Two labels resolving to
-the same name fail `on_configure`, and the first sequenced packet from a
-sender that matches no configured remote logs a WARN naming the parameter
-to set.
+the same name fail `on_configure`, so does a remote resolving to the
+bridge's **own** name (that entry would install a `RemoteNode` for
+ourselves, and `unwrap()`'s refusal of our own packets only runs when the
+lookup misses — a successful one walks past it; `RemoteNode`'s own guard is
+an `assert`, compiled out of release builds), and the first sequenced packet
+from a sender that matches no configured remote logs a WARN naming the
+parameter to set.
 
 Note what that WARN is and is not. The branch it sits in runs only while
 the sender has no `RemoteNode`, so it fires **once per unknown name for the
