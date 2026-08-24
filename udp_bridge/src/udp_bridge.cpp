@@ -2376,6 +2376,26 @@ void UDPBridge::addRemote(
     return;
   }
 
+  // Refuse a remote that IS us, for the same reason resolveRemoteIdentities
+  // refuses one at configure time (issue #51). Installing a RemoteNode
+  // under our own name puts unwrap()'s self-packet refusal out of reach:
+  // that check sits in the lookup-missed branch, so once remote_nodes_
+  // holds an entry keyed by our name a successful lookup walks straight
+  // past it and the bridge starts treating its own traffic as a peer's.
+  // RemoteNode's constructor only asserts on it, and asserts are compiled
+  // out of the release build this would be met in. Same refusal shape as
+  // the length rejection above: ERROR, no remote, early return, because
+  // AddRemote.srv has no field to report failure through.
+  if(!request->name.empty() && request->name == name_)
+  {
+    RCLCPP_ERROR_STREAM(get_logger(), "add_remote refused: the requested"
+      " remote name '" << request->name << "' is this bridge's own name."
+      " A bridge cannot be its own remote: it would be installed in"
+      " remote_nodes_ under our name and the receive path would then"
+      " accept our own packets as a peer's.");
+    return;
+  }
+
   auto connection_id = request->connection_id;
   if(connection_id.empty())
     connection_id = "default";

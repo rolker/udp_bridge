@@ -24,8 +24,11 @@
 // the wire field, and the bounded read of an unterminated field are unit
 // tested in test_relay_routing.cpp.
 
+#include <algorithm>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -35,6 +38,8 @@
 
 #include "udp_bridge/packet.h"
 #include "udp_bridge/udp_bridge.h"
+#include "udp_bridge_interfaces/srv/add_remote.hpp"
+#include "udp_bridge_interfaces/srv/list_remotes.hpp"
 
 namespace
 {
@@ -80,6 +85,8 @@ public:
     node_->declare_parameter("remotes_list", labels_);
     return node_->configure().id();
   }
+
+  std::shared_ptr<udp_bridge::UDPBridge> node() const { return node_; }
 
 private:
   std::shared_ptr<udp_bridge::UDPBridge> node_;
@@ -146,6 +153,84 @@ TEST(NodeNameLimits, RemoteLabelMatchingOurOwnNameFailsToConfigure)
 {
   Bridge bridge("remote_label_matching_our_name");
   EXPECT_EQ(bridge.name("hub").remote("hub", "").configure(), kUnconfigured);
+}
+
+// `add_remote` is the one path that creates a remote at runtime from an
+// arbitrary caller-supplied string, so it needs the same self-name refusal
+// `resolveRemoteIdentities` performs at configure time -- otherwise the
+// invariant the configure-time check establishes (nothing in remote_nodes_
+// is keyed by our own name) can still be broken through the service, and
+// unwrap()'s self-packet guard, which only runs when the lookup misses,
+// stops protecting us.
+//
+// Driven through the real services: add_remote to attempt it, list_remotes
+// to observe remote_nodes_ from outside the class.
+TEST(NodeNameLimits, AddRemoteServiceRefusesOurOwnName)
+{
+  const std::string kNodeName = "add_remote_self_name";
+  Bridge bridge(kNodeName);
+  ASSERT_EQ(bridge.name("hub").configure(), kInactive);
+
+  auto client_node = std::make_shared<rclcpp::Node>(kNodeName + "_client");
+  auto add = client_node->create_client<udp_bridge_interfaces::srv::AddRemote>(
+    "/" + kNodeName + "/add_remote");
+  auto list = client_node->create_client<udp_bridge_interfaces::srv::ListRemotes>(
+    "/" + kNodeName + "/list_remotes");
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(bridge.node()->get_node_base_interface());
+  executor.add_node(client_node);
+  std::thread spinner([&executor](){ executor.spin(); });
+
+  ASSERT_TRUE(add->wait_for_service(std::chrono::seconds(10)));
+  ASSERT_TRUE(list->wait_for_service(std::chrono::seconds(10)));
+
+  auto call_add = [&](const std::string& name)
+  {
+    auto request = std::make_shared<udp_bridge_interfaces::srv::AddRemote::Request>();
+    request->name = name;
+    request->address = "127.0.0.1";
+    request->port = 4200;
+    auto future = add->async_send_request(request);
+    return future.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  };
+
+  auto remote_names = [&]()
+  {
+    auto future = list->async_send_request(
+      std::make_shared<udp_bridge_interfaces::srv::ListRemotes::Request>());
+    std::vector<std::string> names;
+    if(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready)
+    {
+      // Hold the response alive: get() hands back the shared_ptr by value,
+      // so iterating `future.get()->remotes` directly would free it at the
+      // end of the expression and walk a dangling vector.
+      auto response = future.get();
+      for(const auto& remote: response->remotes)
+        names.push_back(remote.name);
+    }
+    return names;
+  };
+
+  // Control: an ordinary remote really is created through this service, so
+  // the absence asserted below is a refusal and not a broken test.
+  ASSERT_TRUE(call_add("robot_a"));
+  {
+    auto names = remote_names();
+    EXPECT_NE(std::find(names.begin(), names.end(), "robot_a"), names.end())
+      << "add_remote must create an ordinary remote";
+  }
+
+  // The refusal: our own name must never appear in remote_nodes_.
+  ASSERT_TRUE(call_add("hub"));
+  {
+    auto names = remote_names();
+    EXPECT_EQ(std::find(names.begin(), names.end(), "hub"), names.end())
+      << "add_remote must refuse a remote named as this bridge is named";
+  }
+
+  executor.cancel();
+  spinner.join();
 }
 
 int main(int argc, char** argv)
