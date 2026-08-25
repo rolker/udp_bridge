@@ -197,6 +197,13 @@ if(BUILD_TESTING)
   # isolation of the relay fan-out: ConnectionException (which has no base
   # class) is caught, and one failing remote does not cancel the others.
   add_udp_bridge_gtest(test_relay_send test/test_relay_send.cpp)
+  # test_runtime_tunables pins that a `ros2 param set` of a per-connection
+  # tunable reaches the live Connection, not just the parameter store —
+  # the 2026-08-25 field defect where the admission floor was accepted,
+  # read back, and had no effect. Drives the real lifecycle transition
+  # (port 0, so it cannot collide with a running bridge) plus the pure
+  # validation helpers in connection_tunables.h.
+  add_udp_bridge_gtest(test_runtime_tunables test/test_runtime_tunables.cpp)
 
   # Bench-harness smoke test (issue #18). Runs the orchestrator under
   # an unprivileged user namespace; skips cleanly if unshare -Urn is

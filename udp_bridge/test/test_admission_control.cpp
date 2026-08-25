@@ -31,6 +31,13 @@
 //                                 limit yields the limit, not a raise (#52).
 //   NegativeFloorFallsBackToDefault — a negative/NaN floor falls back to
 //                                 the default, never clamps to 0 (#52).
+//   FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit — a floor
+//                                 raised while the cap sits collapsed
+//                                 takes effect on the next sample and
+//                                 stops at the configured limit. This is
+//                                 the operational half of the runtime
+//                                 parameter path in
+//                                 test_runtime_tunables.cpp.
 //   CeilingClamp                — recovery never exceeds the configured
 //                                 limit.
 //   FeedbackStaleBackoff        — stale last_receive_time is congestion
@@ -377,6 +384,43 @@ TEST_F(AdmissionControl, FloorNeverExceedsConfiguredLimit)
   EXPECT_EQ(conn->effectiveRateLimit(), small_limit)
     << "A floor above the connection's own limit must yield the limit — "
        "the floor is a lower bound on backoff, never a way to raise the cap.";
+}
+
+TEST_F(AdmissionControl, FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit)
+{
+  // The operational shape of the 2026-08-25 field fix: the cap has
+  // collapsed to the floor, and the operator raises the floor with
+  // `ros2 param set` to get the link back. Two things must hold.
+  //
+  //  1. The new floor takes effect on the NEXT admission sample, without
+  //     a restart — the setter writes the live Connection, and
+  //     updateAdmissionControl reads it every time rather than caching it.
+  //  2. It can lift the cap no further than the connection's own
+  //     configured maximum_bytes_per_second. The floor is a lower bound
+  //     on backoff, never a way to exceed the operator-declared ceiling,
+  //     so an over-large value is a safe (if blunt) thing to type under
+  //     pressure.
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  const uint32_t default_floor =
+    static_cast<uint32_t>(udp_bridge::kDefaultAdmissionFloorBytesPerSecond);
+
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+  for(int i = 0; i < 10; ++i)
+    conn->updateAdmissionControl(0.0f, 0.0f, t0);
+  ASSERT_EQ(conn->effectiveRateLimit(), default_floor)
+    << "precondition: the cap has collapsed to the default floor";
+
+  // Raise the floor well above the configured cap, as an operator would
+  // when they do not know how much headroom the link has.
+  conn->setAdmissionFloorBytesPerSecond(static_cast<float>(kRateLimit) * 10.0f);
+  conn->updateAdmissionControl(0.0f, 0.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
+    << "a floor raised at runtime must lift the collapsed cap on the next "
+       "sample, and must stop at the configured limit rather than raise it";
 }
 
 TEST_F(AdmissionControl, NegativeFloorFallsBackToDefault)
