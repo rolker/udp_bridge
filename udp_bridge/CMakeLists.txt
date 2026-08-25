@@ -204,6 +204,12 @@ if(BUILD_TESTING)
   # (port 0, so it cannot collide with a running bridge) plus the pure
   # validation helpers in connection_tunables.h.
   add_udp_bridge_gtest(test_runtime_tunables test/test_runtime_tunables.cpp)
+  # test_topic_rate_caps pins the per-topic maximum_bytes_per_second: the
+  # token bucket itself, its enforcement inside the shared selector (so
+  # local-origin and relayed traffic are capped by one implementation),
+  # the drop accounting that keeps a shed message visible in
+  # TopicStatistics, and the config/runtime paths that set it.
+  add_udp_bridge_gtest(test_topic_rate_caps test/test_topic_rate_caps.cpp)
 
   # Bench-harness smoke test (issue #18). Runs the orchestrator under
   # an unprivileged user namespace; skips cleanly if unshare -Urn is
