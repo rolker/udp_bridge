@@ -51,6 +51,7 @@
 #include <poll.h>
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 #include "udp_bridge_interfaces/msg/remote_subscribe_internal.hpp"
@@ -612,13 +613,13 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       {
         std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
         runtime_tunables_[maximum_bytes_per_second_param] =
-          {TunableKind::ConnectionMaximumBytesPerSecond, remote_name, connection_name};
+          {TunableKind::ConnectionMaximumBytesPerSecond, remote_name, connection_name, ""};
         runtime_tunables_[resend_budget_fraction_param] =
-          {TunableKind::ResendBudgetFraction, remote_name, connection_name};
+          {TunableKind::ResendBudgetFraction, remote_name, connection_name, ""};
         runtime_tunables_[admission_floor_bps_param] =
-          {TunableKind::AdmissionFloorBytesPerSecond, remote_name, connection_name};
+          {TunableKind::AdmissionFloorBytesPerSecond, remote_name, connection_name, ""};
         runtime_tunables_[link_headroom_fraction_param] =
-          {TunableKind::LinkHeadroomFraction, remote_name, connection_name};
+          {TunableKind::LinkHeadroomFraction, remote_name, connection_name, ""};
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
@@ -675,9 +676,54 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         }
         uint32_t history_depth = static_cast<uint32_t>(history_depth_value);
 
+        // Per-topic send cap (payload bytes/second; 0 = unlimited, which
+        // is what an absent key configures, so existing configs are
+        // unchanged). This is the per-topic floor-guard for a
+        // connection's other topics: Connection::send meters the
+        // connection-level cap first-come-first-served with no notion of
+        // topic, so without this one topic can take the whole link.
+        //
+        // Clamped rather than rejected, like history_depth above and for
+        // the same reason: a YAML file has no return channel. A negative
+        // value degrades to "no cap" — today's behaviour and the least
+        // surprising reading of a nonsensical one — while a runtime
+        // `ros2 param set` of the same key is REJECTED with a reason
+        // (connection_tunables.h).
+        std::string topic_max_bps_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".maximum_bytes_per_second";
+        declareIfMissing(topic_max_bps_param, 0);
+        int64_t topic_max_bps_value = get_parameter(topic_max_bps_param).as_int();
+        constexpr int64_t kMaxTopicBytesPerSecond =
+          static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+        if(topic_max_bps_value < 0)
+        {
+          RCLCPP_WARN_STREAM(get_logger(),
+            "maximum_bytes_per_second for " << remote_name << "/" << connection_name << "/" << topic
+            << " is " << topic_max_bps_value << "; treating as no cap (0)");
+          topic_max_bps_value = 0;
+        }
+        else if(topic_max_bps_value > kMaxTopicBytesPerSecond)
+        {
+          RCLCPP_WARN_STREAM(get_logger(),
+            "maximum_bytes_per_second for " << remote_name << "/" << connection_name << "/" << topic
+            << " is " << topic_max_bps_value << "; clamping to " << kMaxTopicBytesPerSecond);
+          topic_max_bps_value = kMaxTopicBytesPerSecond;
+        }
+        uint32_t topic_max_bps = static_cast<uint32_t>(topic_max_bps_value);
+
         addSubscriberConnection(source, destination, queue_size, period,
                                 remote_info.name, connection.connection_id,
-                                reliability, durability, history_depth);
+                                reliability, durability, history_depth,
+                                topic_max_bps);
+
+        // Runtime-settable, keyed by the RESOLVED source topic: the
+        // parameter path is spelled with the topics_list label, but the
+        // routing table this drives is keyed by `source`.
+        {
+          std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+          runtime_tunables_[topic_max_bps_param] =
+            {TunableKind::TopicMaximumBytesPerSecond, remote_info.name,
+             connection.connection_id, source};
+        }
       }
     }
   }
@@ -972,6 +1018,7 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
   // re-lock. DestinationConfig lives in destination_selection.h because the
   // relay sender captures the same fields the same way (issue #51).
   RemoteConnectionsList destinations;
+  RemoteConnectionsList over_budget;
   std::map<std::string, DestinationConfig> destination_config_by_remote;
   {
     std::lock_guard<std::mutex> lock(subscribers_mutex_);
@@ -985,9 +1032,13 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     auto& sub = sub_it->second;
     // Rate limiting lives in selectRateLimitedConnections (issue #51) so the
     // relay path throttles identically against the same last_sent_time
-    // state. No remote to exclude here: this message originated locally, so
-    // there is no sender to avoid echoing to.
-    destinations = selectRateLimitedConnections(sub.remote_details, now);
+    // state -- and, since the per-topic byte cap was added, against the
+    // same per-topic budget. No remote to exclude here: this message
+    // originated locally, so there is no sender to avoid echoing to.
+    auto selection = selectRateLimitedConnections(sub.remote_details, now,
+                                                  message->size());
+    destinations = std::move(selection.due);
+    over_budget = std::move(selection.over_budget);
     for(auto& remote_details: sub.remote_details)
     {
       auto& dc = destination_config_by_remote[remote_details.first];
@@ -1002,6 +1053,15 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     size_data.timestamp = now;
     size_data.send_results[""][""];
     sub.statistics.add(size_data);
+
+    // A destination shed by its own per-topic cap is recorded as dropped
+    // for that (remote, connection), so it shows up in the topic's
+    // TopicStatistics `send` DataRates the way a connection-level drop
+    // does. Recorded here, under the same lock and before the early
+    // return below, so a message every destination shed is still visible
+    // rather than silently gone.
+    if(!over_budget.empty())
+      sub.statistics.add(overBudgetDropRecord(over_budget, message->size(), now));
   }
 
   if (destinations.empty())
@@ -1323,6 +1383,7 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     auto now = get_clock()->now();
 
     RemoteConnectionsList destinations;
+    RemoteConnectionsList over_budget;
     std::map<std::string, DestinationConfig> destination_config_by_remote;
     {
       std::lock_guard<std::mutex> lock(subscribers_mutex_);
@@ -1340,8 +1401,10 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       // the loop rule: never send a message back to the remote it came
       // from. It is applied inside the helper before any last_sent_time is
       // touched, so the sender's rate-limit state is left untouched.
-      destinations = selectRateLimitedConnections(sub.remote_details, now,
-                                                  item.source_node);
+      auto selection = selectRateLimitedConnections(
+        sub.remote_details, now, item.message.data.size(), item.source_node);
+      destinations = std::move(selection.due);
+      over_budget = std::move(selection.over_budget);
       for(auto& remote_details: sub.remote_details)
       {
         if(remote_details.first == item.source_node)
@@ -1368,14 +1431,26 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       relay_size_data.timestamp = now;
       relay_size_data.send_results[""][""];
       sub.statistics.add(relay_size_data);
+
+      // Same per-topic-cap accounting as the local-origin sender: a
+      // destination shed by its own cap is recorded as dropped for that
+      // (remote, connection) so it is visible in the topic's statistics.
+      if(!over_budget.empty())
+        sub.statistics.add(overBudgetDropRecord(
+          over_budget, item.message.data.size(), now));
     }
 
     if(destinations.empty())
     {
       // Not loss: the routing table may list other remotes and none is due
-      // under its `period` yet. Counted separately from the three above so
-      // the diagnostic shows it without inflating the loss figure.
-      relay_drops_.record(RelayDropReason::NoDestinationDue);
+      // under its `period`, or every one that was due is over its own
+      // per-topic `maximum_bytes_per_second`. Counted separately from the
+      // loss reasons -- and the two rate limits counted apart from each
+      // other, because they are tuned in different places and the
+      // diagnostic should say which one shed the traffic.
+      relay_drops_.record(over_budget.empty()
+                          ? RelayDropReason::NoDestinationDue
+                          : RelayDropReason::TopicRateLimited);
       return;
     }
 
@@ -1673,7 +1748,8 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
                                         std::string connection_id,
                                         std::string reliability,
                                         std::string durability,
-                                        uint32_t history_depth)
+                                        uint32_t history_depth,
+                                        uint32_t maximum_bytes_per_second)
 {
   if(!remote_node.empty())
   {
@@ -1684,6 +1760,17 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
       auto& rd = sub.remote_details[remote_node];
       rd.destination_topic = destination_topic;
       rd.connection_rates[connection_id].period = period;
+      // Per-topic byte cap: zero retains, matching the QoS overrides
+      // below. The service/wire paths into this function
+      // (remote_subscribe, remote_advertise, decodeSubscribeRequest)
+      // carry no cap field — adding one to RemoteSubscribeInternal would
+      // change the message's ROS 2 type hash and force a coordinated
+      // redeploy of both bridge ends — so they all arrive here with 0.
+      // Overwriting on 0 would let an unrelated re-subscribe silently
+      // remove a cap the config or the operator put in place.
+      if(maximum_bytes_per_second != 0)
+        rd.connection_rates[connection_id].maximum_bytes_per_second =
+          maximum_bytes_per_second;
       // QoS overrides — empty/zero retains existing or default behavior so
       // that re-adding a subscription doesn't accidentally clear earlier
       // per-topic QoS that was set elsewhere.
@@ -1775,6 +1862,7 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
             name, item.parameter->as_double());
         break;
       case TunableKind::ConnectionMaximumBytesPerSecond:
+      case TunableKind::TopicMaximumBytesPerSecond:
         if(type != rclcpp::ParameterType::PARAMETER_INTEGER)
           validation = {false, name + " must be an integer"};
         else
@@ -1804,17 +1892,61 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
   // inside Connection ever reaches back for a UDPBridge mutex, so no
   // ordering cycle exists. It is emphatically NOT the pattern for
   // setHostAndPort(), which resolves DNS.
-  std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+  //
+  // subscribers_mutex_ joins it because a per-topic cap lives in the
+  // routing table, not in the Connection. scoped_lock per this file's
+  // locking convention, which is what makes taking two of the four map
+  // mutexes deadlock-free without an ordering rule.
+  std::scoped_lock lock(remote_nodes_mutex_, subscribers_mutex_);
 
   // Resolve first, apply second: a target that has gone away must be
   // reported as a failure rather than silently doing nothing. "Accepted,
   // reads back, changes nothing" is the exact defect this whole callback
   // exists to remove, so it must not be reintroduced for the case where
-  // the forwarding was removed at runtime.
-  std::vector<std::pair<const PendingTunable*, std::shared_ptr<Connection>>> resolved;
+  // the forwarding was removed at runtime (remove_subscribe /
+  // remove_advertise can do exactly that to a per-topic cap's target).
+  //
+  // The raw ConnectionRateInfo pointer is taken and used entirely inside
+  // this locked scope, and nothing between the two mutates subscribers_,
+  // so it cannot be invalidated under us.
+  struct ResolvedTunable
+  {
+    const PendingTunable* pending;
+    std::shared_ptr<Connection> connection;   // null for a per-topic cap
+    ConnectionRateInfo* rate_info;            // null for a connection tunable
+  };
+  std::vector<ResolvedTunable> resolved;
   resolved.reserve(pending.size());
   for(const auto& item: pending)
   {
+    if(item.target.kind == TunableKind::TopicMaximumBytesPerSecond)
+    {
+      ConnectionRateInfo* rate_info = nullptr;
+      auto sub_it = subscribers_.find(item.target.source_topic);
+      if(sub_it != subscribers_.end())
+      {
+        auto rd_it = sub_it->second.remote_details.find(item.target.remote);
+        if(rd_it != sub_it->second.remote_details.end())
+        {
+          auto rate_it =
+            rd_it->second.connection_rates.find(item.target.connection_id);
+          if(rate_it != rd_it->second.connection_rates.end())
+            rate_info = &rate_it->second;
+        }
+      }
+      if(!rate_info)
+      {
+        result.successful = false;
+        result.reason = item.parameter->get_name() + ": topic '"
+          + item.target.source_topic + "' is not currently forwarded to remote '"
+          + item.target.remote + "' connection '" + item.target.connection_id
+          + "', so the value could not be applied";
+        return result;
+      }
+      resolved.push_back({&item, nullptr, rate_info});
+      continue;
+    }
+
     std::shared_ptr<Connection> connection;
     auto remote_it = remote_nodes_.find(item.target.remote);
     if(remote_it != remote_nodes_.end() && remote_it->second)
@@ -1827,7 +1959,7 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
         + "' is not currently registered, so the value could not be applied";
       return result;
     }
-    resolved.emplace_back(&item, connection);
+    resolved.push_back({&item, connection, nullptr});
   }
 
   // Give-up thresholds. Compute the pair that would result from applying
@@ -1886,9 +2018,9 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
 
   for(const auto& entry: resolved)
   {
-    const rclcpp::Parameter& parameter = *entry.first->parameter;
-    const TunableTarget& target = entry.first->target;
-    const std::shared_ptr<Connection>& connection = entry.second;
+    const rclcpp::Parameter& parameter = *entry.pending->parameter;
+    const TunableTarget& target = entry.pending->target;
+    const std::shared_ptr<Connection>& connection = entry.connection;
     switch(target.kind)
     {
       case TunableKind::AdmissionFloorBytesPerSecond:
@@ -1909,6 +2041,14 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
         // and clamps rather than resets when it has, so tuning the cap
         // mid-storm cannot wipe the AIMD state and burst the link.
         connection->setRateLimit(static_cast<uint32_t>(parameter.as_int()));
+        break;
+      case TunableKind::TopicMaximumBytesPerSecond:
+        // The token-bucket state is deliberately left alone. Raising the
+        // cap makes the existing charge drain faster and lowering it
+        // slower, which is the honest accounting either way; resetting it
+        // would let a burst re-run the whole budget on the next message.
+        entry.rate_info->maximum_bytes_per_second =
+          static_cast<uint32_t>(parameter.as_int());
         break;
     }
     RCLCPP_INFO_STREAM(get_logger(),
@@ -3137,8 +3277,9 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // routing table was torn down under it (relay_drops_).
   // Both are unrecoverable, so both must be visible —
   // reporting only the queue's would under-report real relay loss. Items
-  // held back purely by the `period` rate limit are counted apart and are
-  // not loss.
+  // held back by a configured rate limit — the `period` rule or a
+  // per-topic maximum_bytes_per_second — are counted apart and are not
+  // loss.
   //
   // Every counter is read exactly once into a local: the worker keeps
   // incrementing while this runs, and re-reading dropped_count()/lost() for
@@ -3164,6 +3305,11 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // loss — mixing it in produced statuses like "relay dropping (1 since
   // last tick; topic_gone=1, rate_limited=40321)".
   stat.add("rate_limited", relay_drops_.rateLimited());
+  // Which limit did the shedding: the per-connection `period` rule or a
+  // per-topic maximum_bytes_per_second. They are tuned in different
+  // places, so an operator watching `rate_limited` climb needs to know
+  // which knob to reach for.
+  stat.add("rate_limited_by_topic_cap", relay_drops_.topicRateLimited());
   stat.add("max_bytes", static_cast<uint64_t>(relay_queue_max_bytes_));
 
   // A relay drop is unrecoverable loss for the downstream remotes: the
@@ -3192,6 +3338,25 @@ std::shared_ptr<Connection> UDPBridge::connectionForTest(
   if(remote_it == remote_nodes_.end() || !remote_it->second)
     return nullptr;
   return remote_it->second->connection(connection_id);
+}
+
+bool UDPBridge::topicRateInfoForTest(const std::string& source_topic,
+                                     const std::string& remote_name,
+                                     const std::string& connection_id,
+                                     ConnectionRateInfo& info)
+{
+  std::lock_guard<std::mutex> lock(subscribers_mutex_);
+  auto sub_it = subscribers_.find(source_topic);
+  if(sub_it == subscribers_.end())
+    return false;
+  auto rd_it = sub_it->second.remote_details.find(remote_name);
+  if(rd_it == sub_it->second.remote_details.end())
+    return false;
+  auto rate_it = rd_it->second.connection_rates.find(connection_id);
+  if(rate_it == rd_it->second.connection_rates.end())
+    return false;
+  info = rate_it->second;
+  return true;
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

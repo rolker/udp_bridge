@@ -11,7 +11,7 @@
 namespace udp_bridge
 {
 
-// Runtime-settable per-connection tunables.
+// Runtime-settable per-connection and per-topic tunables.
 //
 // Every parameter below is declared in on_configure and read there once.
 // Until this header existed, that was the ONLY time they were read: a
@@ -73,6 +73,9 @@ enum class TunableKind
   ResendBudgetFraction,
   /// Connection::setRateLimit
   ConnectionMaximumBytesPerSecond,
+  /// ConnectionRateInfo::maximum_bytes_per_second — the per-topic cap
+  /// for one forwarded topic on one connection.
+  TopicMaximumBytesPerSecond,
 };
 
 /// Where a runtime-settable parameter applies. Built in on_configure
@@ -81,12 +84,16 @@ enum class TunableKind
 /// `remote` is the remotes_list entry (which since #67 is also the
 /// remote's wire name and the routing-table key), `connection_id` is
 /// the connection name as configured (RemoteNode::connection()
-/// canonicalizes it on lookup).
+/// canonicalizes it on lookup), and `source_topic` — set only for
+/// TopicMaximumBytesPerSecond — is the RESOLVED local source topic, the
+/// subscribers_ key, not the topics_list label the parameter path is
+/// spelled with.
 struct TunableTarget
 {
   TunableKind kind;
   std::string remote;
   std::string connection_id;
+  std::string source_topic;
 };
 
 /// Largest double that survives the cast to the float fields Connection
@@ -151,10 +158,12 @@ inline TunableValidation validateResendBudgetFraction(
   return {true, ""};
 }
 
-/// A connection's `maximum_bytes_per_second`. ROS 2 integer parameters
-/// are int64 and Connection stores a uint32_t, so a negative or
-/// over-range value is refused rather than wrapped. Zero is accepted
-/// and keeps its established meaning: use Connection::default_rate_limit.
+/// A `maximum_bytes_per_second`, connection- or topic-level. ROS 2
+/// integer parameters are int64 and both consumers store a uint32_t, so
+/// a negative or over-range value is refused rather than wrapped. Zero
+/// is accepted at both levels and keeps its established meaning: use
+/// Connection::default_rate_limit for a connection, no cap at all for a
+/// topic.
 inline TunableValidation validateMaximumBytesPerSecond(
     const std::string& name, int64_t value)
 {

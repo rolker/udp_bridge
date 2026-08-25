@@ -90,6 +90,15 @@ public:
   /// ABI, per the CMakeLists ODR discipline.
   std::shared_ptr<Connection> connectionForTest(const std::string& remote_name,
                                                 const std::string& connection_id);
+
+  /// Test accessor: a copy of the per-topic rate state for
+  /// (source_topic, remote, connection_id), or false when the routing
+  /// table has no such entry. Copies under subscribers_mutex_, because
+  /// ConnectionRateInfo lives in a map forwarding callbacks mutate.
+  bool topicRateInfoForTest(const std::string& source_topic,
+                            const std::string& remote_name,
+                            const std::string& connection_id,
+                            ConnectionRateInfo& info);
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
 private:
@@ -359,6 +368,16 @@ private:
   ///                    "best_effort" and explicit "best_available".)
   /// @param durability per-topic durability ("volatile" default, "transient_local")
   /// @param history_depth KEEP_LAST(N); 0 means default 1
+  /// @param maximum_bytes_per_second per-topic send cap in payload bytes
+  ///                    per second for this (topic, remote, connection).
+  ///                    0 retains whatever is already configured — the
+  ///                    same "empty/zero does not clear" convention the
+  ///                    QoS arguments use, so a service call that re-adds
+  ///                    a forwarding (remote_subscribe / remote_advertise,
+  ///                    whose wire message carries no cap field) cannot
+  ///                    silently wipe a cap set from the config file or at
+  ///                    runtime. Clearing a cap is done through the
+  ///                    parameter, where 0 unambiguously means unlimited.
   void addSubscriberConnection(std::string const &source_topic,
                                std::string const &destination_topic,
                                uint32_t queue_size, float period,
@@ -366,7 +385,8 @@ private:
                                std::string connection_id,
                                std::string reliability = "",
                                std::string durability = "",
-                               uint32_t history_depth = 0);
+                               uint32_t history_depth = 0,
+                               uint32_t maximum_bytes_per_second = 0);
 
   /// Handle a runtime parameter set: validate the whole proposed batch,
   /// then apply all of it or none of it.
@@ -573,7 +593,7 @@ private:
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
     on_set_parameters_handle_;
 
-  // Runtime-settable per-connection tunables, keyed by full
+  // Runtime-settable per-connection and per-topic tunables, keyed by full
   // parameter name (see connection_tunables.h for why the mapping is
   // built rather than parsed). Populated in on_configure as each
   // parameter is declared, cleared at the start of on_configure and in
