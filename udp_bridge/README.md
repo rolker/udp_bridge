@@ -206,10 +206,44 @@ For each remote in `remotes_list`:
 For each connection in `connections_list`:
 -   `remotes.<remote_label>.connections.<connection_id>.host`: (string) IP or hostname.
 -   `remotes.<remote_label>.connections.<connection_id>.port`: (integer) Target port.
--   `remotes.<remote_label>.connections.<connection_id>.maximum_bytes_per_second`: (int) Rate limit.
+-   `remotes.<remote_label>.connections.<connection_id>.maximum_bytes_per_second`: (int, bytes per second; 0 means the built-in default of 50000) Rate limit for the whole connection. This is a hard ceiling on *wire* bytes and the cost control on a metered link; it is not the bridge's model of link capacity — see `admission_floor_bytes_per_second` below and `doc/admission_control_design.md`.
 -   `remotes.<remote_label>.connections.<connection_id>.resend_budget_fraction`: (double, 0.0–1.0, default 0.25) Maximum fraction of *measured goodput* that resend traffic may consume. Halves per second of ack starvation, floored at 1/16 of the fraction. See `doc/resend_budget_design.md`.
 -   `remotes.<remote_label>.connections.<connection_id>.admission_floor_bytes_per_second`: (double, default 8192) Minimum AIMD-adjusted admission cap, in absolute bytes per second — clamped at use to the connection's own rate limit, so it can never raise a cap. The effective cap drops on congestion (the remote reporting <90% delivery, or nothing received for ~1 s while actively sending) and recovers additively when clean. See `doc/admission_control_design.md`.
 -   `remotes.<remote_label>.connections.<connection_id>.link_headroom_fraction`: (double, `[0.0, 1.0)`, default 0.2; values are clamped to 0.99 — a headroom of exactly 1.0 would target zero throughput on every congested sample) Fraction of measured goodput deliberately left unused so a co-tenant on the same path (SSH, operator management traffic) is not starved. Applied as the target of a congested backoff. See `doc/admission_control_design.md`.
+
+    > **These four are live-tunable.** `maximum_bytes_per_second`,
+    > `resend_budget_fraction`, `admission_floor_bytes_per_second` and
+    > `link_headroom_fraction` apply to the running connection when set with
+    > `ros2 param set` — no restart, no re-configure. Until this was fixed
+    > they were read once in `on_configure` and never again, so a runtime set
+    > was accepted, read back with the new value, and changed nothing; that
+    > cost a wrong conclusion and about three minutes of link outage on the
+    > 2026-08-25 BizzyBoat transit.
+    >
+    > A runtime set is **validated and refused** where a config file is
+    > clamped, because `ros2 param set` has somewhere to print the reason and
+    > a YAML file does not. The accepted ranges are exactly the ranges the
+    > setters store unchanged, so an accepted value cannot read back as
+    > something other than what is in force:
+    >
+    > | Parameter | Accepted at runtime |
+    > |---|---|
+    > | `maximum_bytes_per_second` | integer `0` – `4294967295` (0 = the 50000 default) |
+    > | `resend_budget_fraction` | finite double in `[0, 1]` |
+    > | `admission_floor_bytes_per_second` | finite double `>= 0` (clamped at use to this connection's own rate limit, so it can never raise a cap) |
+    > | `link_headroom_fraction` | finite double in `[0, 0.99]` |
+    >
+    > A batch is validated as a whole: `ros2 param set` of several values
+    > applies all of them or none. Setting a value for a connection that is no
+    > longer registered is **refused**, not silently ignored — "accepted,
+    > reads back, does nothing" is the failure mode being removed.
+    >
+    > **Type the value the way the parameter was declared.** rclcpp enforces a
+    > parameter's declared type before the node ever sees the set, so
+    > `ros2 param set … admission_floor_bytes_per_second 20000` fails on the
+    > type; write `20000.0`. The three fractions and the floor are doubles;
+    > both `maximum_bytes_per_second` parameters are integers.
+
 -   `remotes.<remote_label>.connections.<connection_id>.topics_list`: (string array) List of topics to sync. This is also the **relay routing table**: a topic listed here is delivered to this remote whether it was published locally or received from another remote. Adding a second remote that lists an already-carried topic therefore starts that traffic flowing to it — size the connection's rate limit for the combined load. See [`doc/relay_design.md`](doc/relay_design.md).
 
 For each topic in `topics_list`:
@@ -217,6 +251,39 @@ For each topic in `topics_list`:
 -   `destination`: (string) Remote topic name.
 -   `period`: (double) Minimum period between messages (shaping/rate limiting). 0.0 = no limit.
 -   `queue_size`: (int) Subscriber queue size.
+-   `maximum_bytes_per_second`: (int, default **0** = unlimited) Per-topic
+    send cap for this topic on this connection, so one topic cannot crowd
+    out the rest of the connection. The connection-level cap is metered
+    first-come-first-served with no notion of topic, so without this a
+    single busy topic can take the whole admitted budget and every other
+    topic on the connection is shed as a side effect. Absent or 0 is
+    today's behaviour, so no existing configuration changes.
+
+    Units are **offered message payload bytes per second**, not the wire
+    bytes the connection-level `maximum_bytes_per_second` meters: the
+    decision is made before serialization, compression and fragmentation,
+    so a wire figure does not exist yet. Payload bytes are also what
+    `TopicStatistics.message_bytes_per_second` reports for the topic,
+    which is the number to size this against — watch the topic's offered
+    rate in `~/topic_statistics` and set the cap below it.
+
+    Enforced as a token bucket one second deep. A message larger than one
+    second of the cap is still sent when the bucket is empty, so an
+    over-tight cap makes a topic slow rather than permanently silent; the
+    sustained rate is still the cap. A topic over its cap is **dropped and
+    counted**: the drop appears in that topic's `TopicStatistics` `send`
+    DataRates for the destination it was shed for, as a connection-level
+    drop does. (Those `dropped_bytes_per_second` figures therefore mix
+    payload bytes shed here with wire bytes shed by the connection-level
+    limiter.) On a relay hub, an item whose every due destination was shed
+    is reported on the `relay queue` diagnostic's
+    `rate_limited_by_topic_cap` row — a rate limit, not loss.
+
+    Live-tunable with `ros2 param set` on the same terms as the
+    per-connection tunables above: integer `0`–`4294967295`, where 0
+    removes the cap. A negative value in the **config file** is warned
+    about and treated as no cap; a negative value at **runtime** is
+    refused with a reason.
 
 #### Services
 | Service | Type | Description |
