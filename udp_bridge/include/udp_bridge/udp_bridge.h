@@ -23,6 +23,7 @@
 #include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 
 #include "connection.h"
+#include "connection_tunables.h"
 #include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
@@ -75,6 +76,21 @@ public:
   /// The decode(std::vector<uint8_t> const &message, const SourceInfo& source_info) is
   /// called when a packet is received.
   void spin_once();
+
+#ifdef UDP_BRIDGE_BUILD_TESTING
+  /// Test accessor: the live Connection for (remote, connection_id), or
+  /// nullptr when either is unknown. Used by test_runtime_tunables.cpp to
+  /// assert that a `ros2 param set` reached the object that meters the
+  /// link, rather than only the parameter store — the exact gap this
+  /// accessor's tests exist to close.
+  ///
+  /// Method-only, so unlike the UDP_BRIDGE_BUILD_TESTING data members in
+  /// connection.h / remote_node.h it does not change sizeof(UDPBridge);
+  /// it is gated all the same so it stays out of the installed public
+  /// ABI, per the CMakeLists ODR discipline.
+  std::shared_ptr<Connection> connectionForTest(const std::string& remote_name,
+                                                const std::string& connection_id);
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
 private:
   /// Sets the node name as seen by other udp_bridge nodes.
@@ -352,6 +368,28 @@ private:
                                std::string durability = "",
                                uint32_t history_depth = 0);
 
+  /// Handle a runtime parameter set: validate the whole proposed batch,
+  /// then apply all of it or none of it.
+  ///
+  /// Registered as the node's OnSetParameters callback at the END of
+  /// on_configure (see on_set_parameters_handle_ below for why last), so
+  /// it only ever sees a genuine `ros2 param set` — never a
+  /// declare_parameter during configuration. Two families are handled:
+  ///
+  ///   - the resend give-up diagnostic thresholds, whose validation is a
+  ///     cross-value check (warn <= error) and so is computed against the
+  ///     current values the batch does not change;
+  ///   - the per-connection tunables in runtime_tunables_, which were
+  ///     declared, read once in on_configure and then never looked at
+  ///     again — a set of one was accepted, read back and had no effect
+  ///     on the live Connection.
+  ///
+  /// Validation runs over the whole batch first: a batch containing one
+  /// bad value applies none of it, so a rejected set never leaves the
+  /// node half-changed.
+  rcl_interfaces::msg::SetParametersResult applyRuntimeParameters(
+    const std::vector<rclcpp::Parameter>& params);
+
   /// @brief Remove a source->remote forwarding added by addSubscriberConnection.
   ///
   /// Drops the (connection_id) rate entry for (source_topic, remote_node); when
@@ -519,8 +557,35 @@ private:
 
   // Handle for the parameter-change callback. Reset in on_cleanup so
   // re-configure cycles don't accumulate stale handles.
+  //
+  // Registered at the END of on_configure, deliberately. rclcpp calls an
+  // OnSetParameters callback for declare_parameter() as well as for
+  // set_parameter() (rclcpp/node.hpp: "the callback is called when
+  // declare_parameter() and its variants are called"), so a callback
+  // registered before the remotes/connections/topics declarations would
+  // see every YAML override on its way in — and REFUSING one there
+  // throws InvalidParameterValueException out of on_configure, which
+  // rclcpp_lifecycle swallows, leaving a half-configured node with the
+  // socket already bound. Registering last means the callback only ever
+  // sees a genuine runtime set, so it can validate strictly (see
+  // connection_tunables.h) while on_configure keeps its clamp-and-carry-on
+  // treatment of a mistyped config file.
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
     on_set_parameters_handle_;
+
+  // Runtime-settable per-connection tunables, keyed by full
+  // parameter name (see connection_tunables.h for why the mapping is
+  // built rather than parsed). Populated in on_configure as each
+  // parameter is declared, cleared at the start of on_configure and in
+  // on_cleanup. Read by the OnSetParameters callback.
+  //
+  // Guarded by its own mutex rather than one of the map mutexes: the
+  // callback already takes remote_nodes_mutex_ + subscribers_mutex_ to
+  // apply what it resolves, and this lookup happens before either is
+  // needed. Population finishes before the callback that reads it is
+  // registered, so the lock is defensive rather than load-bearing.
+  std::map<std::string, TunableTarget> runtime_tunables_;
+  mutable std::mutex runtime_tunables_mutex_;
 
   // Byte budget for publish_queue_ (issue #10). Declared as a ROS
   // parameter in on_configure (declareIfMissing) so deployments can size

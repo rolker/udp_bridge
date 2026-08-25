@@ -285,58 +285,6 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   RCLCPP_INFO_STREAM(get_logger(),
     "relay_queue_max_bytes: " << relay_queue_max_bytes_);
 
-  on_set_parameters_handle_ = add_on_set_parameters_callback(
-    [this](const std::vector<rclcpp::Parameter>& params)
-        -> rcl_interfaces::msg::SetParametersResult
-    {
-      rcl_interfaces::msg::SetParametersResult result;
-      result.successful = true;
-      // Take the reader's lock so the (read current → validate batch →
-      // apply) sequence is atomic against another concurrent set call,
-      // and so the reader can never observe a half-applied pair.
-      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-      // Compute the (warn, error) pair that would result from applying
-      // the batch on top of the current values, then validate the
-      // combined state in one pass — catches per-value problems
-      // (NaN/inf, negative) and cross-value problems (warn > error)
-      // together. See validateGiveupThresholds() in giveup_diagnostic.h.
-      bool warn_changed = false;
-      bool error_changed = false;
-      double proposed_warn = resend_giveup_warn_rate_per_s_;
-      double proposed_error = resend_giveup_error_rate_per_s_;
-      for(const auto& p: params)
-      {
-        if(p.get_name() == "resend_giveup_warn_rate_per_s")
-        {
-          proposed_warn = p.as_double();
-          warn_changed = true;
-        }
-        else if(p.get_name() == "resend_giveup_error_rate_per_s")
-        {
-          proposed_error = p.as_double();
-          error_changed = true;
-        }
-      }
-      auto validation = validateGiveupThresholds(proposed_warn, proposed_error);
-      if(!validation.ok)
-      {
-        result.successful = false;
-        result.reason = validation.reason;
-        return result;
-      }
-      resend_giveup_warn_rate_per_s_ = proposed_warn;
-      resend_giveup_error_rate_per_s_ = proposed_error;
-      if(warn_changed)
-        RCLCPP_INFO_STREAM(get_logger(),
-          "resend_giveup_warn_rate_per_s updated to "
-          << resend_giveup_warn_rate_per_s_ << "/s");
-      if(error_changed)
-        RCLCPP_INFO_STREAM(get_logger(),
-          "resend_giveup_error_rate_per_s updated to "
-          << resend_giveup_error_rate_per_s_ << "/s");
-      return result;
-    });
-
   // Remote-identity validation runs here, ahead of the socket: it needs only
   // parameters, and a CallbackReturn::FAILURE leaves the node UNCONFIGURED
   // *without* calling on_cleanup. Returning after the socket would leak the
@@ -345,11 +293,13 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // exit(1). Keep every parameter-only failure path above the socket block
   // for the same reason (issue #51).
   //
-  // "Ahead of the socket", not ahead of everything: on_set_parameters_handle_
-  // is already acquired at :288 (on_cleanup resets it), and a mistyped YAML
+  // "Ahead of the socket", not ahead of everything: a mistyped YAML
   // scalar can still throw out of the connections/topics loops after the bind
   // — rclcpp_lifecycle swallows that exception, so it is not an explicit
-  // failure path and this ordering does not protect it.
+  // failure path and this ordering does not protect it. (The
+  // OnSetParameters callback is registered at the very END of this
+  // method — see the note on on_set_parameters_handle_ in udp_bridge.h
+  // — so nothing it does can affect any failure path above.)
   declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
 
@@ -546,6 +496,17 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
                                     remote_identities.end());
   }
 
+  // Runtime-settable tunables are re-registered from scratch on every
+  // configure, for the same reason configured_remote_names_ is: a
+  // re-configure must describe the new config, not the old one. Cleared
+  // BEFORE the connection loop below fills it, and before the
+  // OnSetParameters callback that reads it is registered at the end of
+  // this method.
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    runtime_tunables_.clear();
+  }
+
   // Iterate the RESOLVED identities, not the raw remotes_list: a repeated
   // entry would otherwise construct and update the same RemoteNode twice
   // (two DDS publishers created and then discarded when the second
@@ -639,6 +600,25 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
         live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
         live_connection->setLinkHeadroomFraction(static_cast<float>(link_headroom_fraction));
+      }
+
+      // Register the four per-connection tunables as runtime-settable,
+      // keyed by the parameter names built above. Reading them once here
+      // used to be the whole story: a later `ros2 param set` was accepted
+      // by rclcpp, read back with the new value, and never reached the
+      // Connection. The mapping is recorded rather than parsed back out
+      // of the name at set time because a remote's wire name may itself
+      // contain '.' (#67), which makes the dotted path ambiguous.
+      {
+        std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+        runtime_tunables_[maximum_bytes_per_second_param] =
+          {TunableKind::ConnectionMaximumBytesPerSecond, remote_name, connection_name};
+        runtime_tunables_[resend_budget_fraction_param] =
+          {TunableKind::ResendBudgetFraction, remote_name, connection_name};
+        runtime_tunables_[admission_floor_bps_param] =
+          {TunableKind::AdmissionFloorBytesPerSecond, remote_name, connection_name};
+        runtime_tunables_[link_headroom_fraction_param] =
+          {TunableKind::LinkHeadroomFraction, remote_name, connection_name};
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
@@ -752,6 +732,21 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     [this](RelayItem&& item){ relayToOtherRemotes(std::move(item)); },
     relay_queue_max_bytes_);
 
+  // Runtime parameter changes. Registered LAST, after every
+  // declareIfMissing above: rclcpp invokes an OnSetParameters callback
+  // for declare_parameter() as well as for set_parameter(), so a
+  // callback registered earlier would also see every YAML override on
+  // its way in — and a rejection there throws out of on_configure past
+  // the bind. See the note on on_set_parameters_handle_ in udp_bridge.h.
+  // Registering last also means runtime_tunables_ is fully populated
+  // before anything can read it.
+  on_set_parameters_handle_ = add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter>& params)
+        -> rcl_interfaces::msg::SetParametersResult
+    {
+      return applyRuntimeParameters(params);
+    });
+
   return LifecycleNode::on_configure(state);
 }
 
@@ -831,6 +826,13 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
   // on_configure cycle starts fresh; otherwise the previous handle
   // would still be live and a duplicate would accumulate.
   on_set_parameters_handle_.reset();
+  // Drop the runtime-tunable registry with it. Reset AFTER the handle
+  // above, so the callback that reads the map is already unregistered
+  // and cannot observe it mid-clear.
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    runtime_tunables_.clear();
+  }
   // Per-remote diagnostic state: also clear, so an
   // activate→deactivate→activate cycle starts from a known baseline
   // rather than carrying stale GiveupRateState entries that would
@@ -1705,6 +1707,217 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
     // deadlock since it re-acquires subscribers_mutex_.
     sendBridgeInfo();
   }
+}
+
+rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
+  const std::vector<rclcpp::Parameter>& params)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // Phase 1 — resolve which of the proposed parameters are live
+  // tunables, under the registry's own lock and no other. A parameter
+  // this node does not recognise is left alone: rejecting unknown names
+  // is bad practice (rclcpp/node.hpp says so) and would break any other
+  // part of the node that later grows its own parameters.
+  struct PendingTunable
+  {
+    const rclcpp::Parameter* parameter;
+    TunableTarget target;
+  };
+  std::vector<PendingTunable> pending;
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    for(const auto& p: params)
+    {
+      auto it = runtime_tunables_.find(p.get_name());
+      if(it != runtime_tunables_.end())
+        pending.push_back({&p, it->second});
+    }
+  }
+
+  // Phase 2 — validate the WHOLE proposed batch before applying any of
+  // it, so a batch carrying one bad value leaves the node exactly as it
+  // was. Nothing is mutated in this phase.
+  //
+  // The type checks are defensive: rclcpp enforces a parameter's
+  // declared type before this callback runs, so a mismatch should be
+  // unreachable. They are here because as_double() / as_int() THROW on
+  // a mismatch, and a throw out of an OnSetParameters callback
+  // propagates to whoever called set_parameter — an operator's
+  // `ros2 param set` would see a crash rather than a reason string.
+  for(const auto& item: pending)
+  {
+    const std::string& name = item.parameter->get_name();
+    const auto type = item.parameter->get_type();
+    TunableValidation validation{true, ""};
+    switch(item.target.kind)
+    {
+      case TunableKind::AdmissionFloorBytesPerSecond:
+        if(type != rclcpp::ParameterType::PARAMETER_DOUBLE)
+          validation = {false, name + " must be a double"};
+        else
+          validation = validateAdmissionFloorBytesPerSecond(
+            name, item.parameter->as_double());
+        break;
+      case TunableKind::LinkHeadroomFraction:
+        if(type != rclcpp::ParameterType::PARAMETER_DOUBLE)
+          validation = {false, name + " must be a double"};
+        else
+          validation = validateLinkHeadroomFraction(
+            name, item.parameter->as_double());
+        break;
+      case TunableKind::ResendBudgetFraction:
+        if(type != rclcpp::ParameterType::PARAMETER_DOUBLE)
+          validation = {false, name + " must be a double"};
+        else
+          validation = validateResendBudgetFraction(
+            name, item.parameter->as_double());
+        break;
+      case TunableKind::ConnectionMaximumBytesPerSecond:
+        if(type != rclcpp::ParameterType::PARAMETER_INTEGER)
+          validation = {false, name + " must be an integer"};
+        else
+          validation = validateMaximumBytesPerSecond(
+            name, item.parameter->as_int());
+        break;
+    }
+    if(!validation.ok)
+    {
+      result.successful = false;
+      result.reason = validation.reason;
+      return result;
+    }
+  }
+
+  // Phase 3 — resolve every target and apply, under the maps' locks.
+  //
+  // One lock: remote_nodes_mutex_ guards both remote_nodes_ (which is
+  // how the live Connections are reached) and the give-up thresholds
+  // below. Taking the reader's lock makes the (read current -> validate
+  // -> apply) sequence atomic against a concurrent reader, so nothing
+  // observes a half-applied pair.
+  //
+  // The Connection setters are called with remote_nodes_mutex_ held.
+  // That is safe and deliberate: they take only that Connection's own
+  // config_mutex_ for a handful of scalar writes, do no I/O, and nothing
+  // inside Connection ever reaches back for a UDPBridge mutex, so no
+  // ordering cycle exists. It is emphatically NOT the pattern for
+  // setHostAndPort(), which resolves DNS.
+  std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+
+  // Resolve first, apply second: a target that has gone away must be
+  // reported as a failure rather than silently doing nothing. "Accepted,
+  // reads back, changes nothing" is the exact defect this whole callback
+  // exists to remove, so it must not be reintroduced for the case where
+  // the forwarding was removed at runtime.
+  std::vector<std::pair<const PendingTunable*, std::shared_ptr<Connection>>> resolved;
+  resolved.reserve(pending.size());
+  for(const auto& item: pending)
+  {
+    std::shared_ptr<Connection> connection;
+    auto remote_it = remote_nodes_.find(item.target.remote);
+    if(remote_it != remote_nodes_.end() && remote_it->second)
+      connection = remote_it->second->connection(item.target.connection_id);
+    if(!connection)
+    {
+      result.successful = false;
+      result.reason = item.parameter->get_name() + ": remote '"
+        + item.target.remote + "' connection '" + item.target.connection_id
+        + "' is not currently registered, so the value could not be applied";
+      return result;
+    }
+    resolved.emplace_back(&item, connection);
+  }
+
+  // Give-up thresholds. Compute the pair that would result from applying
+  // the batch on top of the current values, then validate the combined
+  // state in one pass — catches per-value problems (NaN/inf, negative)
+  // and cross-value problems (warn > error) together. See
+  // validateGiveupThresholds() in giveup_diagnostic.h.
+  bool warn_changed = false;
+  bool error_changed = false;
+  double proposed_warn = resend_giveup_warn_rate_per_s_;
+  double proposed_error = resend_giveup_error_rate_per_s_;
+  for(const auto& p: params)
+  {
+    if(p.get_name() == "resend_giveup_warn_rate_per_s")
+    {
+      if(p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
+      {
+        result.successful = false;
+        result.reason = "resend_giveup_warn_rate_per_s must be a double";
+        return result;
+      }
+      proposed_warn = p.as_double();
+      warn_changed = true;
+    }
+    else if(p.get_name() == "resend_giveup_error_rate_per_s")
+    {
+      if(p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
+      {
+        result.successful = false;
+        result.reason = "resend_giveup_error_rate_per_s must be a double";
+        return result;
+      }
+      proposed_error = p.as_double();
+      error_changed = true;
+    }
+  }
+  auto validation = validateGiveupThresholds(proposed_warn, proposed_error);
+  if(!validation.ok)
+  {
+    result.successful = false;
+    result.reason = validation.reason;
+    return result;
+  }
+
+  // Everything in the batch is valid and every target exists. Apply.
+  resend_giveup_warn_rate_per_s_ = proposed_warn;
+  resend_giveup_error_rate_per_s_ = proposed_error;
+  if(warn_changed)
+    RCLCPP_INFO_STREAM(get_logger(),
+      "resend_giveup_warn_rate_per_s updated to "
+      << resend_giveup_warn_rate_per_s_ << "/s");
+  if(error_changed)
+    RCLCPP_INFO_STREAM(get_logger(),
+      "resend_giveup_error_rate_per_s updated to "
+      << resend_giveup_error_rate_per_s_ << "/s");
+
+  for(const auto& entry: resolved)
+  {
+    const rclcpp::Parameter& parameter = *entry.first->parameter;
+    const TunableTarget& target = entry.first->target;
+    const std::shared_ptr<Connection>& connection = entry.second;
+    switch(target.kind)
+    {
+      case TunableKind::AdmissionFloorBytesPerSecond:
+        connection->setAdmissionFloorBytesPerSecond(
+          static_cast<float>(parameter.as_double()));
+        break;
+      case TunableKind::LinkHeadroomFraction:
+        connection->setLinkHeadroomFraction(
+          static_cast<float>(parameter.as_double()));
+        break;
+      case TunableKind::ResendBudgetFraction:
+        connection->setResendBudgetFraction(
+          static_cast<float>(parameter.as_double()));
+        break;
+      case TunableKind::ConnectionMaximumBytesPerSecond:
+        // setRateLimit's follow-or-clamp semantics apply unchanged: a
+        // raised limit binds immediately when no backoff has accumulated,
+        // and clamps rather than resets when it has, so tuning the cap
+        // mid-storm cannot wipe the AIMD state and burst the link.
+        connection->setRateLimit(static_cast<uint32_t>(parameter.as_int()));
+        break;
+    }
+    RCLCPP_INFO_STREAM(get_logger(),
+      parameter.get_name() << " applied to remote '" << target.remote
+      << "' connection '" << target.connection_id << "': "
+      << parameter.value_to_string());
+  }
+
+  return result;
 }
 
 void UDPBridge::removeSubscriberConnection(std::string const &source_topic,
@@ -2968,6 +3181,19 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
       "queued " + std::to_string(depth) + ", " + std::to_string(dropped)
       + " dropped total");
 }
+
+#ifdef UDP_BRIDGE_BUILD_TESTING
+std::shared_ptr<Connection> UDPBridge::connectionForTest(
+  const std::string& remote_name, const std::string& connection_id)
+{
+  // Same two-step lookup the diagnostics use, under the same lock.
+  std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+  auto remote_it = remote_nodes_.find(remote_name);
+  if(remote_it == remote_nodes_.end() || !remote_it->second)
+    return nullptr;
+  return remote_it->second->connection(connection_id);
+}
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
 // void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)
 // {
