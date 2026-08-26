@@ -144,6 +144,13 @@ if(BUILD_TESTING)
   # through the same helper so it gets UDP_BRIDGE_BUILD_TESTING too —
   # required for in-package ABI alignment per the helper's contract.
   add_udp_bridge_gtest(test_giveup_diagnostic test/test_giveup_diagnostic.cpp)
+  # test_connection_diagnostic (issue #52) pins the per-connection
+  # DiagnosticStatus level + summary: the EFFECTIVE admission cap is
+  # named on the surface an over-the-horizon operator reads, and
+  # deliberate admission shedding is distinguished from socket-level
+  # tx failures (one shared "tx failures/drops" wording hid both
+  # through the 2026-08-25 incident).
+  add_udp_bridge_gtest(test_connection_diagnostic test/test_connection_diagnostic.cpp)
   # Sender-side resend budget (issue #44): bounded-under-load,
   # ack-starvation backoff steps, never-received sentinel, max clamp.
   add_udp_bridge_gtest(test_resend_budget test/test_resend_budget.cpp)

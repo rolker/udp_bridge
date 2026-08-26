@@ -413,6 +413,19 @@ the system's model of link capacity.
 ROS 2 type hash: coordinated redeploy of both bridge ends, per the
 schema-evolution contract documented in `Remote.msg`.
 
+The **per-connection diagnostic** (`diagnoseConnection`) carries the same
+numbers with no schema cost, which is where an over-the-horizon operator
+actually looks: `effective_rate_limit_bytes_per_sec`,
+`admission_refractory_window_s` and `admission_floor_bytes_per_sec`
+alongside the configured `rate_limit_bytes_per_sec`. The summary line
+names the cap when one is in force, and distinguishes deliberate
+admission **shedding** from socket-level **tx failures** — a single
+"tx failures/drops" wording covered both through the 2026-08-25 incident,
+and a throttled connection sits in that state continuously. The level and
+summary are decided by `computeConnectionDiagnostic`
+(`include/udp_bridge/connection_diagnostic.h`), pinned by
+`test/test_connection_diagnostic.cpp`.
+
 ## Verification
 
 `test/test_admission_control.cpp` pins: decrease-on-congestion (purely

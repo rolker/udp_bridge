@@ -39,6 +39,7 @@
 //     read-only afterward — no synchronization needed.
 
 #include "udp_bridge/udp_bridge.h"
+#include "udp_bridge/connection_diagnostic.h"
 #include "udp_bridge/qos_resolution.h"
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/relay_send.h"
@@ -2860,7 +2861,27 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
 
   stat.add("host", connection->host());
   stat.add("port", static_cast<int>(connection->port()));
-  stat.add("rate_limit_bytes_per_sec", static_cast<unsigned int>(connection->rateLimit()));
+  const uint32_t configured_rate_limit = connection->rateLimit();
+  const uint32_t effective_rate_limit = connection->effectiveRateLimit();
+  stat.add("rate_limit_bytes_per_sec", static_cast<unsigned int>(configured_rate_limit));
+  // The AIMD cap and the refractory window, on the surface an
+  // over-the-horizon operator actually looks at (#52).
+  //
+  // `rate_limit_bytes_per_sec` above is the CONFIGURED limit — the
+  // number that never moves. On 2026-08-25 the controller collapsed the
+  // effective cap to the floor and this diagnostic went on reporting the
+  // configured value, so the collapse was invisible: the only other
+  // place `effective_rate_limit` appears is a BridgeInfo field, which
+  // requires subscribing to a bridge topic and diffing two numbers by
+  // eye. That is precisely what did not happen. The message-schema
+  // argument for deferring more visibility to #75 (a field costs a
+  // type-hash break and a coordinated redeploy) does not apply to a
+  // diagnostic KeyValue, which costs neither.
+  stat.add("effective_rate_limit_bytes_per_sec",
+           static_cast<unsigned int>(effective_rate_limit));
+  stat.add("admission_refractory_window_s",
+           connection->currentAdmissionRefractoryWindowSeconds());
+  stat.add("admission_floor_bytes_per_sec", connection->admissionFloorBytesPerSecond());
   stat.add("tx_ok_bytes_per_sec", totals.success_bytes_per_second);
   stat.add("tx_failed_bytes_per_sec", totals.failed_bytes_per_second);
   stat.add("tx_dropped_bytes_per_sec", totals.dropped_bytes_per_second);
@@ -2872,27 +2893,12 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
   constexpr double kStaleWarnSeconds = 5.0;
   constexpr double kStaleErrorSeconds = 10.0;
 
-  std::string summary = "tx " + std::to_string(static_cast<uint64_t>(totals.success_bytes_per_second))
-                      + " B/s, rx " + std::to_string(static_cast<uint64_t>(rx.first)) + " B/s";
-
-  if(last_rx > 0.0 && rx_age > kStaleErrorSeconds)
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
-                 "no rx for " + std::to_string(static_cast<uint64_t>(rx_age)) + "s");
-  }
-  else if(totals.failed_bytes_per_second > 0 || totals.dropped_bytes_per_second > 0)
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "tx failures/drops");
-  }
-  else if(last_rx > 0.0 && rx_age > kStaleWarnSeconds)
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
-                 "no rx for " + std::to_string(static_cast<uint64_t>(rx_age)) + "s");
-  }
-  else
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, summary);
-  }
+  const auto diagnostic = computeConnectionDiagnostic(
+    configured_rate_limit, effective_rate_limit,
+    totals.success_bytes_per_second, totals.failed_bytes_per_second,
+    totals.dropped_bytes_per_second, rx.first, rx_age,
+    kStaleWarnSeconds, kStaleErrorSeconds);
+  stat.summary(diagnostic.level, diagnostic.message);
 }
 
 void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,
