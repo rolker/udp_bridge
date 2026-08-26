@@ -1,5 +1,7 @@
 #include "udp_bridge/statistics.h"
 
+#include <algorithm>
+
 namespace udp_bridge
 {
 
@@ -173,6 +175,34 @@ uint64_t PacketSendStatistics::bytes_in_window(PacketSendCategory category, rclc
     total += entry.size;
   }
   return total;
+}
+
+float PacketSendStatistics::success_rate_in_window(rclcpp::Time time, double window_seconds) const
+{
+  // Same full-deque scan as can_send / bytes_in_window — the deque is not
+  // monotone in timestamps under the reserve-then-record pattern, so a
+  // skip-prefix scan would be incorrect. Bounded to ~10 s of records.
+  const auto window_start = time - rclcpp::Duration::from_seconds(window_seconds);
+  uint64_t total = 0;
+  rclcpp::Time earliest;
+  for(const auto& entry : data_)
+  {
+    if(entry.timestamp < window_start)
+      continue;
+    if(entry.send_result != SendResult::success)
+      continue;
+    total += entry.size;
+    if(earliest.nanoseconds() == 0 || entry.timestamp < earliest)
+      earliest = entry.timestamp;
+  }
+  if(total == 0)
+    return 0.0f;
+  // dt floor of 1 s mirrors data_receive_rate: a window holding only a
+  // few hundred milliseconds of samples must not report a rate spike.
+  double dt = 1.0;
+  if(earliest.nanoseconds() != 0)
+    dt = std::max(dt, (time - earliest).seconds());
+  return static_cast<float>(static_cast<double>(total) / dt);
 }
 
 bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const

@@ -620,6 +620,10 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       declareIfMissing(link_headroom_fraction_param, static_cast<double>(kDefaultLinkHeadroomFraction));
       double link_headroom_fraction = get_parameter(link_headroom_fraction_param).as_double();
 
+      std::string admission_refractory_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_refractory_period_seconds";
+      declareIfMissing(admission_refractory_param, kDefaultAdmissionRefractoryPeriodSeconds);
+      double admission_refractory = get_parameter(admission_refractory_param).as_double();
+
       remote_info.connections.push_back(connection);
       remote_node->update(remote_info);
 
@@ -631,14 +635,24 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // created there keep the field-initializer defaults
       // (kDefaultResendBudgetFraction,
       // kDefaultAdmissionFloorBytesPerSecond,
-      // kDefaultLinkHeadroomFraction); the parameters here are the only
-      // non-default source (see doc/resend_budget_design.md and
-      // doc/admission_control_design.md).
+      // kDefaultLinkHeadroomFraction,
+      // kDefaultAdmissionRefractoryPeriodSeconds); the parameters here
+      // are the only non-default source (see doc/resend_budget_design.md
+      // and doc/admission_control_design.md).
+      //
+      // All of these are configure-time only, which is the property RCA
+      // item D names as what blocked live mitigation on 2026-08-25 — the
+      // admission floor could not be raised from the boat while it was
+      // the problem. issue #76 is in flight to make connection
+      // parameters runtime-reconfigurable;
+      // admission_refractory_period_seconds joins the same set and
+      // should be revisited with it.
       if(auto live_connection = remote_node->connection(connection_name))
       {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
         live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
         live_connection->setLinkHeadroomFraction(static_cast<float>(link_headroom_fraction));
+        live_connection->setAdmissionRefractoryPeriodSeconds(admission_refractory);
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";

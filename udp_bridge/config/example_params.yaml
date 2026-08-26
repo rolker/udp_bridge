@@ -114,6 +114,20 @@
             # rate limit, is what keeps a degraded link usable by others.
             link_headroom_fraction: 0.2
 
+            # Minimum interval between admission-control decisions, in
+            # SECONDS (issue #52; see doc/admission_control_design.md).
+            # While the window is open the controller freezes — no
+            # decrease and no recovery — so one congestion episode costs
+            # at most one backoff. Without it, the 2026-08-25 Appledore
+            # transit turned a single marginal delivery sample into seven
+            # halvings in 12 s, 35 times in 9.5 hours.
+            #
+            # Note the DOUBLE literal: `5.0`, not `5`. An integer here is
+            # an integer parameter to ROS 2 and the node's as_double()
+            # read throws — the same trap admission_floor_bytes_per_second
+            # hit above.
+            admission_refractory_period_seconds: 5.0
+
             # List of topics to forward over this connection.
             topics_list: ["/robot_a/odometry", "/robot_a/battery"]
 

@@ -163,6 +163,71 @@ inline constexpr float kAdmissionLossThreshold = 0.1f;
 // 13% of that same degraded 62.5 kB/s link.
 inline constexpr float kDefaultAdmissionFloorBytesPerSecond = 8192.0f;
 
+// Refractory period between admission decreases (issue #52, the
+// 2026-08-25 Appledore RCA). The controller runs on every BridgeInfo
+// arrival (~2 s in the field), and before this constant existed each
+// arriving congested sample applied another kAdmissionDecreaseFactor.
+// On the Isles of Shoals transit that turned ONE marginal delivery
+// sample (442300/513563 = 0.86 against a 0.9 threshold) into seven
+// halvings in 12 s: a 183x cap reduction, 35 times in 9.5 hours,
+// 1.95 GB discarded at the boat's own gate while Starlink reported
+// 0.0-0.05% drop and flat 17-24 ms latency throughout.
+//
+// While the window is active the controller freezes: NO sample is acted
+// on, congested or clean. That is deliberate and unconditional on
+// sample type — letting a clean sample recover inside the window would
+// re-open the same feedback path from the other side (recover, re-trigger,
+// halve) and, per the review model, changes both field-replay gate
+// outcomes.
+//
+// 5.0 s is not "a couple of feedback intervals" picked by feel: it is
+// the length of the receive-rate measurement window both ends use
+// (Connection::data_receive_rate, and the sender-side window the
+// congestion detector now matches against it). One full window is the
+// shortest interval after which BOTH filters describe traffic sent at
+// the new cap rather than the old one — reacting again before that is
+// reacting to our own previous decrease.
+inline constexpr double kDefaultAdmissionRefractoryPeriodSeconds = 5.0;
+
+// Growth factor applied to the refractory window on each successive
+// decrease within an UNRESOLVED congestion episode (no clean sample
+// seen since the last decrease). Mirrors the exponential backoff the
+// resend re-request path already uses (kResendBackoffBase /
+// kResendBackoffCap) rather than inventing a second idiom. The recorded
+// onset stays "congested" on the raw ratio for its full ~14 s — the
+// sender's own rate keeps falling, which is itself an artifact of the
+// pre-fix controller that produced the trace — so a single fixed window
+// still permits a third and fourth halving inside one episode.
+inline constexpr double kAdmissionRefractoryGrowthFactor = 2.0;
+
+// Cap on the grown window, as a multiple of the configured base — so an
+// operator who retunes the base retunes the ceiling with it.
+//
+// 2x (10 s at the default base) is bounded on both sides. Below: one
+// growth step is what the field-replay onset needs to hold the recorded
+// cascade to two decreases. Above: the range-degradation bench holds
+// each phase for 10 s, so a window grown past that could not react
+// inside a phase at all, and the smoothed statistics deque only retains
+// 10 s of history — freezing longer than the whole measurement record
+// means deciding on evidence the controller can no longer see.
+inline constexpr double kAdmissionRefractoryMaximumMultiple = 2.0;
+
+// Window, in seconds, over which the congestion detector measures OUR
+// OWN send rate (issue #52).
+//
+// The detector compares what the remote reports receiving against what
+// we sent. Before this, the two sides of that ratio came from
+// differently-shaped filters: the remote's figure from a 5 s box filter
+// (Connection::data_receive_rate), ours from PacketSendStatistics::get(),
+// a variable-span 1-10 s filter. 16.1% of samples in the field data
+// showed remote_rx > 1.05 x sent_on_wire — physically impossible if both
+// described the same interval — proving the ratio was dominated by
+// filter skew during any transient rather than by loss. Matching the
+// sender's window to the receiver's 5 s window narrows that skew; it
+// does not eliminate it (propagation delay remains), which is why the
+// refractory period above is the primary defence.
+inline constexpr double kAdmissionSendRateWindowSeconds = 5.0;
+
 // Default fraction of measured goodput deliberately left unused, so a
 // co-tenant on the same path (an SSH session, the operator's own
 // management traffic) is not starved by the bridge.
@@ -177,6 +242,19 @@ inline constexpr float kDefaultAdmissionFloorBytesPerSecond = 8192.0f;
 // abandons.
 //
 // Overridable per connection via `link_headroom_fraction`.
+//
+// CURRENTLY INERT (issue #52, 2026-08-25). Its only call site was the
+// congested branch's `min(cap x 0.5, (1 - headroom) x goodput)` clamp,
+// which that pass removed: measured goodput is depressed by the very
+// throttling the formula was computing, so the clamp was a positive
+// feedback loop. On the recorded onset its first step alone landed at
+// 0.8 x (254615 - 51715) = 162320 — below the regression bound — before
+// any second decrease existed for the refractory gate to suppress, and
+// no refractory value rescued it. The parameter is retained (removing it
+// would break existing configs that set it) and still reported, but the
+// control law no longer reads it. See doc/admission_control_design.md,
+// "link_headroom_fraction after the clamp removal", for the measurement
+// that settled this and the follow-up it is tracked under.
 inline constexpr float kDefaultLinkHeadroomFraction = 0.2f;
 
 // To convert a constant to seconds-as-double at a call site, use

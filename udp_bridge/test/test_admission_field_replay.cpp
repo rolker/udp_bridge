@@ -164,6 +164,34 @@ protected:
       conn.send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, t);
   }
 
+  // Offer `bytes_per_second` spread evenly across the interval ENDING at
+  // t, rather than as one instantaneous burst.
+  //
+  // send_at_rate above stamps a whole second's worth of bytes at a single
+  // instant, which is adequate for the two replays above — they feed the
+  // detector recorded or analytically-derived rates and only need SOME
+  // send history to exist. It is not adequate here: this test asserts
+  // where the controller CONVERGES, so the rate the detector measures has
+  // to be the rate the test believes it is offering. Bunched at one
+  // timestamp, a 1.975 s cadence carrying 1 s of bytes reads ~25% low
+  // over the 5 s measurement window, which would move the convergence
+  // band for reasons that have nothing to do with the control law.
+  void send_over_interval(udp_bridge::Connection& conn, rclcpp::Time t,
+                          double interval, float bytes_per_second)
+  {
+    const int packets =
+      std::max(0, static_cast<int>(bytes_per_second * interval) / kPacketSize);
+    if(packets == 0)
+      return;
+    std::vector<uint8_t> data(kPacketSize, 0xCD);
+    for(int i = 0; i < packets; ++i)
+    {
+      const double offset = interval * static_cast<double>(i + 1) / packets;
+      conn.send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message,
+                t - rclcpp::Duration::from_seconds(interval - offset));
+    }
+  }
+
   SocketFd listener_sock_;
   SocketFd send_sock_;
   uint16_t listener_port_ = 0;
@@ -261,4 +289,120 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
 
   EXPECT_GT(conn->effectiveRateLimit(), kFieldRateLimit / 2)
     << "Two minutes after a 4 s blip the cap must be usable again.";
+}
+
+// THE OTHER SIDE OF THE GATE.
+//
+// Both tests above assert only that the cap does NOT fall. Nothing above
+// asserts that it still falls when it genuinely should — and that gap is
+// not hypothetical. The `review-plan` pass on this cycle's work plan
+// modelled the originally-proposed EWMA smoothing of the received signal
+// and found that at alpha = 0.2 the controller never registers congestion
+// at all: the cap stays pinned at 1500000 for the whole recorded onset,
+// and BOTH tests above go green on a controller that has stopped working.
+// A tuning loop whose only oracle is a one-sided gate can converge there.
+//
+// So: a link whose real capacity drops and STAYS down. Not a recorded
+// transient and not a handover blip — a sustained 10x reduction, the
+// regime the admission controller exists for. The controller must find
+// it, and must find it in seconds, because issue #52's over_horizon phase
+// needs it capable of reacting again once the link returns.
+//
+// This is also what bounds the refractory backoff cap in A1: seven
+// halvings at an unboundedly-growing refractory window is minutes, and
+// this test fails long before that.
+TEST_F(AdmissionFieldReplay, SustainedRealLossMustConverge)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto t = t0;
+  auto conn = make_connection();
+
+  // Offered load is the field day's measured median; the path can carry
+  // a tenth of it and no more, for the whole run.
+  constexpr float kOfferedBps = 495000.0f;
+  constexpr float kTrueCapacityBps = 150000.0f;
+  constexpr int kSteps = 60;                    // ~118 s of feedback
+
+  // Bounds, and why these numbers.
+  //
+  //  - CONVERGENCE DEADLINE 40 s: the controller must be at or below 2x
+  //    true capacity by then. The design reaches it in ~18 s (halvings at
+  //    t = 0, ~6, ~18 as the refractory window grows 5 -> 10 s), so 40 s
+  //    is roughly two windows of slack — tight enough that a refractory
+  //    cap grown to the minutes-scale fails here, loose enough not to
+  //    pin the exact schedule.
+  //  - BAND [0.5x, 2x] capacity in steady state: AIMD does not settle on
+  //    a value, it oscillates — halving until the cap is under capacity,
+  //    then recovering 10% per clean sample until it is over again. The
+  //    band is what that oscillation is allowed to span. The lower half
+  //    is the load-bearing half: a controller that collapses to the
+  //    8192 floor on a link delivering 150 kB/s is the 2026-08-25 defect,
+  //    and 0.5x is ~9x above that floor.
+  constexpr double kConvergenceDeadlineSeconds = 40.0;
+  const uint32_t kBandLow = static_cast<uint32_t>(kTrueCapacityBps * 0.5f);
+  const uint32_t kBandHigh = static_cast<uint32_t>(kTrueCapacityBps * 2.0f);
+
+  bool converged = false;
+  double converged_at = -1.0;
+  uint32_t lowest_after_convergence = kFieldRateLimit;
+  uint32_t highest_after_convergence = 0;
+  int steady_samples = 0;
+
+  for(int i = 0; i < kSteps; ++i)
+  {
+    const float cap = static_cast<float>(conn->effectiveRateLimit());
+    const float admitted = std::min(kOfferedBps, cap);
+    send_over_interval(*conn, t, kFeedbackInterval, admitted);
+    conn->update_last_receive_time(t.seconds(), 100, false);
+
+    // The link is the binding constraint, not our gate: it carries what
+    // it can carry and drops the rest.
+    const float delivered = std::min(admitted, kTrueCapacityBps);
+    conn->updateAdmissionControl(delivered, 0.0f, t);
+
+    const double elapsed = (t - t0).seconds();
+    const uint32_t now_cap = conn->effectiveRateLimit();
+    if(!converged && now_cap <= kBandHigh)
+    {
+      converged = true;
+      converged_at = elapsed;
+    }
+    // Judge the band only once the run has settled — the first 60 s
+    // includes the descent itself, which legitimately sits above the
+    // band on its way down.
+    if(elapsed > 60.0)
+    {
+      ++steady_samples;
+      lowest_after_convergence = std::min(lowest_after_convergence, now_cap);
+      highest_after_convergence = std::max(highest_after_convergence, now_cap);
+    }
+
+    t = t + rclcpp::Duration::from_seconds(kFeedbackInterval);
+  }
+
+  ASSERT_TRUE(converged)
+    << "The cap never came down to " << kBandHigh << " B/s on a link "
+       "delivering " << kTrueCapacityBps << " B/s for two minutes. The "
+       "controller has stopped detecting congestion — which is exactly "
+       "how a smoothing/refractory tuning can make the two tests above "
+       "pass while the control loop no longer works.";
+  EXPECT_LT(converged_at, kConvergenceDeadlineSeconds)
+    << "Converged, but after " << converged_at << " s. Sustained real "
+       "loss has to be found in seconds: issue #52's over_horizon phase "
+       "needs the controller able to react again inside a bounded window "
+       "once the link returns, and a refractory window allowed to grow "
+       "without bound defeats that.";
+
+  ASSERT_GT(steady_samples, 0);
+  EXPECT_GT(lowest_after_convergence, kBandLow)
+    << "After converging, the cap dipped to " << lowest_after_convergence
+    << " B/s against a real capacity of " << kTrueCapacityBps
+    << ". Finding the capacity must not turn into collapsing past it — "
+       "the field failure was a controller that kept going to the floor.";
+  EXPECT_LE(highest_after_convergence, kBandHigh)
+    << "After converging, the cap climbed back to "
+    << highest_after_convergence << " B/s and stayed above the band. "
+       "Additive recovery must not out-run the decrease on a link that "
+       "is still degraded.";
 }

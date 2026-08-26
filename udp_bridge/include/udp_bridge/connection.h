@@ -64,6 +64,28 @@ public:
   void setLinkHeadroomFraction(float fraction);
   float linkHeadroomFraction() const;
 
+  /// Set the minimum interval, in seconds, between admission-control
+  /// decisions (issue #52). While the refractory window is open the
+  /// controller freezes: no decrease AND no additive recovery, whatever
+  /// the arriving sample says. Negative values and NaN fall back to
+  /// kDefaultAdmissionRefractoryPeriodSeconds; 0 disables the gate
+  /// (every sample is acted on — the pre-#52 behaviour that produced
+  /// the 2026-08-25 collapse, available only because an operator may
+  /// need to reproduce it).
+  ///
+  /// Setting this also resets the currently-open window and any
+  /// accumulated exponential growth, so a reconfiguration cannot leave
+  /// the controller frozen under the old value.
+  void setAdmissionRefractoryPeriodSeconds(double seconds);
+  double admissionRefractoryPeriodSeconds() const;
+
+  /// The refractory window currently in force, in seconds — the base
+  /// period grown by kAdmissionRefractoryGrowthFactor for each
+  /// successive decrease within an unresolved congestion episode, capped
+  /// at base x kAdmissionRefractoryMaximumMultiple, and reset to the base
+  /// by the first clean sample. Exposed for tests and diagnostics.
+  double currentAdmissionRefractoryWindowSeconds() const;
+
   /// Most recent goodput estimate for this connection, bytes/second:
   /// the remote's reported received rate minus its reported duplicate
   /// rate, from the last updateAdmissionControl() sample. 0.0 before
@@ -87,16 +109,34 @@ public:
   /// Applies AIMD to the effective rate limit: on congestion (delivery
   /// below (1 - kAdmissionLossThreshold) of our sent rate, or this
   /// connection's own feedback stale for kAckStarvationThreshold)
-  /// decrease to the lower of a multiplicative halving and the headroom
-  /// target (1 - link_headroom_fraction_) * goodput, floored at
-  /// admission_floor_bytes_per_second_; on clean feedback recover by a
-  /// step relative to the CURRENT effective cap.
+  /// decrease PURELY multiplicatively from the current cap —
+  /// max(floor, effective_rate_limit_ * kAdmissionDecreaseFactor); on
+  /// clean feedback recover by a step relative to the CURRENT effective
+  /// cap.
   ///
-  /// The headroom target is applied only on the congested branch.
-  /// Measured goodput is bounded above by offered load, so it is a
-  /// lower bound on capacity and never an estimate of it — clamping to
-  /// it unconditionally would ratchet a healthy, lightly-loaded link
-  /// down to nothing.
+  /// The decrease no longer targets (1 - link_headroom_fraction_) *
+  /// goodput (issue #52, 2026-08-25). Goodput is depressed by the very
+  /// throttling the target was computing — a positive feedback loop that
+  /// drove the recorded field onset below the regression bound on its
+  /// FIRST step, at any refractory tuning. The controller now backs off
+  /// from its own last known-good state instead of from a measurement it
+  /// contaminated. `link_headroom_fraction_` consequently has no call
+  /// site in the control law; see resend_constants.h and
+  /// doc/admission_control_design.md.
+  ///
+  /// REFRACTORY GATE (issue #52). At most one decision per congestion
+  /// epoch: while the window opened by the last decrease is still open,
+  /// the sample is recorded (goodput is still updated, it is a
+  /// measurement) but the cap is left exactly as-is — no decrease, and
+  /// no additive recovery either. The window grows exponentially on
+  /// repeated decreases within an unresolved episode and resets to the
+  /// base on the first clean sample. Without it, one marginal sample
+  /// became seven halvings in 12 s on 2026-08-25.
+  ///
+  /// The sent side of the comparison is measured over
+  /// kAdmissionSendRateWindowSeconds — the same window the remote uses
+  /// to produce the figure it echoes back — rather than over
+  /// PacketSendStatistics::get()'s variable 1-10 s span.
   ///
   /// Reads the stats and receive-history mutexes before config_mutex_ —
   /// never nested.
@@ -269,7 +309,32 @@ private:
 
   /// Fraction of measured goodput left unused for co-tenant traffic
   /// (issue #52). Guarded by config_mutex_.
+  ///
+  /// Retained as configuration and still reported, but READ BY NOTHING
+  /// in the control law since the 2026-08-25 clamp removal — see
+  /// updateAdmissionControl above and kDefaultLinkHeadroomFraction.
   float link_headroom_fraction_ = kDefaultLinkHeadroomFraction;
+
+  /// Time (seconds, from the clock updateAdmissionControl is called
+  /// with) of the most recent admission DECREASE, or 0.0 when no
+  /// decrease is outstanding — which is also how "the episode resolved"
+  /// is represented: the first clean sample evaluated after a decrease
+  /// clears this back to 0.0. Guarded by config_mutex_.
+  double last_admission_decrease_time_ = 0.0;
+
+  /// Configured base refractory period, seconds (issue #52). Guarded by
+  /// config_mutex_.
+  double admission_refractory_period_seconds_ =
+    kDefaultAdmissionRefractoryPeriodSeconds;
+
+  /// The window actually in force after the most recent decrease: the
+  /// base, grown by kAdmissionRefractoryGrowthFactor once per successive
+  /// decrease within an unresolved episode and capped at
+  /// base x kAdmissionRefractoryMaximumMultiple. Reset to the base by a
+  /// clean sample and by setAdmissionRefractoryPeriodSeconds. Guarded by
+  /// config_mutex_.
+  double admission_refractory_current_seconds_ =
+    kDefaultAdmissionRefractoryPeriodSeconds;
 
   /// Latest goodput estimate (remote received minus remote duplicates),
   /// bytes/second, from the last updateAdmissionControl() sample.

@@ -145,6 +145,36 @@ float Connection::linkHeadroomFraction() const
   return link_headroom_fraction_;
 }
 
+void Connection::setAdmissionRefractoryPeriodSeconds(double seconds)
+{
+  // NaN and negative values fall back to the default (the contract in
+  // connection.h). 0 is accepted and means "no gate": every sample is
+  // acted on, which is the pre-#52 behaviour. It is reachable on purpose
+  // — an operator reproducing the 2026-08-25 collapse needs it — but it
+  // is not a safe default, so a garbage value must not land there.
+  if(std::isnan(seconds) || seconds < 0.0)
+    seconds = kDefaultAdmissionRefractoryPeriodSeconds;
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  admission_refractory_period_seconds_ = seconds;
+  // Reset the in-force window and any accumulated growth. Without this a
+  // reconfiguration made while a grown window is open would leave the
+  // controller frozen under the OLD value it was just told to abandon.
+  admission_refractory_current_seconds_ = seconds;
+  last_admission_decrease_time_ = 0.0;
+}
+
+double Connection::admissionRefractoryPeriodSeconds() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return admission_refractory_period_seconds_;
+}
+
+double Connection::currentAdmissionRefractoryWindowSeconds() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return admission_refractory_current_seconds_;
+}
+
 float Connection::goodputBytesPerSecond() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
@@ -167,12 +197,20 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // constraint is created (send() likewise acquires them one at a
   // time). Keep it that way: nesting any of them would introduce an
   // ordering requirement that nothing else in Connection has.
-  udp_bridge_interfaces::msg::DataRates sent;
+  // Measure OUR send rate over the same window the remote used to
+  // produce the figure it is echoing back (issue #52). Previously this
+  // read PacketSendStatistics::get(), a variable-span 1-10 s filter,
+  // and compared it against the remote's 5 s box filter: 16.1% of the
+  // 2026-08-25 field samples reported the remote receiving MORE than we
+  // sent, which is physically impossible if both described the same
+  // interval and identifies filter skew — not loss — as what the ratio
+  // was actually measuring during a transient.
+  float sent_bps;
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    sent = sent_packet_statistics_.get();
+    sent_bps = sent_packet_statistics_.success_rate_in_window(
+      now, kAdmissionSendRateWindowSeconds);
   }
-  const float sent_bps = sent.success_bytes_per_second;
   const double receive_time = last_receive_time();  // own mutex inside
 
   // Stale-feedback fallback: nothing received on THIS connection for a
@@ -258,7 +296,29 @@ void Connection::updateAdmissionControl(float remote_received_bps,
       : 0.0f;
 
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  // Store goodput BEFORE the refractory gate below. The gate freezes the
+  // controller's DECISION, not its perception: goodput is a measurement
+  // the resend budget also consumes, and withholding it would starve an
+  // unrelated loop of fresh data for the length of the window.
   goodput_bytes_per_second_ = goodput;
+
+  // REFRACTORY GATE (issue #52). One decision per congestion epoch.
+  //
+  // The freeze is unconditional on sample type: inside the window a
+  // CLEAN sample gets no additive recovery either. Recovering mid-window
+  // would re-open the loop from the other side — recover, re-cross the
+  // threshold on the next differently-filtered sample, halve again —
+  // and it changes the outcome of both committed field-replay
+  // regression tests.
+  //
+  // A backwards clock step (elapsed < 0) expires the window rather than
+  // freezing the controller until the clock catches up.
+  if(last_admission_decrease_time_ > 0.0)
+  {
+    const double elapsed = now.seconds() - last_admission_decrease_time_;
+    if(elapsed >= 0.0 && elapsed < admission_refractory_current_seconds_)
+      return;
+  }
 
   // The floor is absolute (#52) but can never exceed the configured
   // cap: an operator who sets a floor above a connection's own limit
@@ -268,25 +328,42 @@ void Connection::updateAdmissionControl(float remote_received_bps,
 
   if(congested)
   {
-    float decreased = effective_rate_limit_ * kAdmissionDecreaseFactor;
-    // Headroom target: aim at a fraction of what the link is actually
-    // delivering, so a co-tenant (SSH, operator management traffic)
-    // keeps a share. Applied ONLY here. Measured goodput is bounded
-    // above by offered load, so it is a lower bound on capacity, never
-    // an estimate of it — clamping to it on the clean branch too would
-    // ratchet a healthy, lightly-loaded link down to nothing.
-    //
-    // Unusable feedback (stale, a non-finite report, or a duplicate rate
-    // above received) carries no trustworthy goodput reading, so it falls
-    // back to the multiplicative decrease alone rather than targeting a
-    // number we did not measure (such a report yields goodput 0, which
-    // would otherwise slam the cap to the floor on a single bad sample).
-    if(!feedback_unusable)
-      decreased = std::min(decreased, (1.0f - link_headroom_fraction_) * goodput);
-    effective_rate_limit_ = std::max(floor, decreased);
+    // Grow the window if this episode never resolved — the recorded
+    // onset reads congested on the raw ratio for its full ~14 s, because
+    // each decrease shrinks our own send rate and so widens the very
+    // filter skew that triggered the detector. A fixed window still
+    // permits a third and fourth halving inside one such episode.
+    if(last_admission_decrease_time_ > 0.0)
+      admission_refractory_current_seconds_ =
+        std::min(admission_refractory_current_seconds_ * kAdmissionRefractoryGrowthFactor,
+                 admission_refractory_period_seconds_ * kAdmissionRefractoryMaximumMultiple);
+    else
+      admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
+    last_admission_decrease_time_ = now.seconds();
+
+    // Purely multiplicative decrease from the controller's own last
+    // known-good state. The (1 - link_headroom_fraction_) * goodput
+    // clamp that used to bound this was removed on 2026-08-25: goodput
+    // is depressed by the throttling the clamp was computing, so it fed
+    // back on itself. On the recorded onset the clamp's FIRST step alone
+    // landed at 0.8 x (254615 - 51715) = 162320 — already below the
+    // regression bound — and no refractory tuning rescued it. Nor is
+    // goodput a capacity estimate when the gate is not limiting: the
+    // code comment above says it is bounded by OFFERED load, and the
+    // field day's operating point was ~495 kB/s offered against a
+    // 1500000 cap, making the clamp a 3.8x cut carrying no capacity
+    // information at all.
+    effective_rate_limit_ =
+      std::max(floor, effective_rate_limit_ * kAdmissionDecreaseFactor);
   }
   else
   {
+    // The episode resolved: clear the outstanding decrease and give back
+    // the accumulated exponential growth, so the NEXT episode starts
+    // from the base window rather than inheriting this one's ceiling.
+    last_admission_decrease_time_ = 0.0;
+    admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
+
     // Additive recovery relative to where the controller currently is,
     // with an absolute minimum so escaping the floor is not
     // asymptotically slow. Cap-relative steps were the #52 defect: on a

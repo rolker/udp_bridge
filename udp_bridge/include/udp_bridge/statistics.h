@@ -97,6 +97,20 @@ public:
   /// to stop.
   uint64_t bytes_in_window(PacketSendCategory category, rclcpp::Time time) const;
 
+  /// Successfully-sent bytes per second across ALL categories, measured
+  /// over the `window_seconds` window ending at `time` (issue #52).
+  ///
+  /// Deliberately shaped like Connection::data_receive_rate rather than
+  /// like get(): same fixed window, same `dt = max(1.0, time - oldest
+  /// sample in window)` divisor. The admission controller compares this
+  /// against the remote's echoed receive rate, which is produced by
+  /// exactly that filter on the far end; get()'s variable 1-10 s span
+  /// cannot be matched to it at any tuning, and the mismatch is what
+  /// made 16.1% of field samples report the remote receiving MORE than
+  /// we sent. Use this, not get(), for anything that is compared against
+  /// a figure measured by the other end.
+  float success_rate_in_window(rclcpp::Time time, double window_seconds) const;
+
 private:
   udp_bridge_interfaces::msg::DataRates get(PacketSendCategory *category) const;
 
