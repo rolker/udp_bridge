@@ -74,6 +74,45 @@ using namespace udp_bridge_interfaces::srv;
 using namespace std::placeholders;
 using namespace std::chrono_literals;
 
+namespace
+{
+
+// A rate limit at or below the connection's admission floor makes AIMD
+// INERT: the floor is clamped to the cap at use, so the congested
+// branch's max(floor, cap x 0.5) returns the cap unchanged and the
+// controller can never back off, however bad the link gets.
+//
+// on_configure warns about the CONFIGURED case. This covers the RUNTIME
+// routes, which are the more reachable ones and were unwarned (#52,
+// review round 2): setRateLimit is called from the CONNECT decode with a
+// peer-advertised cap and from the add_remote service, and neither
+// re-checks the floor. A peer advertising a cap below
+// kDefaultAdmissionFloorBytesPerSecond would otherwise switch adaptive
+// admission off for the life of the node, silently.
+//
+// Throttled rather than one-shot: a flapping CONNECT re-adopts on every
+// reconnect, and one line per flap is noise, but a WARN that fires only
+// once would hide a SECOND connection entering the same state.
+void warnIfAdmissionInert(const rclcpp::Logger& logger, rclcpp::Clock& clock,
+                          const std::string& remote_name,
+                          const std::string& connection_id,
+                          const Connection& connection)
+{
+  const uint32_t cap = connection.rateLimit();
+  const double floor = static_cast<double>(connection.admissionFloorBytesPerSecond());
+  if(floor < static_cast<double>(cap))
+    return;
+  RCLCPP_WARN_STREAM_THROTTLE(logger, clock, 60000,
+    "Connection '" << remote_name << "/" << connection_id
+    << "': the rate limit now in force (" << cap
+    << " B/s) is at or below the admission floor (" << floor
+    << " B/s), so adaptive admission control is INERT on it — the cap can "
+    "never be reduced, whatever the link reports. This limit came from a "
+    "peer's CONNECT or from add_remote, not from this node's parameters.");
+}
+
+}  // namespace
+
 UDPBridge::UDPBridge(const std::string &node_name)
 : rclcpp_lifecycle::LifecycleNode(node_name, rclcpp::NodeOptions().enable_logger_service(true))
 {
@@ -1968,7 +2007,11 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
         else
           connection->setHostAndPort(host, port);
         if(connection_internal.return_maximum_bytes_per_second > 0)
+        {
           connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
+          warnIfAdmissionInert(get_logger(), *get_clock(), source_info.node_name,
+                               connection_internal.connection_id, *connection);
+        }
         connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
         connection_internal.return_host = connection->returnHost();
         connection_internal.return_port = connection->returnPort();
@@ -2574,6 +2617,8 @@ void UDPBridge::addRemote(
     {
       connection->setReturnHostAndPort(request->return_address, request->return_port);
       connection->setRateLimit(request->maximum_bytes_per_second);
+      warnIfAdmissionInert(get_logger(), *get_clock(), request->name, connection_id,
+                           *connection);
       should_send_bridge_info = true;
     }
     if(should_send_bridge_info)
@@ -2599,6 +2644,8 @@ void UDPBridge::addRemote(
       {
         connection_internal.connection = std::make_shared<Connection>(connection_id, request->address, request->port);
         connection_internal.connection->setRateLimit(request->maximum_bytes_per_second);
+        warnIfAdmissionInert(get_logger(), *get_clock(), request->name, connection_id,
+                             *connection_internal.connection);
       }
       connection_internal_message = connection_internal.message;
     }
