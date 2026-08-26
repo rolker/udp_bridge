@@ -106,6 +106,48 @@ clamped at that layer. The clamp is the fix; the "nothing logged" half cannot be
 closed there — it would have to be surfaced from the parameter callback, which
 is this branch's territory.
 
+## SETTLED: link_headroom_fraction stays DECLARED, inert, with a WARN
+
+The #52 session's operator first chose to delete the parameter outright, then
+reversed after their round-2 review. **The settled outcome is: keep it
+DECLARED, remove all behaviour, and WARN once at on_configure if it is set to a
+non-default value.** Do not act on the deletion — it is superseded. Their
+round-3 pass writes the final shape; wait for their confirmation before
+rebasing.
+
+The reasoning for the reversal is worth keeping, because it is this branch's own
+argument turned around. Deleting genuinely breaks nothing — the design doc's
+"removing it would break existing configs" is false by this repo's own
+behaviour, since `udp_bridge.cpp:363-368` shows an override for an UNDECLARED
+parameter is silently ignored rather than rejected. But that is precisely what
+argues against deleting: with the parameter gone, someone setting it later from
+an old config or a stale doc gets **no error and no warning** — the same
+"set it, reads fine, does nothing, draw a false conclusion" shape this branch
+exists to eliminate, relocated from the setter to the config loader. The repo
+already solved this once, for the retired `remotes.<label>.name` key: keep it
+declared so a stale key stays VISIBLE, then refuse a non-default value.
+
+Consequences for this branch, superseding the deletion advice:
+
+- **Keep the `kMaxLinkHeadroomFraction` hoist** if the round-3 shape still needs
+  the constant; they will confirm what survives.
+- **Do NOT delete `LinkHeadroomFractionAppliesToLiveConnection`.** Rename it and
+  state explicitly that it proves plumbing, not behaviour — which is now exactly
+  right, because plumbing is precisely what the parameter still has.
+- `.agents/README.md:109` is a **correction** again, not a deletion, and should
+  describe the tripwire.
+- **The descriptor work lands here.** A declared-but-inert parameter carrying a
+  WARN is the strongest case for `param describe` saying "currently has no
+  effect on the control law": the WARN fires at configure, but `param describe`
+  is what an operator reads at 3am mid-survey.
+
+## Mirror-image issue/PR confusion on their branch
+
+Their round 2 found five references calling **#76** the tracking issue when #76
+is the PR and #75 is the issue — the mirror image of the error flagged in our
+issue body. Being fixed in their round 3. Worth a grep on this branch too before
+it goes up.
+
 ## Do not trust a single bench run
 
 They overturned an earlier claim of theirs that a `lossy` bench regression was
