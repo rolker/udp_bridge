@@ -663,11 +663,22 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         // to arrive at by accident — say so once, at configure time,
         // rather than leaving an operator to infer it from a cap that
         // never moves (#52).
+        //
+        // Read the APPLIED floor back from the connection, not the raw
+        // parameter. setAdmissionFloorBytesPerSecond maps NaN and
+        // negatives to kDefaultAdmissionFloorBytesPerSecond, so
+        // `admission_floor_bytes_per_second: -1` on a connection capped
+        // below 8192 B/s is exactly the inert case this WARN exists for —
+        // and testing the raw -1 against the cap would stay silent on it
+        // (#52, review round 2).
         const uint32_t effective_cap = live_connection->rateLimit();
-        if(admission_floor_bps >= static_cast<double>(effective_cap))
+        const double applied_floor =
+          static_cast<double>(live_connection->admissionFloorBytesPerSecond());
+        if(applied_floor >= static_cast<double>(effective_cap))
           RCLCPP_WARN_STREAM(get_logger(),
             "Connection '" << remote_name << "/" << connection_name
-            << "': admission_floor_bytes_per_second (" << admission_floor_bps
+            << "': admission_floor_bytes_per_second (" << applied_floor
+            << ", from a configured " << admission_floor_bps
             << ") is at or above the connection's rate limit ("
             << effective_cap << " B/s), so adaptive admission control is "
             "INERT on it — the cap can never be reduced, whatever the link "
