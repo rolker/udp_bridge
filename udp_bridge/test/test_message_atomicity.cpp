@@ -325,6 +325,7 @@ TEST_F(MessageAtomicity, ConcurrentMessagesAreAllOrNothing)
     std::atomic<bool> go{false};
     std::atomic<int> ready{0};
     std::atomic<int> successes{0};
+    std::atomic<int> send_throws{0};
     std::vector<std::thread> threads;
     threads.reserve(kThreads);
     for(int i = 0; i < kThreads; ++i)
@@ -334,15 +335,35 @@ TEST_F(MessageAtomicity, ConcurrentMessagesAreAllOrNothing)
         ++ready;
         while(!go.load(std::memory_order_acquire))
           std::this_thread::yield();
-        if(conn->send(packets, send_sock_.get(), "op", false, t) ==
-           udp_bridge::SendResult::success)
-          ++successes;
+        // Guard the call. ConnectionException is reachable here — the
+        // send-poll budget can be exhausted on ENOBUFS with kThreads
+        // threads against an undrained loopback socket — and an
+        // exception escaping a std::thread's function calls
+        // std::terminate, which aborts the whole test binary instead of
+        // failing this test. The sibling churn test already wraps its
+        // call for the same reason.
+        try
+        {
+          if(conn->send(packets, send_sock_.get(), "op", false, t) ==
+             udp_bridge::SendResult::success)
+            ++successes;
+        }
+        catch(const udp_bridge::ConnectionException&)
+        {
+          ++send_throws;
+        }
       });
     while(ready.load() < kThreads)
       std::this_thread::yield();
     go.store(true, std::memory_order_release);
     for(auto& th: threads)
       th.join();
+
+    EXPECT_EQ(send_throws.load(), 0)
+      << "Round " << round << ": " << send_throws.load()
+      << " concurrent send(s) threw. Not itself the property under test, "
+         "but a round where sends threw did not exercise the contention "
+         "this test exists to measure.";
 
     const auto rates = conn->data_sent_rate(t, udp_bridge::PacketSendCategory::message);
     const uint32_t sent = static_cast<uint32_t>(rates.success_bytes_per_second);
