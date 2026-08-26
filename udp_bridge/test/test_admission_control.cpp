@@ -32,6 +32,13 @@
 //                                 (+Inf included) can freeze the
 //                                 controller for the life of the node
 //                                 (#52).
+//   RefractoryWindowGrowthIsBounded — the refractory window must
+//                                 actually grow within an unresolved
+//                                 episode, and the grown value must stay
+//                                 inside the 10 s of history the
+//                                 statistics deque retains. Asserted
+//                                 against absolute values, not against
+//                                 the constants themselves (#52).
 //   RefractoryGateHoldsAtClockZero — a decrease recorded at clock time
 //                                 0.0 still opens the window: sim time
 //                                 before the first /clock, and bag
@@ -828,6 +835,11 @@ TEST_F(AdmissionControl, RefractoryGrowsWithinEpisodeAndResetsOnCleanSample)
   rclcpp::Clock clock(RCL_STEADY_TIME);
   auto t = clock.now();
   auto conn = make_connection();
+  // NOTE: `grown` is DERIVED from the constants, so this test pins the
+  // growth MECHANISM (a second decrease grows the window; the grown value
+  // is the one in force; a clean sample gives the growth back) and not
+  // the constants' values — it stays green for any of them. The values
+  // are pinned by RefractoryWindowGrowthIsBounded above (#52 review r1).
   const double base = udp_bridge::kDefaultAdmissionRefractoryPeriodSeconds;
   const double grown = std::min(base * udp_bridge::kAdmissionRefractoryGrowthFactor,
                                 base * udp_bridge::kAdmissionRefractoryMaximumMultiple);
@@ -874,6 +886,74 @@ TEST_F(AdmissionControl, RefractoryGrowsWithinEpisodeAndResetsOnCleanSample)
   EXPECT_EQ(conn->currentAdmissionRefractoryWindowSeconds(), base)
     << "The first clean sample after a decrease is what 'the episode "
        "resolved' means — reset the window to its base (#52).";
+}
+
+TEST_F(AdmissionControl, RefractoryWindowGrowthIsBounded)
+{
+  // RefractoryGrowsWithinEpisodeAndResetsOnCleanSample derives its
+  // expectation from kAdmissionRefractoryGrowthFactor and
+  // kAdmissionRefractoryMaximumMultiple, so it is green for ANY value of
+  // them — including 1.0 (no growth) and 1000 (a 5000 s freeze ceiling),
+  // both verified empirically in #52 review round 1. The field-replay
+  // suite is green for both too. Nothing pinned these numbers.
+  //
+  // This test asserts the two properties the constants exist to provide,
+  // against absolute values taken from their own rationale rather than
+  // from the symbols:
+  //
+  //  - the window must actually GROW within an unresolved episode. The
+  //    recorded 07:20 onset reads congested on the raw ratio for its
+  //    full ~14 s; a fixed window still permits a third and fourth
+  //    halving inside that one episode.
+  //  - the grown window must stay within the 10 s of history the
+  //    statistics deque retains (Statistics::add) and the 10 s the
+  //    range-degradation bench holds each phase for. Freezing longer
+  //    than the whole measurement record means the controller's next
+  //    decision rests on evidence it can no longer see.
+  constexpr double kStatisticsRetentionSeconds = 10.0;
+
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  auto t = clock.now();
+  auto conn = make_connection();
+  const double base = udp_bridge::kDefaultAdmissionRefractoryPeriodSeconds;
+
+  // Report half of whatever the gate actually let through, so the sample
+  // stays congested however far the cap has fallen — including once it
+  // is pinned at the floor. A fixed reported rate would go CLEAN as soon
+  // as the cap dropped below it, resolving the episode and resetting the
+  // window before the growth had saturated.
+  auto congested_sample = [&](rclcpp::Time when)
+  {
+    send_traffic(*conn, when, 80);
+    conn->update_last_receive_time(when.seconds(), 100, false);
+    const float admitted = static_cast<float>(conn->effectiveRateLimit());
+    conn->updateAdmissionControl(admitted * 0.5f, 0.0f, when);
+  };
+
+  // Saturate the growth: step just past the window in force each time,
+  // so every sample lands as a further decrease in one unresolved
+  // episode. Ten rounds is far more than any sane multiple needs.
+  congested_sample(t);
+  double window = conn->currentAdmissionRefractoryWindowSeconds();
+  for(int i = 0; i < 10; ++i)
+  {
+    t = t + rclcpp::Duration::from_seconds(
+      conn->currentAdmissionRefractoryWindowSeconds() + 0.25);
+    congested_sample(t);
+    window = std::max(window, conn->currentAdmissionRefractoryWindowSeconds());
+  }
+
+  EXPECT_GT(window, base)
+    << "The refractory window never grew (" << window << " s at the base "
+    << base << " s). A fixed window still permits a third and fourth "
+       "halving inside the ~14 s the recorded onset reads congested for "
+       "(#52).";
+  EXPECT_LE(window, kStatisticsRetentionSeconds)
+    << "The grown refractory window reached " << window << " s, past the "
+    << kStatisticsRetentionSeconds << " s of history the statistics deque "
+       "retains and the bench holds each phase for. A freeze longer than "
+       "the whole measurement record decides on evidence the controller "
+       "can no longer see (#52).";
 }
 
 TEST_F(AdmissionControl, RefractoryGateHoldsAtClockZero)
