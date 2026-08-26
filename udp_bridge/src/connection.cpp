@@ -522,9 +522,15 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     return SendResult::failed;
   }
 
+  // Sum the actual byte vectors, which is exactly what each fragment
+  // will release via sendPacket(..., bytes_pre_reserved=true) below.
+  // p.packet_size is equal to it by construction (wrapped_packet.cpp),
+  // but the reservation accounting must not depend on a header field
+  // agreeing with the buffer it describes — summing the buffers makes
+  // the reserve and the releases provably the same quantity.
   uint32_t total_size = 0;
   for(const auto& p: packets)
-    total_size += p.packet_size;
+    total_size += static_cast<uint32_t>(p.packet.size());
 
   uint32_t rate_limit;
   {
@@ -534,21 +540,45 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     rate_limit = static_cast<uint32_t>(effective_rate_limit_);
   }
 
-  // Aggregate pre-check is a fast-path optimization: if the batch as a
-  // whole won't fit in the per-second budget (including bytes already
-  // reserved by concurrent in-flight sends), drop all packets at once
-  // rather than partial-send-then-drop. The single lock acquisition
-  // below covers ONLY the over-budget path — check + per-packet
-  // drop-records happen under one lock so concurrent forwarding
-  // callbacks (the republish_group_ is Reentrant) can't double-account
-  // drops against an inconsistent capacity snapshot. On the success
-  // path the lock is released without reserving any bytes here, so two
-  // concurrent callbacks can both observe capacity at this layer and
-  // both proceed into the per-packet send() below; this is intentional.
-  // The per-packet inner send() is the sole atomic enforcement point —
-  // it uses a reserve-then-record pattern (see Q2 in
-  // .agent/work-plans/issue-15/progress.md) so concurrent senders see
-  // each other's in-flight bytes via reserved_bytes_in_flight_.
+  // AGGREGATE CHECK-AND-RESERVE — the message is admitted or dropped as
+  // one unit (issue #52).
+  //
+  // This used to be a check ONLY: on the success path the lock was
+  // released without reserving anything, deliberately, so two concurrent
+  // callbacks (republish_group_ is Reentrant) could both pass here and
+  // both fall through to the per-packet loop, where each packet made its
+  // own independent can_send call. That made the per-packet send the
+  // sole enforcement point — and with it, the drop granularity. If the
+  // budget ran out partway through a multi-fragment message, the later
+  // fragments were dropped individually while the earlier ones had
+  // already gone out. Those bytes can never be reassembled into a
+  // deliverable message, so on an already-degraded link they were pure
+  // waste: the receiver holds an incomplete set until the defragmenter
+  // times it out. Message-level granularity is what `cce4401` had before
+  // the 2026-05-18 concurrency fix (`1489cfb`/`0c8b75f`) replaced it
+  // with per-packet checks.
+  //
+  // Reserving total_size here closes that TOCTOU window: the first
+  // batch's reservation is visible to the second batch's can_send, so
+  // two concurrent messages can no longer jointly over-admit.
+  //
+  // CONCURRENCY DISCIPLINE IS UNCHANGED, and must stay that way. This is
+  // still two bookkeeping operations under ONE brief acquisition of
+  // sent_packet_statistics_mutex_; the blocking-capable sendto poll loop
+  // for each fragment still runs with NO lock held (see sendPacket
+  // below). Holding this mutex across the I/O would stall
+  // UDPBridge::sendBridgeInfo — which calls data_sent_rate while holding
+  // remote_nodes_mutex_ — and through it the socket-drain path: the #10
+  // wedge the callback-group split exists to prevent.
+  //
+  // is_overhead traffic (BridgeInfo, resend requests, topic lists)
+  // reaches this same overload from the same single call site
+  // (udp_bridge.cpp), and gets the same atomic treatment ON PURPOSE.
+  // Overhead messages are one packet in the overwhelming majority of
+  // cases, so for them "atomic" and "per-packet" coincide; where a topic
+  // list does fragment, half a topic list is no more useful than half a
+  // video frame. The failure path already dropped them atomically before
+  // this change — it is the success path that is now consistent with it.
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     if(!sent_packet_statistics_.can_send(total_size, reserved_bytes_in_flight_, rate_limit, now))
@@ -567,7 +597,38 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
       }
       return SendResult::dropped;
     }
+    reserved_bytes_in_flight_ += total_size;
   }
+
+  // Guard for the portion of the reservation not yet handed to a
+  // fragment. Ownership of each fragment's bytes transfers to sendPacket
+  // BEFORE the call (unreserved -= p.packet_size), because sendPacket
+  // releases exactly data.size() on every one of its exit paths,
+  // including the throw path. Decrementing after the call instead would
+  // double-release on a throw. Whatever is left when this guard unwinds
+  // belongs to fragments that were never attempted.
+  //
+  // The accounting rests on packet.packet.size() == p.packet_size, which
+  // holds by construction: WrappedPacket's copy constructor
+  // (wrapped_packet.cpp) copies both the byte vector and packet_size and
+  // rewrites only the fixed-size header fields in place. So the
+  // per-fragment releases sum to exactly total_size regardless of which
+  // exit path each fragment takes.
+  struct BatchReservationGuard
+  {
+    std::mutex& mutex;
+    uint32_t& reservation;
+    uint32_t unreserved;
+    ~BatchReservationGuard()
+    {
+      if(unreserved > 0)
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        reservation -= unreserved;
+      }
+    }
+  };
+  BatchReservationGuard batch_guard{sent_packet_statistics_mutex_, reserved_bytes_in_flight_, total_size};
 
   SendResult ret = SendResult::success;
   for(const auto& p: packets)
@@ -580,7 +641,8 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     PacketSendCategory category = PacketSendCategory::message;
     if(is_overhead)
       category = PacketSendCategory::overhead;
-    auto send_ret = send(packet.packet, socket, category, now);
+    batch_guard.unreserved -= static_cast<uint32_t>(packet.packet.size());
+    auto send_ret = sendPacket(packet.packet, socket, category, now, true);
     if(send_ret.send_result != SendResult::success)
       ret = send_ret.send_result;
   }
@@ -589,6 +651,11 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
 
 
 PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category, rclcpp::Time now)
+{
+  return sendPacket(data, socket, category, now, false);
+}
+
+PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int socket, PacketSendCategory category, rclcpp::Time now, bool bytes_pre_reserved)
 {
   PacketSizeData ret;
   ret.timestamp = now;
@@ -614,8 +681,14 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   }
   if(no_address)
   {
+    // A concurrent setHostAndPort() -> resolveHost() can clear addresses_
+    // between the batch overload's own pre-check and this fragment, so a
+    // pre-reserved caller can genuinely land here mid-message. Release
+    // its bytes under the same lock as the record (issue #52, F6).
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
+    if(bytes_pre_reserved)
+      reserved_bytes_in_flight_ -= static_cast<uint32_t>(data.size());
     return ret;
   }
 
@@ -671,6 +744,13 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
     }
   };
 
+  // Step 1 of the pattern, skipped when the caller already reserved these
+  // bytes as part of a message-atomic aggregate reservation (issue #52).
+  // Re-checking here would defeat the whole point — the fragment would be
+  // metered a second time against a budget its own message already holds
+  // — and re-reserving would double-count. Steps 2-4 below are identical
+  // either way, which is what keeps the release exact on every exit.
+  if(!bytes_pre_reserved)
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     if(!sent_packet_statistics_.can_send(data.size(), reserved_bytes_in_flight_, rate_limit, ret.timestamp))
@@ -963,6 +1043,12 @@ std::size_t Connection::resend_call_count_for_test() const
 {
   std::lock_guard<std::mutex> lock(sent_packets_mutex_);
   return resend_call_count_for_test_;
+}
+
+uint32_t Connection::reserved_bytes_in_flight_for_test() const
+{
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+  return reserved_bytes_in_flight_;
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

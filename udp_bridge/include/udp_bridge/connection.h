@@ -242,12 +242,38 @@ public:
   /// call. UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the
   /// helpers above.
   std::size_t resend_call_count_for_test() const;
+
+  /// Test accessor: bytes currently reserved by in-flight send() calls
+  /// (reserved_bytes_in_flight_), read under its own mutex. The
+  /// message-atomic aggregate reservation added for issue #52 has four
+  /// ways a fragment's inner send can end — success, ECONNREFUSED, a
+  /// mid-loop no_address after a concurrent setHostAndPort, and a thrown
+  /// ConnectionException — and every one of them must release exactly
+  /// that fragment's bytes. A leak here is invisible in behaviour until
+  /// the connection quietly stops admitting anything, so the tests assert
+  /// the counter itself rather than a downstream symptom.
+  /// UDP_BRIDGE_BUILD_TESTING-gated for the same reason as the helpers
+  /// above.
+  uint32_t reserved_bytes_in_flight_for_test() const;
 #endif  // UDP_BRIDGE_BUILD_TESTING
 
 private:
   // Caller must hold config_mutex_; resolveHost mutates addresses_ and
   // ip_address_. Called from the constructor and from setHostAndPort.
   void resolveHost();
+
+  /// Implementation behind the public single-packet send(). When
+  /// `bytes_pre_reserved` is true the caller has ALREADY counted
+  /// data.size() into reserved_bytes_in_flight_ (the batch overload's
+  /// message-atomic aggregate reservation, issue #52) and has handed
+  /// ownership of those bytes to this call: the check-and-reserve step
+  /// is skipped, but EVERY exit path still releases exactly
+  /// data.size() — success, ECONNREFUSED, no_address, and the throw
+  /// path via ReservationGuard. The public overload passes false and
+  /// does its own check-and-reserve, unchanged.
+  PacketSizeData sendPacket(const std::vector<uint8_t>& data, int socket,
+                            PacketSendCategory category, rclcpp::Time now,
+                            bool bytes_pre_reserved);
 
   /// connection_id of the connection
   std::string id_;

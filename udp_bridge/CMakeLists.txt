@@ -152,6 +152,12 @@ if(BUILD_TESTING)
   # effective-cap metering, setRateLimit clamp semantics.
   add_udp_bridge_gtest(test_admission_control test/test_admission_control.cpp)
   add_udp_bridge_gtest(test_admission_field_replay test/test_admission_field_replay.cpp)
+  # test_message_atomicity (issue #52) exercises the message-level
+  # admission granularity restored by the batch overload's aggregate
+  # check-AND-reserve: whole-message drop, exactly-once accounting,
+  # is_overhead parity, real-threads joint over-admission, and
+  # reservation release on every exit path a fragment can take.
+  add_udp_bridge_gtest(test_message_atomicity test/test_message_atomicity.cpp)
   # test_publish_queue (issue #10) exercises the bounded publish-worker
   # queue in isolation via an injected sink — no UDPBridge / node needed.
   add_udp_bridge_gtest(test_publish_queue test/test_publish_queue.cpp)
