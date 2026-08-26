@@ -305,6 +305,17 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // A backwards clock step (elapsed < 0) expires the window rather than
   // freezing the controller until the clock catches up.
   //
+  // KNOWN LIMIT of this design, stated rather than hidden (#52, review
+  // round 2). The gate reduces the RATE of decisions; it does not
+  // improve the EVIDENCE behind any one of them. Each decision is still
+  // made from a single sample, and the ~4 samples suppressed inside a
+  // grown window are discarded, not folded in. Near the floor, where the
+  // received/sent ratio is mostly noise, that means recovery depends on
+  // which sample happens to land first after the window expires. The
+  // principled fix is to decide on an aggregate of the window's samples
+  // (a median, or a matched byte counter — RCA option B), which needs
+  // new wire fields; see doc/admission_control_design.md.
+  //
   // "Is a decrease outstanding" is its own boolean and NOT
   // `last_admission_decrease_time_ > 0.0`. 0.0 is a legal clock reading,
   // and a decrease recorded there read as "no decrease outstanding",

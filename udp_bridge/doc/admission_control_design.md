@@ -231,6 +231,27 @@ Three compounding defects, and what each got:
 3. **The decrease target was derived from post-gate goodput.** →
    the clamp removal, next section.
 
+### What the refractory gate does *not* fix
+
+The gate lowers the **rate** of decisions. It does not improve the
+**evidence** behind any one of them: each decision is still taken from a
+single sample, and the roughly four samples suppressed inside a grown
+window are discarded rather than folded into the one that is acted on.
+
+Near the floor — where the received/sent ratio is dominated by noise
+rather than by loss — this means recovery depends on *which* sample
+happens to arrive first after the window expires. Two runs on identical
+traffic can converge differently. The regression gates bound the damage
+(the cap cannot cascade, and `SustainedRealLossMustConverge` bounds how
+long a genuine drop takes to answer), but they do not remove the
+dependence.
+
+Fixing it properly means deciding on an aggregate of the window's samples
+rather than on its last one — a median over the window, or the
+matched-byte-counter detector (RCA option B) that would make the ratio a
+measurement rather than an estimate. Both need new wire fields and so a
+coordinated redeploy, which is why neither is in this change.
+
 ### Tuning constants, and what constrained each
 
 | constant | value | what fixed it there |
