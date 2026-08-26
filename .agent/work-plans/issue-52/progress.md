@@ -1139,3 +1139,134 @@ Verified rather than trusted: full suite re-run on a clean tree — **271 tests,
 - Two findings raised by specialists were **artifacts of this review's own experiments** and are NOT branch defects: a working-tree edit to `kAdmissionRefractoryMaximumMultiple` (my deafening experiment) was observed by two specialists mid-run. The committed constants are 5.0 / 2.0 / 2.0 and the tree is clean at `5563726`.
 - Plan drift: none. Every Approach item carries an inline resolution note and an explicit deviations list matching the `## Implementation` entry. Priority classes (#19) correctly out of scope.
 - Governance: the clamp-removal decision is coherent and unusually well recorded; the gaps are placement, not reasoning. ADR-0018 local-CI attestation is not yet on HEAD (a merge-time gate, not a pre-push one). Commit hygiene, identity and the test-first commit (`4002cad`) all clean.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-26 00:16 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: `feature/issue-52` at `a06f0af` (12 commits on top of the review, unpushed)
+**Addressed**: the `## Local Review (Pre-Push)` of 2026-08-25 23:41 -04:00, branch at `5563726` (verdict changes-requested, round 1) — 4 must-fix + 15 suggestions, all 19 consciously handled
+**Commits**: `f9245d6` `a09b117` `e7babf4` `b91f820` `ad4764e` `516037c` `21545f2` `5765efc` `48ad5a7` `37b8ca1` `3713c9c` `a06f0af`
+
+### Actions
+
+Must-fix:
+
+- [x] `setAdmissionRefractoryPeriodSeconds` accepted `+Inf` — `udp_bridge/src/connection.cpp:155`.
+  New `kMaximumAdmissionRefractoryPeriodSeconds` (60 s); the setter clamps down to it
+  rather than falling back to the default, so an operator asking for a slower loop still
+  gets the slowest one that leaves the loop alive. The contract test now covers `+Inf`
+  and a large finite value, and pins that the clamped window really expires. `f9245d6`
+- [x] `0.0` sentinel silently disabled the gate at clock zero — `udp_bridge/src/connection.cpp:316,336,342`.
+  Split into its own `admission_decrease_outstanding_` flag; the timestamp is now only
+  read while that flag is set. `a09b117`
+- [x] Operator-facing docs described the removed clamp as live — `config/example_params.yaml`,
+  `include/udp_bridge/connection.h`. Rewritten to lead with CURRENTLY INERT and to say
+  that setting the parameter changes nothing. The "still reported" overclaim corrected at
+  all four sites to "declared, clamped and readable via `ros2 param get`, appears in no
+  message". `e7babf4`
+- [x] Configure-time-only limitation missing from the two operator-facing surfaces —
+  `README.md`, `config/example_params.yaml`. Both now state it, name `ros2 param set` as
+  the thing that will NOT work, and cite RCA item D and #76. `b91f820`
+
+Suggestions (pre-push review actions all unchecked findings, per the skill):
+
+- [x] Growth constants unpinned, and the test file's claim to bound them was false —
+  `test_admission_field_replay.cpp`, `test_admission_control.cpp`. New
+  `AdmissionControl.RefractoryWindowGrowthIsBounded` asserts the two properties the
+  constants exist to provide against absolute values from their own rationale (the window
+  must grow; the grown window must stay inside the statistics deque's 10 s retention).
+  The false claim is corrected and points at the test that does the job. `ad4764e` `516037c`
+- [x] The aggregate reservation has no time dimension and shares its budget with overhead —
+  `src/connection.cpp:584,600,634-648`. Documented at the call site and in
+  `doc/admission_control_design.md`: the escape is real but falls out of the idle-link
+  rule rather than being designed, nothing bounds the hold time except the send-poll
+  budget, and the fix it would call for is a separate overhead ledger — explicitly NOT a
+  longer refractory period. Not fixed in code: a second ledger is a design change with
+  its own concurrency argument, and no field observation motivates it yet. `37b8ca1`
+- [x] `FieldOnsetMustNotCascadeToFloor` under-measured the send rate ~24% — switched to
+  `send_over_interval`. Gate value unchanged at 375000. `516037c`
+- [x] `HandoverBlip...` was blind to the first two decreases — now counts decreases
+  directly and asserts the ~4 s blip costs at most one. Measured: 1. `516037c`
+- [x] File header said "Two tests" and named one that does not exist — corrected to three
+  with their real names. `516037c`
+- [x] The growth condition does not implement the rule its constant documented — corrected
+  the constant's text, and gave the reason the code is right: a sample taken inside the
+  window describes traffic sent at the OLD cap, so it is no better as evidence the episode
+  ended than as grounds to recover. `21545f2`
+- [x] `conn->send()` unguarded inside the worker lambda — wrapped, with a throw counter and
+  an assertion that none threw, so a round that did not exercise the contention says so
+  instead of calling `std::terminate`. `5765efc`
+- [x] AIMD silently inert when the floor is at or above the connection's cap — `on_configure`
+  now WARNs naming the connection, and the property is recorded in the README, the design
+  doc and `.agents/README.md`. `48ad5a7`
+- [x] "Still reported" overclaim at four sites — corrected. `e7babf4`
+- [x] `currentAdmissionRefractoryWindowSeconds()` claimed a diagnostic consumer it does not
+  have — claim dropped; #76 named as where surfacing it belongs. `21545f2`
+- [x] The bench `xfail` reason string recorded the previous cycle's residuals — rewritten
+  with this round's n=3 numbers. `a06f0af`
+- [x] The `lossy` resend/msg regression — **ran n=3 rather than concluding.** See below. `a06f0af`
+- [x] Plan `Files to Change` missing `statistics.h`/`.cpp`, four Open Questions unresolved —
+  all synced, including the growth-constants-configurability question that had no recorded
+  resolution. `3713c9c`
+- [x] New parameter has no `ParameterDescriptor` — `udp_bridge/src/udp_bridge.cpp:622-624`
+  (deferred: carried to #76. `read_only: true` is the load-bearing half and is a behaviour
+  change; it belongs with the work that decides which of these parameters stop being
+  configure-time-only. Adding a bare `description` to 4 of ~30 parameters that have none
+  is inconsistency without the machine-visible contract.)
+- [x] Design doc's Decrease bullet omitted the `feedback_unusable` triggers — added
+  (non-finite, negative, duplicate > received). `21545f2`
+
+### The `lossy` resend/msg movement: measured, not argued
+
+The review rejected "harness variance" because the demonstrated variance was ~7%. Three
+full `range_degradation` runs of one build show that ~7% figure was measured on a
+different metric (co-tenant delivery). On resend/msg itself:
+
+| phase | run 1 | run 2 | run 3 | ceiling | spread |
+|---|---|---|---|---|---|
+| `fringe` | 0.0053 | 0.0061 | 0.0092 | 0.010 | 1.7x |
+| `lossy` | 0.0131 | 0.0184 | 0.0705 | 0.060 | 5.4x |
+| `critical` | 0.2838 | 0.4735 | 0.1115 | 0.200 | 4.2x |
+
+The 0.077 -> 0.141 move sits well inside a 5.4x spread, so it cannot be attributed to a
+mechanism — and by the same token nothing here rules one out. The conclusion worth keeping
+is about the measurement: **single-run values from this invariant do not support the three
+decimals they were quoted at**, in the earlier Implementation entry or in the `xfail`
+reason. Both now say so, with the numbers.
+
+The strict `xfail` held in all three runs — at least one phase violates every time, so no
+XPASS risk was observed and `F_resend_multiplier` was not touched. *Which* phase violates
+is not stable: `critical` was over the ceiling in two runs of three, while the single run
+recorded in the earlier entry had it passing with margin.
+
+### Verification
+
+- **273 tests, 0 errors, 0 failures, 14 skipped** — full suite on a clean tree (was 271;
+  `RefractoryGateHoldsAtClockZero` and `RefractoryWindowGrowthIsBounded` are the two new).
+- Gate values re-measured on the final tree, unchanged: onset `lowest` **375000**
+  (bound > 187500), handover delivered **1.000** (bound > 0.90), final cap **1500000**
+  (bound > 750000). Handover decreases: **1**.
+- Both new tests were shown to fail against the defect they pin, not merely to pass
+  against the fix: `RefractoryGateHoldsAtClockZero` fails against the `> 0.0` sentinel
+  form; `RefractoryWindowGrowthIsBounded` fails with `kAdmissionRefractoryMaximumMultiple`
+  at 1.0 (no growth) and at 1000 (a 5000 s ceiling) — the two settings the review showed
+  the whole suite was previously green at. With the `send_over_interval` fix,
+  `FieldOnsetMustNotCascadeToFloor` now also fails at multiple 1.0, which is the growth
+  becoming load-bearing for the test that motivated it.
+- `pre-commit run --from-ref origin/jazzy --to-ref HEAD`: clean.
+
+### Notes for the re-review
+
+- Reaching clock zero with a send history to be congested about requires a **backwards
+  clock step**, because `Statistics::add` drops records stamped exactly 0 — so a
+  freshly-started sim clock has no history and cannot be congested. A looping bag replay
+  and a sim reset both produce that step, and the regression test drives it. The finding
+  is therefore real but was masked by an incidental property of a different class; the
+  flag makes it not depend on that.
+- `Connection` has no logger, so the `+Inf` finding's "nothing logged" half cannot be
+  fixed at that layer. The clamp is the fix; the new WARN for the inert-AIMD case lives in
+  `udp_bridge.cpp`, which does have one.
+- Three behaviour changes this round (the upper clamp, the outstanding flag, the WARN) are
+  recorded in `plan.md` under "Review round 1", with the new constant's bound.
