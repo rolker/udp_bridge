@@ -179,6 +179,14 @@ inline constexpr float kDefaultAdmissionFloorBytesPerSecond = 8192.0f;
 // Overridable per connection via `link_headroom_fraction`.
 inline constexpr float kDefaultLinkHeadroomFraction = 0.2f;
 
+// Largest headroom fraction a connection will accept. A headroom of
+// exactly 1.0 would make the congested branch target zero throughput on
+// every sample, so the connection could never carry data again;
+// Connection::setLinkHeadroomFraction clamps to this and the runtime
+// parameter validation (connection_tunables.h) refuses anything above
+// it, so the parameter store and the live value cannot disagree.
+inline constexpr float kMaxLinkHeadroomFraction = 0.99f;
+
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant
 // directly to rclcpp::Duration's chrono::duration constructor:

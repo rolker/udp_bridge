@@ -30,6 +30,15 @@ enum class RelayDropReason
   /// working as configured, NOT loss — counted separately so it is visible
   /// without inflating the loss figure or the WARN.
   NoDestinationDue,
+  /// Every destination that was due under `period` was then over its own
+  /// per-topic `maximum_bytes_per_second`, so the item had nowhere left
+  /// to go. Like NoDestinationDue this is the rate limiter working as
+  /// configured, not loss, and is counted apart from it only so the
+  /// diagnostic says WHICH limit shed the traffic — the two are tuned in
+  /// different places. Recorded per item and only when NOTHING was due:
+  /// a partial shed (some destinations over budget, others sent to) is
+  /// already visible per destination in the topic's TopicStatistics.
+  TopicRateLimited,
   /// The send to one destination threw (the ordinary `ConnectionException`
   /// Timeout path among them), so that destination never received the
   /// message. The fan-out to the other destinations continues — see
@@ -52,6 +61,7 @@ struct RelayDropCounters
   std::atomic<uint64_t> unnamed_sender {0};
   std::atomic<uint64_t> topic_gone {0};
   std::atomic<uint64_t> no_destination_due {0};
+  std::atomic<uint64_t> topic_rate_limited {0};
   std::atomic<uint64_t> send_failed {0};
 
   void record(RelayDropReason reason)
@@ -64,6 +74,8 @@ struct RelayDropCounters
         topic_gone.fetch_add(1, std::memory_order_relaxed); break;
       case RelayDropReason::NoDestinationDue:
         no_destination_due.fetch_add(1, std::memory_order_relaxed); break;
+      case RelayDropReason::TopicRateLimited:
+        topic_rate_limited.fetch_add(1, std::memory_order_relaxed); break;
       case RelayDropReason::SendFailed:
         send_failed.fetch_add(1, std::memory_order_relaxed); break;
     }
@@ -71,7 +83,8 @@ struct RelayDropCounters
 
   /// Items that were meant to be forwarded and were not — the figure that
   /// belongs in the loss total alongside RelayQueue::dropped_count().
-  /// Excludes NoDestinationDue, which is the configured rate limit.
+  /// Excludes NoDestinationDue and TopicRateLimited, which are the
+  /// configured rate limits.
   uint64_t lost() const
   {
     return unnamed_sender.load(std::memory_order_relaxed)
@@ -81,9 +94,10 @@ struct RelayDropCounters
 
   /// A short "reason=count" breakdown of the **loss** reasons for the
   /// diagnostic, omitting zeros. Empty when no loss has been recorded.
-  /// Deliberately excludes NoDestinationDue: it is reported on its own row
-  /// (`rate_limited`) so it never appears alongside a loss figure it is not
-  /// part of, and never lands in a WARN string whose trigger excludes it.
+  /// Deliberately excludes NoDestinationDue and TopicRateLimited: they are
+  /// reported on their own rows (`rate_limited`) so they never appear
+  /// alongside a loss figure they are not part of, and never land in a
+  /// WARN string whose trigger excludes them.
   std::string lossBreakdown() const
   {
     std::string out;
@@ -103,11 +117,20 @@ struct RelayDropCounters
     return out;
   }
 
-  /// Items held back purely by the per-connection `period` rule. Visible,
-  /// but not loss — see NoDestinationDue.
+  /// Items held back by a configured rate limit — the per-connection
+  /// `period` rule or a per-topic `maximum_bytes_per_second`. Visible,
+  /// but not loss — see NoDestinationDue / TopicRateLimited.
   uint64_t rateLimited() const
   {
-    return no_destination_due.load(std::memory_order_relaxed);
+    return no_destination_due.load(std::memory_order_relaxed)
+         + topic_rate_limited.load(std::memory_order_relaxed);
+  }
+
+  /// The per-topic-cap half of rateLimited(), for the diagnostic row
+  /// that says which limit is doing the shedding.
+  uint64_t topicRateLimited() const
+  {
+    return topic_rate_limited.load(std::memory_order_relaxed);
   }
 
   // Deliberately no reset(): these counters are monotonic for the process

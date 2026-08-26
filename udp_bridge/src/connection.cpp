@@ -131,10 +131,12 @@ void Connection::setLinkHeadroomFraction(float fraction)
 {
   // Clamped below 1.0: a headroom of exactly 1.0 would target zero
   // throughput on every congested sample and the connection could
-  // never carry data again.
+  // never carry data again. The bound is named in resend_constants.h so
+  // the runtime parameter validation refuses exactly what this clamps
+  // (connection_tunables.h).
   if(std::isnan(fraction))
     fraction = kDefaultLinkHeadroomFraction;
-  fraction = std::max(0.0f, std::min(0.99f, fraction));
+  fraction = std::max(0.0f, std::min(kMaxLinkHeadroomFraction, fraction));
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   link_headroom_fraction_ = fraction;
 }

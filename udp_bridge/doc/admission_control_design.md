@@ -81,9 +81,17 @@ static cap:
   wipe the backoff and burst a congested link at full rate on every
   reconnect flap. A backed-off connection reaches a raised limit via
   additive recovery.
-- **What gets shed** within the reduced cap remains FIFO — per-topic
-  priority is [#19](https://github.com/rolker/udp_bridge/issues/19);
-  per-topic delivery classes are the
+- **What gets shed** within the reduced cap is still FIFO at the
+  connection level: `Connection::send` meters every packet through the
+  same `can_send`, with no notion of topic, class or priority. A
+  **per-topic `maximum_bytes_per_second`** now bounds what any one topic
+  may offer into that budget (see `udp_bridge/README.md`), which stops a
+  single topic taking the whole connection — but it is a *ceiling on the
+  greedy*, not a priority scheme: it cannot reserve capacity for a
+  starved topic, and below their caps topics still compete
+  first-come-first-served. Real per-topic priority remains
+  [#19](https://github.com/rolker/udp_bridge/issues/19); per-topic
+  delivery classes are the
   [#36](https://github.com/rolker/udp_bridge/issues/36) umbrella.
 
 ## Why the original scaling failed (issue #52)
@@ -133,6 +141,36 @@ The rate limit is **not** obsolete. It remains a hard ceiling and the
 cost control on metered cell links. What it is no longer asked to be is
 the system's model of link capacity.
 
+## Tuning it while it is running
+
+`admission_floor_bytes_per_second` and `link_headroom_fraction` (with
+`maximum_bytes_per_second` and `resend_budget_fraction`) apply to the
+live `Connection` when set with `ros2 param set`. They did not until
+2026-08-25: each was declared in `on_configure`, read there once, and
+never looked at again, while the node's `OnSetParameters` callback
+handled only the two resend-give-up thresholds. A runtime set was
+accepted by rclcpp and read back with the new value — and changed
+nothing. Raising the floor to escape a collapsed cap therefore appeared
+to do nothing, which read as evidence that the floor was not the problem.
+
+Two consequences worth knowing when tuning under pressure:
+
+- **The floor takes effect on the next admission sample**, i.e. within
+  one remote feedback interval (the remote's `bridge_info` period, 2 s),
+  not immediately — nothing recomputes the cap between samples.
+- **A floor above the connection's `maximum_bytes_per_second` yields the
+  cap**, because the floor is clamped at use. An over-large value is
+  blunt but safe: it lifts a collapsed cap to the configured ceiling and
+  no further.
+
+Validation differs by entry point on purpose: a config file is clamped
+(it has no return channel, and refusing to start a telemetry bridge over
+a mistyped scalar is worse than starting it with a sane value), while a
+runtime set is refused with a reason naming the parameter and its
+accepted range. The accepted ranges are exactly what the setters store
+unchanged, so `ros2 param get` cannot report something other than what is
+in force. See `include/udp_bridge/connection_tunables.h`.
+
 ## Scope boundaries and signal caveats (stated honestly)
 
 - **Single-connection total blackout is out of scope.**
@@ -169,8 +207,13 @@ schema-evolution contract documented in `Remote.msg`.
 
 `test/test_admission_control.cpp` pins: decrease-on-congestion, additive
 recovery, floor/ceiling clamps, stale-feedback fallback, never-received
-sentinel, effective-cap metering in `send()`, and the `setRateLimit`
-clamp semantics. The
+sentinel, effective-cap metering in `send()`, the `setRateLimit` clamp
+semantics, and a floor raised at runtime lifting a collapsed cap no
+further than the configured limit.
+`test/test_runtime_tunables.cpp` pins the parameter path itself — that a
+`ros2 param set` reaches the live `Connection` and not merely the
+parameter store, and that an out-of-range value is refused with the live
+value left alone. The
 [#18](https://github.com/rolker/udp_bridge/issues/18) bench harness's
 range-degradation scenario is the eventual end-to-end gate. Field
 validation: watch `effective_rate_limit` track WiFi loss episodes on the

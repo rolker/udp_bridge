@@ -127,6 +127,25 @@
                 period: 0.0
                 # Queue size for the subscriber.
                 queue_size: 10
+                # Optional per-topic send cap, in BYTES per second of
+                # offered message payload. 0 (the default, and what
+                # leaving the key out means) is unlimited -- the
+                # behaviour every config had before this existed.
+                #
+                # Set it on the topics that can take the whole link. The
+                # connection-level maximum_bytes_per_second above is
+                # metered first-come-first-served with no notion of
+                # topic, so one busy topic (a camera, a bulk sonar feed)
+                # can consume the whole admitted budget and everything
+                # else on the connection is shed as a side effect.
+                #
+                # Size it against the topic's own offered rate, which is
+                # TopicStatistics.message_bytes_per_second in
+                # ~/topic_statistics -- the same units. A topic over its
+                # cap is dropped and counted there, so the shedding is
+                # visible rather than silent. Live-tunable with
+                # `ros2 param set`.
+                maximum_bytes_per_second: 0
 
               /robot_a/battery:
                 source: "/battery_state"
