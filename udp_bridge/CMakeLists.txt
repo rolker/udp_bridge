@@ -151,6 +151,7 @@ if(BUILD_TESTING)
   # floor/ceiling clamps, stale-feedback fallback, sentinel,
   # effective-cap metering, setRateLimit clamp semantics.
   add_udp_bridge_gtest(test_admission_control test/test_admission_control.cpp)
+  add_udp_bridge_gtest(test_admission_field_replay test/test_admission_field_replay.cpp)
   # test_publish_queue (issue #10) exercises the bounded publish-worker
   # queue in isolation via an injected sink — no UDPBridge / node needed.
   add_udp_bridge_gtest(test_publish_queue test/test_publish_queue.cpp)
