@@ -58,6 +58,11 @@ static cap:
   `admission_floor_bytes_per_second` (default 8192) — the floor keeps
   control/telemetry topics and the feedback loop itself flowing, and is
   clamped at use to the configured limit so it can never raise a cap.
+  A floor at or **above** the connection's own limit therefore makes AIMD
+  inert on that connection — `max(floor, cap × 0.5)` returns the cap
+  unchanged, forever. `on_configure` logs a WARN naming the connection
+  when the configuration lands there, since nothing else about the
+  connection's behaviour would reveal it (#52).
 
   The decrease reads **no goodput term at all**. Until 2026-08-25 it
   targeted the lower of the multiplicative step and a *headroom target*

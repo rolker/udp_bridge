@@ -653,6 +653,26 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
         live_connection->setLinkHeadroomFraction(static_cast<float>(link_headroom_fraction));
         live_connection->setAdmissionRefractoryPeriodSeconds(admission_refractory);
+
+        // A floor at or above the connection's own cap makes AIMD a
+        // no-op: the floor is clamped to the cap at use, so the
+        // congested branch's max(floor, cap x 0.5) returns the cap
+        // unchanged and this connection can never back off, however bad
+        // the link gets. That is a legitimate configuration to want (a
+        // link you have decided never to throttle), but it is not one
+        // to arrive at by accident — say so once, at configure time,
+        // rather than leaving an operator to infer it from a cap that
+        // never moves (#52).
+        const uint32_t effective_cap = live_connection->rateLimit();
+        if(admission_floor_bps >= static_cast<double>(effective_cap))
+          RCLCPP_WARN_STREAM(get_logger(),
+            "Connection '" << remote_name << "/" << connection_name
+            << "': admission_floor_bytes_per_second (" << admission_floor_bps
+            << ") is at or above the connection's rate limit ("
+            << effective_cap << " B/s), so adaptive admission control is "
+            "INERT on it — the cap can never be reduced, whatever the link "
+            "reports. Lower the floor, or raise maximum_bytes_per_second, "
+            "if that was not intended.");
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
