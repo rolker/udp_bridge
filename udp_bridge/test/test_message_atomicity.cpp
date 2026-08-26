@@ -402,10 +402,12 @@ TEST_F(MessageAtomicity, ReservationReleasedWhenAFragmentThrows)
   // on the FIRST fragment: the remaining five are never attempted, and
   // their share of the reservation is the batch guard's to release.
   //
-  // Nothing in the workspace catches ConnectionException below
-  // UDPBridge::callback, so this propagates — which is precisely why the
-  // accounting has to be correct before it does: a sibling Connection on
-  // the same node reads reserved_bytes_in_flight_ through can_send.
+  // In the node this propagates as far as `callIsolated`
+  // (send_isolation.h), which catches ConnectionException explicitly and
+  // reports it — the bridge SURVIVES a Timeout throw and keeps sending.
+  // That is precisely why the accounting has to be exact: the connection
+  // lives on, so a leaked reservation accumulates over repeated timeouts
+  // until can_send refuses everything on it.
   rclcpp::Clock clock(RCL_STEADY_TIME);
   const auto t = clock.now();
 

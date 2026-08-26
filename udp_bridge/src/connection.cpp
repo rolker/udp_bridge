@@ -770,16 +770,21 @@ PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int sock
   // The ReservationGuard RAII helper handles throw-paths: if the sendto
   // loop throws (Timeout, partial-send, etc.), the destructor releases
   // the reservation so rate-limit accounting stays consistent for the
-  // next can_send call. No record is added in this case — and there is
-  // no caller in the workspace that catches ConnectionException, so the
-  // throw propagates up through UDPBridge::callback to the executor and
-  // the node terminates. That behavior predates the reservation pattern
-  // and isn't changed by it; the value of the guard here is purely
-  // keeping reserved_bytes_in_flight_ correct before the process dies,
-  // so a sibling Connection on the same node doesn't observe a phantom
-  // reservation in its own pre-shutdown logging window. Catching at the
-  // call site to keep the bridge alive across transient socket errors
-  // would be a separate follow-up.
+  // next can_send call. No record is added in this case.
+  //
+  // The guard is LOAD-BEARING, not cosmetic. `callIsolated`
+  // (include/udp_bridge/send_isolation.h) catches ConnectionException
+  // explicitly, and it wraps the batch send path, so a throw here does
+  // NOT terminate the node — it is reported and the bridge carries on.
+  // (An earlier version of this comment claimed nothing in the workspace
+  // caught it and the process was about to die anyway; that was false,
+  // and it invited relaxing the guard.) The Timeout throw is a recurrent
+  // survivable path: a poll budget exhausted under back-pressure raises
+  // it, the connection stays alive, and the next send calls can_send
+  // again. A leaked reservation would therefore ACCUMULATE across such
+  // events until reserved_bytes_in_flight_ exceeds the rate limit and
+  // can_send refuses everything — a permanently wedged connection, with
+  // no way back short of a restart.
   struct ReservationGuard
   {
     std::mutex& mutex;
