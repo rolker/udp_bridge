@@ -343,3 +343,177 @@ fresh-context sub-agent:
 The re-review should confirm the negative-feedback guard holds and the new
 headroom tests genuinely pin the clamp/NaN/non-default-target behavior. The
 one deferred item is a host-side PR-body edit, not code.
+
+---
+
+**New cycle, 2026-08-26.** PR #56 (above) merged as `6dda032`. The entries
+above are closed history for the goodput-basis fix. This cycle starts fresh
+from a 2026-08-25 Appledore field RCA (posted as an issue comment) that finds
+the *AIMD control law itself* unstable — a distinct, deeper defect than the
+cap-scaling issue #52 originally documented, reproduced independently of it.
+
+## Issue Review
+**Status**: complete
+**When**: 2026-08-26 02:08 +0000
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Issue**: #52
+**Comment**: best-effort post attempted; no GitHub auth in this container
+(`gh auth status --active` fails), so this entry is the canonical record —
+see the "Posting" note under Recommendations below.
+**Scope verdict**: needs-splitting
+
+### Actions
+- [ ] Split direction **B** (per-topic priority/class scheduling, so critical
+  telemetry is not gated behind video) to issue #19 rather than bundling it
+  into #52. It is a materially different mechanism (intra-connection topic
+  scheduling) from the AIMD control-loop defect the RCA documents, it
+  already has its own tracking issue and a branch in flight (PR #76), and
+  bundling it here couples this issue's landing to that work. #52 should ship
+  A (control-law fix) and C (drop-granularity regression fix) — both operate
+  on the same admission/send path the RCA and its evidence are about; B does
+  not.
+- [ ] Capture the 2026-08-25 operator-approved three-part direction (A static
+  cap / stop AIMD collapse, B priority classes, C message-level drop
+  granularity) somewhere durable and visible on the issue itself. Right now
+  it exists only in this run's orchestrator dispatch note, which is not part
+  of the GitHub record — the RCA comment on #52 documents A's defects in
+  detail but never mentions C, and B is referenced only via the
+  "Relationships" section's link to #19. Per "capture decisions, not just
+  implementations": post it (or fold it into plan.md, which does get
+  committed) before implementation starts, so a future reader of #52 can see
+  why C's scope was pulled in.
+- [ ] C (message-level drop granularity) reverts behavior changed by
+  `1489cfb`/`0c8b75f` (2026-05-18), which were themselves TOCTOU and
+  mutex-hold-time fixes made necessary by `republish_group_` going
+  `Reentrant`. Confirmed by reading both commits: the reserve-then-record
+  pattern in `Connection::send` (`src/connection.cpp:466-599`) exists
+  specifically to bound `sent_packet_statistics_mutex_` hold time and avoid
+  re-introducing the #10 wedge. Reverting to message-level (sum-all-fragments,
+  one `can_send`) atomicity must preserve that pattern's concurrency
+  properties, not just its old drop semantics — plan-task should scope
+  concurrency/TOCTOU regression tests alongside the behavioral ones ("test
+  what breaks" — timing/concurrency is exactly the hard-to-find-in-field
+  category, and this exact area has already caused two rounds of concurrency
+  bugs).
+- [ ] The prior cycle's PR #56 needed 3 review rounds to close a cluster of
+  doc/comment staleness (`doc/resend_budget_design.md`,
+  `include/udp_bridge/connection.h`, `include/udp_bridge/resend_constants.h`,
+  `.agents/README.md`, `test/bench/README.md`) after the admission-control
+  basis changed. This cycle changes the same control law again (detection →
+  sequence-gap or matched-byte-counters per the RCA's option B, decrease →
+  refractory-gated per option A, decrease target → no longer derived from
+  post-gate goodput per option C). Scope the doc sweep into the plan up
+  front rather than letting review rounds rediscover it piecemeal.
+- [ ] Recommendation: a refractory-period duration (the RCA's option A, the
+  core fix) is a new control constant in the same family as
+  `kAdmissionDecreaseFactor`/`kResendBackoffBase`. Make it configurable
+  per-connection like the existing admission-control parameters (Human
+  control and transparency: "Design controls to be configurable"), not a
+  hardcoded constant — `kResendBackoffBase`'s stale "cellular RTT 50–200 ms"
+  comment, already flagged in the prior issue-52 cycle, is exactly the kind
+  of drift a fixed constant invites.
+- [ ] Recommendation: this is the **third** distinct root-cause pass at this
+  same admission-control loop in roughly two weeks (cap-scaling → this RCA's
+  control-instability), and it is implicated in at least three other issues
+  (#9, #45, #71) plus two field incidents. Once this lands, consider
+  recording the settled design as a durable design note (ADR or equivalent)
+  rather than only in `doc/admission_control_design.md`/
+  `doc/resend_budget_design.md` prose, so the next incident's RCA does not
+  have to re-derive the control law from source before it can evaluate it.
+
+### Scope Assessment
+
+**Well-scoped?** Partially. Direction A (control-law fix: refractory period,
+loss-detection basis, decrease-target basis) and direction C (drop
+granularity) both act on the connection's admission/send path and are
+supported by the RCA's own evidence and by the repo's commit history
+(`1489cfb`/`0c8b75f`) respectively — a single PR covering A+C is reasonable.
+Direction B (priority classes) is a different mechanism with its own issue
+(#19) and an in-flight PR (#76); bundling it here is scope creep the
+orchestrator's own open question already flags. Recommend splitting B out
+(see Actions).
+
+**Right repo?** Yes. `udp_bridge` is a project repo; congestion/admission
+control is project-specific domain logic, not generic ROS 2 workspace
+infrastructure (workspace-vs-project separation). No workspace principle is
+implicated by keeping this here.
+
+**Dependencies**:
+- #19 (per-topic priority/class scheduling) — direction B; recommend
+  splitting out (see Actions).
+- #43 / #44 (admission floor / resend budget fractions) — already resolved
+  by the prior #52 cycle (goodput-basis rewrite, merged `6dda032`). This
+  RCA's defect is orthogonal and survives that fix: the control-instability
+  bug is present regardless of what the decrease target is scaled against.
+- #71 (idle-link cap collapse) — RCA states it is "a different trigger
+  reaching the same broken decrease path"; fixing A here should reduce or
+  close its severity too. Worth a cross-check (not necessarily a close)
+  once A lands.
+- #45 (2026-08-04 saturation RCA, unstarted) — RCA calls it "likely the same
+  mechanism." Should be revisited once this fix lands, either to confirm and
+  close, or to identify what's left.
+- #9 (resend amplification tuning / the original 126% rx_duplicate field
+  data) — background/context, no new dependency beyond what the original
+  issue body already establishes.
+- PR #76 — delivers runtime-settable tunables (mechanism for direction D,
+  the floor) and per-topic caps (partial B). Not a blocker for A/C, but if
+  the floor is to be raised as part of this work, that needs #76's tunables
+  mechanism (or its own equivalent) merged first — configure-time-only
+  parameters can't be raised live today.
+
+### Principle Alignment
+
+| Principle | Status | Notes |
+|---|---|---|
+| Human control and transparency | Watch | New control constants (refractory period, sequence-gap loss threshold) should be configurable, matching existing AIMD parameters — see Recommendations. |
+| Enforcement over documentation | OK | Not applicable — this is domain control logic, not a compliance rule. |
+| Capture decisions, not just implementations | Action needed | The 2026-08-25 operator-approved A/B/C direction exists only in this run's dispatch note, not in the GitHub-visible issue record. See Actions. |
+| A change includes its consequences | Action needed | Same doc/comment surface (`doc/*_design.md`, `connection.h`, `resend_constants.h`, `.agents/README.md`, `test/bench/README.md`) drifted for 3 review rounds last cycle when this same control law changed. Scope the sweep up front this time. |
+| Only what's needed | Watch | Bundling B (a distinct feature, already tracked separately) into this bugfix issue is the main "more than needed" risk — see scope recommendation to split. |
+| Improve incrementally | OK | A/C are a bounded, well-evidenced fix to a single control loop; not a rewrite. |
+| Test what breaks | OK, with a note | The two new field-replay regression tests (`test_admission_field_replay.cpp`) pin exactly the failure mode the RCA documents, deterministically, from recorded field telemetry — strong alignment. Note: direction C's concurrency surface (reserve-then-record, TOCTOU history) needs its own regression coverage, not just behavioral tests — see Actions. |
+| Workspace vs. project separation | OK | Correctly scoped to the project repo. |
+| Workspace improvements cascade to projects | OK | Not applicable — no workspace-level pattern involved. |
+| Primary framework first, portability where free | OK | Not applicable. |
+
+### ADR Applicability
+
+| ADR | Triggered | Notes |
+|---|---|---|
+| 0001 — Adopt ADRs | Watch | Not strictly triggered (this is project domain logic, and the workspace ADR process targets workspace/process decisions), but see the Recommendation above: given this is the third design pass on the same control loop, a durable design-decision record (ADR-equivalent, in the project repo) would pay for itself. |
+| 0002 — Worktree isolation | Yes | Already satisfied — work is proceeding in `feature/issue-52` on a layer worktree. |
+| 0003 — Project-agnostic workspace | No | Change is entirely within the project repo. |
+| 0008 — ROS 2 conventions | Yes | Standard — no deviation anticipated; existing package structure/testing conventions (gtest, ament) are already in use and should continue. |
+| 0013 — progress.md vocabulary | Yes | This entry uses `## Issue Review`; prior entries in this file already demonstrate correct use of the full vocabulary for this issue. |
+
+### Consequences
+
+- Any change to the admission-control detection/decrease law must update:
+  `doc/admission_control_design.md`, `include/udp_bridge/connection.h`
+  comments, `include/udp_bridge/resend_constants.h` comments,
+  `.agents/README.md` parameter table, `test/bench/README.md`, and the
+  `test_range_degradation.py` module docstring — the exact cluster that
+  took 3 review rounds to close last cycle for a smaller change to the same
+  law.
+- If direction C reverts to message-level `can_send` accounting, the
+  reserve-then-record concurrency pattern and its rationale comments
+  (`src/connection.cpp:466-599`) need to be preserved or deliberately
+  revised, not silently dropped — otherwise the #10 wedge class of bug is
+  back in play.
+- If a new admission-control parameter is added (e.g., refractory period),
+  `config/example_params.yaml` needs the correctly-typed literal — the prior
+  cycle's `8192.0` vs `8192` integer/double mismatch is exactly the kind of
+  ROS 2 parameter-type trap likely to recur here.
+
+### Recommendations
+
+- See the Actions checklist above (split B to #19; capture the A/B/C
+  decision on the issue/plan; scope concurrency tests for C; scope the doc
+  sweep up front; make the refractory period configurable; consider a
+  durable design record after this lands).
+- Posting: `gh auth status --active` fails in this container (no GitHub
+  read/write auth), consistent with the injected-context dispatch path
+  (issue #552-style host-fetched context). This progress.md entry is the
+  canonical record per the skill's best-effort posting contract; the
+  comment post is skipped rather than attempted and silently failing.
