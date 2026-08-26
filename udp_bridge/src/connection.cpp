@@ -127,24 +127,6 @@ float Connection::admissionFloorBytesPerSecond() const
   return admission_floor_bytes_per_second_;
 }
 
-void Connection::setLinkHeadroomFraction(float fraction)
-{
-  // Clamped below 1.0: a headroom of exactly 1.0 would target zero
-  // throughput on every congested sample and the connection could
-  // never carry data again.
-  if(std::isnan(fraction))
-    fraction = kDefaultLinkHeadroomFraction;
-  fraction = std::max(0.0f, std::min(0.99f, fraction));
-  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  link_headroom_fraction_ = fraction;
-}
-
-float Connection::linkHeadroomFraction() const
-{
-  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  return link_headroom_fraction_;
-}
-
 void Connection::setAdmissionRefractoryPeriodSeconds(double seconds)
 {
   // NaN and negative values fall back to the default (the contract in

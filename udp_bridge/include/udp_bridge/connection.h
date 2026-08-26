@@ -56,19 +56,15 @@ public:
   void setAdmissionFloorBytesPerSecond(float bytes_per_second);
   float admissionFloorBytesPerSecond() const;
 
-  /// Set the fraction [0, 1) of measured goodput deliberately left
-  /// unused for co-tenant traffic (issue #52). Values outside the range
-  /// are clamped; NaN falls back to the default.
-  ///
-  /// CURRENTLY INERT: the `(1 - fraction) x goodput` clamp on the
-  /// congested backoff was its only call site and was removed on
-  /// 2026-08-25, so setting this changes NOTHING about how the
-  /// connection behaves. It is accepted, clamped and readable only so
-  /// existing configs keep loading. See kDefaultLinkHeadroomFraction and
-  /// doc/admission_control_design.md, "link_headroom_fraction after the
-  /// clamp removal".
-  void setLinkHeadroomFraction(float fraction);
-  float linkHeadroomFraction() const;
+  // NOTE: setLinkHeadroomFraction / linkHeadroomFraction are GONE
+  // (issue #52). The `(1 - fraction) x goodput` clamp on the congested
+  // backoff was their only call site and was removed on 2026-08-25;
+  // keeping a setter that stored a value nothing read left the
+  // connection able to be "configured" into no change at all. The
+  // PARAMETER is still declared at the node — see
+  // kDefaultLinkHeadroomFraction and doc/admission_control_design.md,
+  // "link_headroom_fraction after the clamp removal" — but it reaches no
+  // Connection state.
 
   /// Set the minimum interval, in seconds, between admission-control
   /// decisions (issue #52). While the refractory window is open the
@@ -129,15 +125,15 @@ public:
   /// clean feedback recover by a step relative to the CURRENT effective
   /// cap.
   ///
-  /// The decrease no longer targets (1 - link_headroom_fraction_) *
+  /// The decrease no longer targets (1 - link_headroom_fraction) *
   /// goodput (issue #52, 2026-08-25). Goodput is depressed by the very
   /// throttling the target was computing — a positive feedback loop that
   /// drove the recorded field onset below the regression bound on its
   /// FIRST step, at any refractory tuning. The controller now backs off
   /// from its own last known-good state instead of from a measurement it
-  /// contaminated. `link_headroom_fraction_` consequently has no call
-  /// site in the control law; see resend_constants.h and
-  /// doc/admission_control_design.md.
+  /// contaminated. The headroom fraction consequently has no call site
+  /// in the control law and no longer exists as Connection state; see
+  /// resend_constants.h and doc/admission_control_design.md.
   ///
   /// REFRACTORY GATE (issue #52). At most one decision per congestion
   /// epoch: while the window opened by the last decrease is still open,
@@ -347,16 +343,6 @@ private:
   /// Minimum effective cap in absolute bytes/second (issue #52).
   /// Guarded by config_mutex_.
   float admission_floor_bytes_per_second_ = kDefaultAdmissionFloorBytesPerSecond;
-
-  /// Fraction of measured goodput left unused for co-tenant traffic
-  /// (issue #52). Guarded by config_mutex_.
-  ///
-  /// Retained as configuration — declared, clamped and readable via
-  /// `ros2 param get`, so existing configs keep loading — but it appears
-  /// in no message and is READ BY NOTHING in the control law since the
-  /// 2026-08-25 clamp removal. See
-  /// updateAdmissionControl above and kDefaultLinkHeadroomFraction.
-  float link_headroom_fraction_ = kDefaultLinkHeadroomFraction;
 
   /// True while a refractory window opened by an admission DECREASE is
   /// still outstanding — i.e. the episode has not been resolved by a

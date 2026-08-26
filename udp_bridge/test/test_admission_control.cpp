@@ -15,11 +15,6 @@
 //                                 removed on 2026-08-25: goodput is
 //                                 depressed by the throttling the clamp
 //                                 was computing (#52).
-//   HeadroomFractionDoesNotAffectDecreaseTarget — the parameter is
-//                                 retained as configuration but is inert
-//                                 in the control law; pinned so a
-//                                 re-introduction has to be deliberate
-//                                 rather than accidental (#52).
 //   RefractoryFreezesDecreaseWithinWindow / ...RecoveryWithinWindow /
 //   RefractoryEvaluatesNextSampleAfterWindow /
 //   RefractoryGrowsWithinEpisodeAndResetsOnCleanSample /
@@ -50,10 +45,8 @@
 //                                 receive rate over; a burst that the
 //                                 remote reports smoothed no longer
 //                                 reads as 80% loss (#52).
-//   HeadroomFractionClampedToContract — the setter clamps to [0, 0.99],
-//                                 negatives to 0, NaN to the default (#52).
-//   DuplicatesExcludedFromGoodput — duplicate bytes are subtracted before
-//                                 the headroom target is computed (#52).
+//   DuplicatesExcludedFromGoodput — duplicate bytes are subtracted from
+//                                 the reported goodput figure (#52).
 //   CongestionDetectionUsesRawReceivedNotGoodput — the congested predicate
 //                                 compares raw received vs sent (both
 //                                 include resends), not goodput (#52).
@@ -247,65 +240,14 @@ TEST_F(AdmissionControl, DecreaseIsPurelyMultiplicativeFromCurrentCap)
   EXPECT_EQ(conn->goodputBytesPerSecond(), 20000.0f);
 }
 
-TEST_F(AdmissionControl, HeadroomFractionDoesNotAffectDecreaseTarget)
-{
-  // link_headroom_fraction is retained as configuration (existing configs
-  // set it, and it is still reported) but it is INERT in the control law
-  // since the 2026-08-25 clamp removal. Pin that, so re-attaching it to
-  // the decrease has to be a deliberate act with its own reasoning rather
-  // than something a later edit reintroduces unnoticed. See
-  // doc/admission_control_design.md, "link_headroom_fraction after the
-  // clamp removal", for the measurement that settled this and the
-  // follow-up tracking whether it gets a new basis or is removed.
-  rclcpp::Clock clock(RCL_STEADY_TIME);
-  const auto t0 = clock.now();
-
-  auto conn = make_connection();
-  conn->setLinkHeadroomFraction(0.5f);
-  ASSERT_EQ(conn->linkHeadroomFraction(), 0.5f);
-  send_traffic(*conn, t0, 80);
-  conn->update_last_receive_time(t0.seconds(), 100, false);
-  conn->updateAdmissionControl(20000.0f, 0.0f, t0);
-
-  auto other = make_connection();
-  other->setLinkHeadroomFraction(0.0f);
-  send_traffic(*other, t0, 80);
-  other->update_last_receive_time(t0.seconds(), 100, false);
-  other->updateAdmissionControl(20000.0f, 0.0f, t0);
-
-  EXPECT_EQ(conn->effectiveRateLimit(), other->effectiveRateLimit())
-    << "The headroom fraction no longer participates in the decrease "
-       "(#52). If this fails, someone re-attached it — which may well be "
-       "right, but it needs a basis that is not post-gate goodput and it "
-       "needs the field-replay gate re-run.";
-  EXPECT_EQ(conn->effectiveRateLimit(),
-            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor));
-}
-
-TEST_F(AdmissionControl, HeadroomFractionClampedToContract)
-{
-  auto conn = make_connection();
-
-  // Contract [0, 1): 1.0 would target zero throughput forever, so the
-  // setter clamps to 0.99; values above clamp the same way.
-  conn->setLinkHeadroomFraction(1.0f);
-  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(), 0.99f)
-    << "A headroom of 1.0 must clamp to 0.99 so a congested sample never "
-       "targets exactly zero throughput.";
-  conn->setLinkHeadroomFraction(5.0f);
-  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(), 0.99f);
-
-  // Below 0: clamps to 0 (no headroom, target == goodput).
-  conn->setLinkHeadroomFraction(-0.5f);
-  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(), 0.0f)
-    << "A negative headroom must clamp to 0, not pass through.";
-
-  // NaN falls back to the default, never to 0.
-  conn->setLinkHeadroomFraction(std::numeric_limits<float>::quiet_NaN());
-  EXPECT_FLOAT_EQ(conn->linkHeadroomFraction(),
-                  udp_bridge::kDefaultLinkHeadroomFraction)
-    << "A NaN headroom must fall back to the default, not clamp to 0.";
-}
+// NOTE: HeadroomFractionDoesNotAffectDecreaseTarget and
+// HeadroomFractionClampedToContract lived here. They pinned the
+// inertness and the clamp contract of `link_headroom_fraction`, whose
+// setter and Connection state were REMOVED in #52 — there is no longer
+// an API to pin. The decrease's independence from goodput is covered by
+// DecreaseIsPurelyMultiplicativeFromCurrentCap above; what remains of
+// the parameter is a node-level declared tripwire, covered by
+// RetiredHeadroomParameterStillConfigures in test_node_name_limits.cpp.
 
 TEST_F(AdmissionControl, DuplicatesExcludedFromGoodput)
 {

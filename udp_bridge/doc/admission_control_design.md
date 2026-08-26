@@ -275,19 +275,47 @@ removed, on every phase the path can carry traffic in. The
 refractory-gated multiplicative decrease alone satisfies the co-tenant
 guarantee on this harness.
 
-So the parameter is **retained but inert**: existing configs set it, and
-removing it would break them, so it is still declared, clamped and
-reported — but nothing reads it. That is a state worth flagging rather
-than leaving to be rediscovered:
-`AdmissionControl.HeadroomFractionDoesNotAffectDecreaseTarget` pins the
-inertness, so re-attaching headroom to the control law has to be a
-deliberate act with its own basis (one that is *not* post-gate goodput)
-and its own re-run of the field-replay gate. **Follow-up:** decide
-whether headroom gets a new basis or the parameter is removed outright,
-after post-deployment field data exists — the same follow-up that should
-carry RCA option B (a sequence-gap / matched-byte-counter detector, which
-needs new wire fields and so a coordinated redeploy) and the
-evaluated-but-not-adopted purely-local resend-ratio detector.
+So the parameter is **retired**, and all of its behaviour is removed:
+`Connection::setLinkHeadroomFraction` / `linkHeadroomFraction` and the
+`link_headroom_fraction_` member are gone, no message carries it, and
+nothing in the control law reads it.
+
+**Why it is still declared.** Not because deleting it would break
+anything — it would not, and an earlier version of this document said
+otherwise. `udp_bridge.cpp` records the actual behaviour: rclcpp surfaces
+a YAML override only for a **declared** parameter (this node does not set
+`automatically_declare_parameters_from_overrides`), so an override for an
+*undeclared* parameter is **silently ignored**, not an error. That
+silence is the hazard. A stale key left in an old config — or typed from
+memory — would be accepted, do nothing, and say nothing, which is exactly
+the "set it, nothing happens, draw a false conclusion" shape that made
+the 2026-08-25 incident hard to reason about and that this whole branch
+exists to remove.
+
+So the parameter stays **declared with no behaviour**, and `on_configure`
+logs a **WARN naming the connection** whenever it is set to a non-default
+value, saying that it does nothing and what carries the guarantee now.
+This follows the repo's own precedent for the retired
+`remotes.<label>.name` key, which is likewise kept declared purely so a
+stale key is visible. It differs from that precedent in one respect: a
+stale `remotes.<label>.name` actively **misroutes** traffic (the #51 echo
+bug), so it fails the transition; a stale headroom value misroutes
+nothing, so refusing to configure would ground a boat over a dead config
+key. WARN, and come up.
+`RetiredParameters.LinkHeadroomFractionStillConfigures`
+(`test/test_node_name_limits.cpp`) pins that distinction.
+
+**Follow-up:** decide whether a headroom-like target gets a *new* basis
+(one that is not post-gate goodput), and whether the declared tripwire is
+eventually dropped once field configs are known not to carry the key —
+after post-deployment field data exists. Tracked on
+[#61](https://github.com/rolker/udp_bridge/issues/61), which is already
+the open question of whether rate headroom can protect a co-tenant across
+a capacity downshift at all, and is therefore where a replacement basis
+would have to be argued. That issue should also carry RCA option B (a
+sequence-gap / matched-byte-counter detector, which needs new wire fields
+and so a coordinated redeploy) and the evaluated-but-not-adopted
+purely-local resend-ratio detector.
 
 ## Headroom, and what the rate limit is actually for
 
@@ -302,7 +330,8 @@ Hence `link_headroom_fraction`, which used to make the controller target
 a fraction of what the link is *measured* to deliver, so a co-tenant — an
 SSH session, the operator's own management traffic — keeps a share on a
 62.5 kB/s path as well as on a 30 Mbit one. **That clamp was removed on
-2026-08-25** (see the section above); what now provides the co-tenant
+2026-08-25 and the parameter retired to a declared tripwire** (see the
+section above); what now provides the co-tenant
 guarantee is the refractory-gated multiplicative decrease itself, and
 the bench's management-flow survivability invariant in `test/bench/` —
 the thing that actually asserts the property — passes on it.

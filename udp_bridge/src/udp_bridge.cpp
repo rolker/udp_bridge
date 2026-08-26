@@ -655,9 +655,43 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       declareIfMissing(admission_floor_bps_param, static_cast<double>(kDefaultAdmissionFloorBytesPerSecond));
       double admission_floor_bps = getDoubleParameter(admission_floor_bps_param);
 
+      // RETIRED (#52). `link_headroom_fraction` has no behaviour left:
+      // the `(1 - headroom) x goodput` clamp it fed was removed on
+      // 2026-08-25, and nothing stores it any more — no Connection
+      // state, no message field, no control-law read.
+      //
+      // It stays DECLARED as a tripwire, following the same reasoning as
+      // the retired `remotes.<label>.name` key above: rclcpp surfaces a
+      // YAML override only for a declared parameter, so UNdeclaring this
+      // would make a stale key in an existing config silently ignored —
+      // set it, nothing happens, no diagnostic. Silence is precisely the
+      // shape that let the 2026-08-25 operator draw a false conclusion
+      // about a tunable, and it is what this whole branch exists to
+      // remove. Deleting the parameter "would not break any config" is
+      // true and is the problem, not the justification.
+      //
+      // WARN rather than FAIL, which is where this differs from
+      // `remotes.<label>.name`: that key, left stale, actively
+      // MISROUTES traffic (the #51 echo bug), so a config carrying it is
+      // broken. A stale headroom value misroutes nothing — the link is
+      // still protected, by the refractory-gated multiplicative decrease
+      // — so refusing to configure would ground a boat over a dead
+      // config key. The operator gets one loud line per offending
+      // connection instead.
       std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
       declareIfMissing(link_headroom_fraction_param, static_cast<double>(kDefaultLinkHeadroomFraction));
-      double link_headroom_fraction = get_parameter(link_headroom_fraction_param).as_double();
+      const double link_headroom_fraction = getDoubleParameter(link_headroom_fraction_param);
+      if(link_headroom_fraction != static_cast<double>(kDefaultLinkHeadroomFraction))
+        RCLCPP_WARN_STREAM(get_logger(),
+          "Connection '" << remote_name << "/" << connection_name
+          << "': link_headroom_fraction is set to " << link_headroom_fraction
+          << ", but the parameter is RETIRED and does nothing (#52). The "
+          "`(1 - headroom) x goodput` clamp it controlled was removed on "
+          "2026-08-25 because goodput is depressed by the very throttling "
+          "the clamp was computing. Co-tenant traffic on this path is now "
+          "protected by the refractory-gated multiplicative decrease "
+          "instead. Remove the key from your config; it is still declared "
+          "only so a stale one is visible rather than silently ignored.");
 
       std::string admission_refractory_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_refractory_period_seconds";
       declareIfMissing(admission_refractory_param, kDefaultAdmissionRefractoryPeriodSeconds);
@@ -674,7 +708,6 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // created there keep the field-initializer defaults
       // (kDefaultResendBudgetFraction,
       // kDefaultAdmissionFloorBytesPerSecond,
-      // kDefaultLinkHeadroomFraction,
       // kDefaultAdmissionRefractoryPeriodSeconds); the parameters here
       // are the only non-default source (see doc/resend_budget_design.md
       // and doc/admission_control_design.md).
@@ -690,7 +723,6 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
         live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
-        live_connection->setLinkHeadroomFraction(static_cast<float>(link_headroom_fraction));
         live_connection->setAdmissionRefractoryPeriodSeconds(admission_refractory);
 
         // A floor at or above the connection's own cap makes AIMD a

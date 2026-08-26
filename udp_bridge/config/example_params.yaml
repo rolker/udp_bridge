@@ -108,11 +108,9 @@
             # above capacity on a degraded link.
             admission_floor_bytes_per_second: 8192.0
 
-            # CURRENTLY INERT (issue #52, 2026-08-25). Nothing in the
-            # control law reads this. Setting it changes NOTHING about how
-            # this connection behaves; it is accepted, clamped to
-            # [0.0, 0.99] and readable via `ros2 param get` only so that
-            # existing configs keep loading.
+            # RETIRED (issue #52, 2026-08-25) — DO NOT SET. Shown here
+            # only so the key is recognisable; a real config should not
+            # carry it.
             #
             # It was the fraction of measured goodput deliberately left
             # unused so a co-tenant on the same path (an SSH session,
@@ -125,7 +123,16 @@
             # the bench's management-flow invariant. See
             # doc/admission_control_design.md, "link_headroom_fraction
             # after the clamp removal".
-            link_headroom_fraction: 0.2
+            #
+            # ALL BEHAVIOUR IS GONE: no Connection stores it, no message
+            # carries it, nothing in the control law reads it. It is still
+            # DECLARED so a stale key is VISIBLE — rclcpp surfaces a YAML
+            # override only for a declared parameter, so undeclaring it
+            # would make this key silently ignored, which is the same
+            # "set it, nothing happens" shape #52 exists to remove.
+            # Setting it to anything but 0.2 logs a WARN at on_configure
+            # naming the connection; the node still comes up.
+            #link_headroom_fraction: 0.2
 
             # Minimum interval between admission-control decisions, in
             # SECONDS (issue #52; see doc/admission_control_design.md).
@@ -150,7 +157,7 @@
             #
             # CONFIGURE-TIME ONLY, like every other admission parameter
             # here (resend_budget_fraction,
-            # admission_floor_bytes_per_second, link_headroom_fraction).
+            # admission_floor_bytes_per_second).
             # These are read once during on_configure and pushed to the
             # live Connection then. `ros2 param set` afterwards changes
             # the parameter and NOT the controller — the node has to be

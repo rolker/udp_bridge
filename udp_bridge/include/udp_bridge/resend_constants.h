@@ -272,21 +272,30 @@ inline constexpr double kAdmissionSendRateWindowSeconds = 5.0;
 // actually delivering, so it holds in exactly the case the ceiling
 // abandons.
 //
-// Overridable per connection via `link_headroom_fraction`.
-//
-// CURRENTLY INERT (issue #52, 2026-08-25). Its only call site was the
-// congested branch's `min(cap x 0.5, (1 - headroom) x goodput)` clamp,
-// which that pass removed: measured goodput is depressed by the very
-// throttling the formula was computing, so the clamp was a positive
-// feedback loop. On the recorded onset its first step alone landed at
+// RETIRED (issue #52, 2026-08-25). Its only call site was the congested
+// branch's `min(cap x 0.5, (1 - headroom) x goodput)` clamp, which that
+// pass removed: measured goodput is depressed by the very throttling the
+// formula was computing, so the clamp was a positive feedback loop. On
+// the recorded onset its first step alone landed at
 // 0.8 x (254615 - 51715) = 162320 — below the regression bound — before
 // any second decrease existed for the refractory gate to suppress, and
-// no refractory value rescued it. The parameter is retained (removing it
-// would break existing configs that set it): it is declared, clamped and
-// readable via `ros2 param get`, but it appears in no message and the
-// control law no longer reads it. See doc/admission_control_design.md,
-// "link_headroom_fraction after the clamp removal", for the measurement
-// that settled this and the follow-up it is tracked under.
+// no refractory value rescued it.
+//
+// This constant now has exactly one job: it is the DECLARED DEFAULT of
+// the retired `link_headroom_fraction` parameter, which the node keeps
+// declaring purely as a tripwire. Nothing stores it, no Connection
+// carries it, and the control law does not read it.
+//
+// Why declare a parameter nothing uses: rclcpp surfaces a YAML override
+// only for a DECLARED parameter (this node does not set
+// automatically_declare_parameters_from_overrides), so UNdeclaring it
+// would make a stale key in an existing config silently ignored — set
+// it, nothing happens, no diagnostic. That is the same "announced and
+// then ignored" shape this branch exists to remove, and it is the same
+// reason the retired `remotes.<label>.name` key stays declared. Declared
+// + a WARN on any non-default value is what an operator can act on. See
+// doc/admission_control_design.md, "link_headroom_fraction after the
+// clamp removal".
 inline constexpr float kDefaultLinkHeadroomFraction = 0.2f;
 
 // To convert a constant to seconds-as-double at a call site, use
