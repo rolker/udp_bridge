@@ -219,6 +219,26 @@ For each topic in `topics_list`:
 -   `period`: (double) Minimum period between messages (shaping/rate limiting). 0.0 = no limit.
 -   `queue_size`: (int) Subscriber queue size.
 
+> **Behavior change (#52): admission drops are now message-level.** The
+> admission gate used to shed individual *packets*; it now admits or
+> refuses a whole *message* atomically. Two things an operator watches
+> change shape as a result:
+>
+> - **Byte accounting.** Bytes that used to be counted as partially
+>   `success` now appear as `dropped`, and partial messages stop
+>   appearing on the wire at all. The totals are not comparable across
+>   this change. The intent is that a fragment of a message that can
+>   never be reassembled is spend on a degraded link buying nothing.
+> - **`resend_giveup_count` now climbs on *deliberate* drops.** A message
+>   refused at the gate has already consumed its packet numbers, but no
+>   fragment is stored for retransmission — so the receiver sees the gap,
+>   requests resends that can never be served, and gives up. That counter
+>   reads naturally as "the link lost packets"; after this change part of
+>   it is "the bridge deliberately shed traffic". The per-packet shed it
+>   replaced left fragments recoverable, so this conflation is new. Read
+>   `resend_giveup_count` alongside the connection's admission cap, not on
+>   its own.
+
 #### Services
 | Service | Type | Description |
 |---|---|---|

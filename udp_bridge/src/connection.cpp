@@ -634,6 +634,19 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   // list does fragment, half a topic list is no more useful than half a
   // video frame. The failure path already dropped them atomically before
   // this change — it is the success path that is now consistent with it.
+  //
+  // DIAGNOSTIC CONSEQUENCE (#52, review round 2). A message refused
+  // below has already consumed its packet numbers (assigned at the
+  // caller, udp_bridge.cpp), but nothing is stored in sent_packets_ — so
+  // the receiver sees the gap, requests resends that can never be
+  // served, and eventually gives up. `resend_giveup_count`, which an
+  // operator reads as "the link lost packets", therefore climbs on every
+  // DELIBERATE admission drop. The per-packet shed this replaced left
+  // fragments recoverable, so the conflation is new. The atomic drop is
+  // still right — a fragment of a message that can never be reassembled
+  // is bytes spent on a degraded link buying nothing — but the counter
+  // has to be read alongside the admission cap now, which is why it is
+  // called out in README.md.
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     if(!sent_packet_statistics_.can_send(total_size, reserved_bytes_in_flight_, rate_limit, now))
