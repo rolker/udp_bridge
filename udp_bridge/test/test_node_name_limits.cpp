@@ -51,8 +51,23 @@ const std::string kTooLong(maximum_node_name_length + 1, 'x');
 const std::string kAtLimit(maximum_node_name_length, 'a');
 const std::string kOtherAtLimit(maximum_node_name_length, 'b');
 
-// A bridge with its parameters pre-declared, so on_configure's
-// declareIfMissing picks them up instead of installing defaults.
+// A bridge driven through the REAL configuration entry point.
+//
+// Every value below becomes an `rclcpp::NodeOptions` parameter OVERRIDE —
+// byte-for-byte the route a params YAML file or a `-p` command-line
+// override takes — and the node is not constructed until `configure()`,
+// because overrides are fixed at construction. Nothing here pre-declares a
+// parameter.
+//
+// That is a rule, not a style choice (#52, review round 3). The previous
+// harness pre-declared each key with `node_->declare_parameter(...)`, which
+// SHORT-CIRCUITS `on_configure`'s `declareIfMissing` and moves any type
+// mismatch from `declare_parameter` to the later read. A test written that
+// way certified an integer-literal guard as working when the field path —
+// where the override reaches an undeclared parameter and
+// `declare_parameter` itself throws — still failed the whole lifecycle
+// transition. A harness that can establish a state no config file can
+// produce is not testing the configuration entry point.
 //
 // `port` is 0 on purpose: the kernel assigns an ephemeral port, so a test
 // that reaches the bind cannot collide with a real bridge (or with another
@@ -61,14 +76,14 @@ class Bridge
 {
 public:
   explicit Bridge(const std::string& node_name)
-  : node_(std::make_shared<udp_bridge::UDPBridge>(node_name))
+  : node_name_(node_name)
   {
-    node_->declare_parameter("port", 0);
+    overrides_.emplace_back("port", 0);
   }
 
   Bridge& name(const std::string& value)
   {
-    node_->declare_parameter("name", value);
+    overrides_.emplace_back("name", value);
     return *this;
   }
 
@@ -81,7 +96,7 @@ public:
   Bridge& remote(const std::string& label, const std::string& retired_name)
   {
     labels_.push_back(label);
-    node_->declare_parameter("remotes." + label + ".name", retired_name);
+    overrides_.emplace_back("remotes." + label + ".name", retired_name);
     return *this;
   }
 
@@ -92,20 +107,44 @@ public:
   {
     connections_[label].push_back(connection_id);
     const std::string base = "remotes." + label + ".connections." + connection_id + ".";
-    node_->declare_parameter(base + "host", "127.0.0.1");
-    node_->declare_parameter(base + "port", 4201);
+    overrides_.emplace_back(base + "host", "127.0.0.1");
+    overrides_.emplace_back(base + "port", 4201);
     return *this;
   }
 
   // Set one per-connection parameter with a caller-chosen TYPE — which is
   // the point for the tests below: `5` and `5.0` are different ROS 2
-  // parameter types for the same YAML-looking value.
+  // parameter types for the same YAML-looking value, and as an OVERRIDE
+  // (not a pre-declaration) the integer one reaches `declare_parameter`
+  // exactly as it would from a config file.
   template<typename T>
   Bridge& connectionParameter(const std::string& label, const std::string& connection_id,
                               const std::string& key, const T& value)
   {
-    node_->declare_parameter(
+    overrides_.emplace_back(
       "remotes." + label + ".connections." + connection_id + "." + key, value);
+    return *this;
+  }
+
+  // Add a topic to a connection, so on_configure walks the per-topic
+  // parameter block (`period` among them).
+  Bridge& topic(const std::string& label, const std::string& connection_id,
+                const std::string& topic_name)
+  {
+    topics_["remotes." + label + ".connections." + connection_id + "."]
+      .push_back(topic_name);
+    return *this;
+  }
+
+  // Set one per-topic parameter with a caller-chosen TYPE, as an override.
+  template<typename T>
+  Bridge& topicParameter(const std::string& label, const std::string& connection_id,
+                         const std::string& topic_name, const std::string& key,
+                         const T& value)
+  {
+    overrides_.emplace_back(
+      "remotes." + label + ".connections." + connection_id + ".topics." +
+      topic_name + "." + key, value);
     return *this;
   }
 
@@ -113,18 +152,28 @@ public:
   // it UNCONFIGURED; one that succeeds leaves it INACTIVE.
   uint8_t configure()
   {
-    node_->declare_parameter("remotes_list", labels_);
+    auto overrides = overrides_;
+    overrides.emplace_back("remotes_list", labels_);
     for(const auto& entry: connections_)
-      node_->declare_parameter("remotes." + entry.first + ".connections_list", entry.second);
+      overrides.emplace_back(
+        "remotes." + entry.first + ".connections_list", entry.second);
+    for(const auto& entry: topics_)
+      overrides.emplace_back(entry.first + "topics_list", entry.second);
+    node_ = std::make_shared<udp_bridge::UDPBridge>(
+      node_name_, rclcpp::NodeOptions().parameter_overrides(overrides));
     return node_->configure().id();
   }
 
+  // Valid only after configure() — the node does not exist before it.
   std::shared_ptr<udp_bridge::UDPBridge> node() const { return node_; }
 
 private:
+  std::string node_name_;
   std::shared_ptr<udp_bridge::UDPBridge> node_;
+  std::vector<rclcpp::Parameter> overrides_;
   std::vector<std::string> labels_;
   std::map<std::string, std::vector<std::string>> connections_;
+  std::map<std::string, std::vector<std::string>> topics_;
 };
 
 constexpr uint8_t kUnconfigured = lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
@@ -352,23 +401,83 @@ TEST(RetiredParameters, LinkHeadroomFractionStillConfigures)
        "WARN and come up, not fail the transition";
 }
 
-// The double-literal trap, guarded (#52). YAML has no way to say "this
-// integer is a double", so `admission_refractory_period_seconds: 5`
-// arrives as a ROS 2 INTEGER parameter and a bare as_double() throws
-// ParameterTypeException — inside on_configure, where rclcpp_lifecycle
-// SWALLOWS it and leaves a node that silently failed to configure with
-// nothing in the log naming the parameter. The read site coerces
-// PARAMETER_INTEGER instead.
+// The double-literal trap, guarded at the DECLARATION (#52).
+//
+// YAML has no way to say "this integer is a double", so
+// `admission_refractory_period_seconds: 5` arrives as a ROS 2 INTEGER
+// override for a parameter whose default is a double. Under static
+// parameter typing that combination throws
+// `InvalidParameterTypeException` inside `declare_parameter` — i.e.
+// before any read of the value — and the throw lands in on_configure,
+// where rclcpp_lifecycle SWALLOWS it and leaves a node that silently
+// failed to configure with nothing in the log naming the parameter.
+//
+// This drives the real entry point: every value below is a NodeOptions
+// parameter OVERRIDE, so `declare_parameter` sees exactly what it sees
+// from a params file. Round 2's version of this test pre-declared the
+// key as an INTEGER, which short-circuits `declareIfMissing` entirely
+// and moved the failure to the read — a state no config file can reach.
+// It passed while `admission_refractory_period_seconds: 5` in a real
+// config still failed the whole transition.
 TEST(RetiredParameters, IntegerLiteralForADoubleParameterConfigures)
 {
   Bridge bridge("integer_double_literal");
   bridge.name("hub").remote("peer", "").connection("peer", "c0");
   bridge.connectionParameter("peer", "c0", "admission_refractory_period_seconds", 5);
   bridge.connectionParameter("peer", "c0", "admission_floor_bytes_per_second", 9000);
-  EXPECT_EQ(bridge.configure(), kInactive)
+  bridge.connectionParameter("peer", "c0", "resend_budget_fraction", 1);
+  bridge.topic("peer", "c0", "chatter");
+  bridge.topicParameter("peer", "c0", "chatter", "period", 1);
+  ASSERT_EQ(bridge.configure(), kInactive)
     << "an integer literal for a double-typed connection parameter must "
-       "be coerced, not thrown out of the lifecycle transition where the "
-       "exception is swallowed and the failure is invisible";
+       "be coerced at declaration, not thrown out of the lifecycle "
+       "transition where the exception is swallowed and the failure is "
+       "invisible";
+
+  // Coerced, not merely survived: the parameter must end up DOUBLE-typed
+  // and carrying the configured magnitude. A guard that swallowed the
+  // override and installed the default would also reach INACTIVE.
+  const std::string base = "remotes.peer.connections.c0.";
+  for(const auto& expected: std::map<std::string, double>{
+        {base + "admission_refractory_period_seconds", 5.0},
+        {base + "admission_floor_bytes_per_second", 9000.0},
+        {base + "resend_budget_fraction", 1.0},
+        {base + "topics.chatter.period", 1.0}})
+  {
+    const auto parameter = bridge.node()->get_parameter(expected.first);
+    EXPECT_EQ(parameter.get_type(), rclcpp::ParameterType::PARAMETER_DOUBLE)
+      << expected.first << " must stay statically typed as a double";
+    EXPECT_DOUBLE_EQ(parameter.as_double(), expected.second)
+      << expected.first << " must carry the value the config asked for";
+  }
+}
+
+// The same parameters written the ordinary way still work — the coercion
+// path must not have displaced the normal one.
+TEST(RetiredParameters, DoubleLiteralForADoubleParameterConfigures)
+{
+  Bridge bridge("double_double_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "admission_refractory_period_seconds", 5.5);
+  bridge.connectionParameter("peer", "c0", "admission_floor_bytes_per_second", 9000.5);
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_DOUBLE_EQ(
+    bridge.node()->get_parameter(
+      "remotes.peer.connections.c0.admission_refractory_period_seconds").as_double(),
+    5.5);
+}
+
+// A genuinely wrong type is still refused. INTEGER is coerced because
+// there is one defensible reading of `5` as a rate; a string has none,
+// so the transition must fail rather than silently install a default.
+TEST(RetiredParameters, StringLiteralForADoubleParameterFailsToConfigure)
+{
+  Bridge bridge("string_double_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "admission_refractory_period_seconds",
+                             std::string("five"));
+  EXPECT_EQ(bridge.configure(), kUnconfigured)
+    << "a string where a rate belongs must not be silently accepted";
 }
 
 int main(int argc, char** argv)
