@@ -14,20 +14,26 @@
 //
 // The trigger was ~1.11% loss. The response was a 183x cap reduction.
 //
-// Two tests, deliberately at different levels:
+// Three tests, deliberately at different levels:
 //
 //   FieldOnsetMustNotCascadeToFloor -- replays the RECORDED sender/receiver
 //       telemetry from the 07:20 episode. Pins the narrow contract: one
 //       marginal sample must not cascade into a run to the floor.
 //
-//   SteadyLightLossKeepsTheLinkUp -- a closed-loop model of the day's
-//       actual operating point (offered load well under capacity, ~1%
-//       loss, and the smoothing skew between the two ends that is the
+//   HandoverBlipMustNotCostTwoMinutesOfVideo -- a closed-loop model of the
+//       day's actual operating point (offered load well under capacity,
+//       ~1% loss, and the smoothing skew between the two ends that is the
 //       real defect). Pins the property that matters operationally: the
 //       operator keeps their video.
 //
-// Both are deterministic, need no network impairment, and fail loudly
-// against the pre-fix controller.
+//   SustainedRealLossMustConverge -- the other side of the gate. A link
+//       whose capacity genuinely drops and stays down; the controller
+//       must still find it, and find it in seconds. Without this one, a
+//       controller that has stopped detecting congestion at all passes
+//       both tests above.
+//
+// All three are deterministic, need no network impairment, and fail
+// loudly against the pre-fix controller.
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -210,7 +216,14 @@ TEST_F(AdmissionFieldReplay, FieldOnsetMustNotCascadeToFloor)
   uint32_t lowest = kFieldRateLimit;
   for(const auto& s: kFieldOnset)
   {
-    send_at_rate(*conn, t, s.sent_on_wire_bps);
+    // Spread the row's bytes across the feedback interval rather than
+    // stamping them at one instant. Bunched, a 1.975 s cadence carrying
+    // a second of bytes reads ~24% low over the detector's 5 s window,
+    // which makes the 07:20:45 row -- the single marginal sample this
+    // test is named for -- read CLEAN and moves the first decrease two
+    // rows later. The test still discriminated, but not by the mechanism
+    // its name, comment and failure message describe (#52 review r1).
+    send_over_interval(*conn, t, kFeedbackInterval, s.sent_on_wire_bps);
     conn->update_last_receive_time(t.seconds(), 100, false);
     conn->updateAdmissionControl(s.remote_received_bps, s.remote_duplicate_bps, t);
     lowest = std::min(lowest, conn->effectiveRateLimit());
@@ -258,6 +271,7 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
 
   double admitted_total = 0.0;
   double offered_total = 0.0;
+  int decreases = 0;
 
   for(int i = 0; i < kSteps; ++i)
   {
@@ -269,6 +283,9 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
     const bool blip = (i >= kBlipStep && i < kBlipStep + kBlipLength);
     const float loss = blip ? kBlipLoss : kBaseLoss;
     conn->updateAdmissionControl(admitted * (1.0f - loss), 0.0f, t);
+
+    if(conn->effectiveRateLimit() < static_cast<uint32_t>(cap))
+      ++decreases;
 
     admitted_total += admitted;
     offered_total += kOfferedBps;
@@ -289,6 +306,18 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
 
   EXPECT_GT(conn->effectiveRateLimit(), kFieldRateLimit / 2)
     << "Two minutes after a 4 s blip the cap must be usable again.";
+
+  // The delivered fraction above cannot move until the cap has halved
+  // TWICE (495000 offered against a 1500000 cap: one halving still
+  // admits everything), so on its own it is blind to the first two
+  // decreases. Count them directly. The blip spans ~4 s, inside one
+  // refractory window, so it is one congestion episode and is entitled
+  // to exactly one backoff.
+  EXPECT_LE(decreases, 1)
+    << "A single ~4 s handover blip applied " << decreases << " decreases. "
+       "One congestion episode must cost at most one backoff — the "
+       "2026-08-25 collapse was seven halvings from one such episode "
+       "(#52).";
 }
 
 // THE OTHER SIDE OF THE GATE.
@@ -308,9 +337,14 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
 // it, and must find it in seconds, because issue #52's over_horizon phase
 // needs it capable of reacting again once the link returns.
 //
-// This is also what bounds the refractory backoff cap in A1: seven
-// halvings at an unboundedly-growing refractory window is minutes, and
-// this test fails long before that.
+// This test bounds the refractory backoff cap only WEAKLY. Its 40 s
+// convergence deadline rules out a window grown to the minutes scale,
+// but it was measured (#52 review round 1) to stay green with
+// kAdmissionRefractoryMaximumMultiple set to 1.0 (no growth at all) AND
+// to 1000 (a 5000 s ceiling), because the descent it measures is driven
+// by the halvings rather than by the window. The constants themselves
+// are pinned by AdmissionControl.RefractoryWindowGrowthIsBounded in
+// test_admission_control.cpp; do not read this test as covering them.
 TEST_F(AdmissionFieldReplay, SustainedRealLossMustConverge)
 {
   rclcpp::Clock clock(RCL_STEADY_TIME);
