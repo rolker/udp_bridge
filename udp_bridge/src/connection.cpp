@@ -168,6 +168,7 @@ void Connection::setAdmissionRefractoryPeriodSeconds(double seconds)
   // reconfiguration made while a grown window is open would leave the
   // controller frozen under the OLD value it was just told to abandon.
   admission_refractory_current_seconds_ = seconds;
+  admission_decrease_outstanding_ = false;
   last_admission_decrease_time_ = 0.0;
 }
 
@@ -321,7 +322,15 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   //
   // A backwards clock step (elapsed < 0) expires the window rather than
   // freezing the controller until the clock catches up.
-  if(last_admission_decrease_time_ > 0.0)
+  //
+  // "Is a decrease outstanding" is its own boolean and NOT
+  // `last_admission_decrease_time_ > 0.0`. Under `use_sim_time` before
+  // the first `/clock`, or a bag replayed from t=0, a real recorded
+  // decrease has timestamp 0.0 — which the old sentinel read as "no
+  // decrease outstanding", leaving the gate silently inert and halving
+  // the cap on every sample. That is precisely the cascade this branch
+  // exists to stop (#52, review round 1).
+  if(admission_decrease_outstanding_)
   {
     const double elapsed = now.seconds() - last_admission_decrease_time_;
     if(elapsed >= 0.0 && elapsed < admission_refractory_current_seconds_)
@@ -341,12 +350,13 @@ void Connection::updateAdmissionControl(float remote_received_bps,
     // each decrease shrinks our own send rate and so widens the very
     // filter skew that triggered the detector. A fixed window still
     // permits a third and fourth halving inside one such episode.
-    if(last_admission_decrease_time_ > 0.0)
+    if(admission_decrease_outstanding_)
       admission_refractory_current_seconds_ =
         std::min(admission_refractory_current_seconds_ * kAdmissionRefractoryGrowthFactor,
                  admission_refractory_period_seconds_ * kAdmissionRefractoryMaximumMultiple);
     else
       admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
+    admission_decrease_outstanding_ = true;
     last_admission_decrease_time_ = now.seconds();
 
     // Purely multiplicative decrease from the controller's own last
@@ -369,6 +379,7 @@ void Connection::updateAdmissionControl(float remote_received_bps,
     // The episode resolved: clear the outstanding decrease and give back
     // the accumulated exponential growth, so the NEXT episode starts
     // from the base window rather than inheriting this one's ceiling.
+    admission_decrease_outstanding_ = false;
     last_admission_decrease_time_ = 0.0;
     admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
 

@@ -343,11 +343,23 @@ private:
   /// updateAdmissionControl above and kDefaultLinkHeadroomFraction.
   float link_headroom_fraction_ = kDefaultLinkHeadroomFraction;
 
+  /// True while a refractory window opened by an admission DECREASE is
+  /// still outstanding — i.e. the episode has not been resolved by a
+  /// clean sample the controller was free to act on. Cleared by that
+  /// clean sample and by setAdmissionRefractoryPeriodSeconds.
+  ///
+  /// This is a separate flag rather than `last_admission_decrease_time_
+  /// > 0.0` on purpose (#52, review round 1): 0.0 is a legal clock
+  /// value. Under `use_sim_time` before the first `/clock`, or a bag
+  /// replayed from t=0, the sentinel form read a real decrease as "no
+  /// decrease outstanding" and left the gate inert for exactly the
+  /// samples that matter. Guarded by config_mutex_.
+  bool admission_decrease_outstanding_ = false;
+
   /// Time (seconds, from the clock updateAdmissionControl is called
-  /// with) of the most recent admission DECREASE, or 0.0 when no
-  /// decrease is outstanding — which is also how "the episode resolved"
-  /// is represented: the first clean sample evaluated after a decrease
-  /// clears this back to 0.0. Guarded by config_mutex_.
+  /// with) of the most recent admission DECREASE. Only meaningful while
+  /// admission_decrease_outstanding_ is true — read the flag, never this
+  /// value, to ask whether a window is open. Guarded by config_mutex_.
   double last_admission_decrease_time_ = 0.0;
 
   /// Configured base refractory period, seconds (issue #52). Guarded by

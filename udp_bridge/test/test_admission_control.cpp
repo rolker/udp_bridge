@@ -32,6 +32,11 @@
 //                                 (+Inf included) can freeze the
 //                                 controller for the life of the node
 //                                 (#52).
+//   RefractoryGateHoldsAtClockZero — a decrease recorded at clock time
+//                                 0.0 still opens the window: sim time
+//                                 before the first /clock, and bag
+//                                 replay from t=0, must not silently run
+//                                 the pre-#52 controller (#52).
 //   WindowMatchedSendRateSurvivesABurst — the congestion detector
 //                                 measures our send rate over the same
 //                                 5 s window the remote measures its
@@ -869,6 +874,43 @@ TEST_F(AdmissionControl, RefractoryGrowsWithinEpisodeAndResetsOnCleanSample)
   EXPECT_EQ(conn->currentAdmissionRefractoryWindowSeconds(), base)
     << "The first clean sample after a decrease is what 'the episode "
        "resolved' means — reset the window to its base (#52).";
+}
+
+TEST_F(AdmissionControl, RefractoryGateHoldsAtClockZero)
+{
+  // The gate must not depend on the clock's ORIGIN. "A decrease is
+  // outstanding" cannot be encoded as `last_admission_decrease_time_ >
+  // 0.0`, because 0.0 is a legal clock reading: a decrease recorded at
+  // exactly t=0 then reads as "no decrease outstanding", the window
+  // never applies, and every following congested sample halves again —
+  // the pre-#52 cascade, silently reintroduced.
+  //
+  // Reaching t=0 with a non-empty send history takes a BACKWARDS clock
+  // step (Statistics::add drops records timestamped exactly 0, so a
+  // freshly-started sim clock has no send history to be congested
+  // about). A looping bag replay and a sim reset both do exactly that:
+  // traffic recorded at t=2, then the clock restarts at 0.
+  auto conn = make_connection();
+  const rclcpp::Time before_reset(2, 0, RCL_ROS_TIME);
+  send_traffic(*conn, before_reset, 80);
+
+  const rclcpp::Time t0(0, 0, RCL_ROS_TIME);
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+  conn->updateAdmissionControl(20000.0f, 0.0f, t0);           // decrease 1
+  const uint32_t after_first = conn->effectiveRateLimit();
+  ASSERT_LT(after_first, kRateLimit)
+    << "Setup: the sample at t=0 must itself be congested, or this test "
+       "pins nothing.";
+
+  // Well inside the refractory window, still at a clock time near zero.
+  const auto t1 = t0 + rclcpp::Duration::from_seconds(
+    udp_bridge::kDefaultAdmissionRefractoryPeriodSeconds * 0.25);
+  conn->update_last_receive_time(t1.seconds(), 100, false);
+  conn->updateAdmissionControl(20000.0f, 0.0f, t1);
+
+  EXPECT_EQ(conn->effectiveRateLimit(), after_first)
+    << "A decrease recorded at clock time 0.0 must still open the "
+       "refractory window — 0.0 is a clock value, not a sentinel (#52).";
 }
 
 TEST_F(AdmissionControl, RefractoryPeriodSetterContract)
