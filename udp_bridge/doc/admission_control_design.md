@@ -110,18 +110,25 @@ static cap:
   (up to ~200 ms per fragment of `sendto` polling) the reservation is
   held for that whole time. `reserved_bytes_in_flight_` is a level, not a
   windowed rate — it has no time dimension. A concurrent BridgeInfo send
-  sees those reserved bytes in `can_send` and can be refused; a long
-  enough blackout sets `feedback_stale`, which is congestion, which costs
-  a decrease.
+  or resend request sees those reserved bytes in `can_send` and can be
+  refused.
+
+  **Which loop that harms.** Not this connection's own congestion
+  detector: `feedback_stale` is driven by `last_receive_time`, i.e.
+  INBOUND traffic from the remote, which dropping our own outbound
+  BridgeInfo does not touch. (An earlier version of this note had that
+  chain backwards.) Nor does the large message read as an idle link — its
+  own fragments are succeeding, so `sent_bps > 0` throughout. What is
+  starved is (a) the **remote's** admission controller, which our
+  BridgeInfo feeds, and (b) our own **resend** path, whose re-requests do
+  not go out. Same risk class, different mechanism, and both are loops
+  this connection cannot observe from the inside.
 
   This is bounded, not a deadlock: the reservation is released on every
-  exit path, and a window in which everything was dropped reads
-  `sent_bps == 0`, which cannot be congested. But that escape is a
-  consequence of the idle-link rule rather than a designed one, and
-  nothing bounds the hold time except the send-poll budget. If overhead
-  starvation is ever observed in the field, the fix is a separate
-  reservation ledger for the overhead tier — not a longer refractory
-  period, which would only delay the reaction to it.
+  exit path, and the hold is bounded by the send-poll budget — but by
+  nothing else. If overhead starvation is ever observed in the field, the
+  fix is a separate reservation ledger for the overhead tier — not a
+  longer refractory period, which would only delay the reaction to it.
 
 - **Resend budget (#44) bases on measured goodput** (changed by #52): the
   budget is `resend_budget_fraction × goodput`. It used to be a fraction

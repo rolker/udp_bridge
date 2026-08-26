@@ -601,17 +601,30 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   // which shares this budget — sees the reserved bytes in can_send and
   // may be refused.
   //
-  // So a large or slow message can, in principle, cause BridgeInfo to be
-  // dropped for the duration of its loop; a long enough blackout sets
-  // feedback_stale in updateAdmissionControl, which is congestion, which
-  // costs a decrease. This is NOT a deadlock: the reservation is
-  // released unconditionally on every exit path (see the batch guard
-  // below), and if every packet in the window is dropped the sent rate
-  // reads 0, which cannot be congested — the controller's idle-link rule
-  // is the escape. But the escape is a consequence, not a design, and
-  // nothing bounds the hold time except the poll budget. If the overhead
-  // tier is ever observed starving in the field, the fix is a separate
-  // reservation ledger for it rather than a longer refractory period.
+  // So a large or slow message can, in principle, cause our OUTBOUND
+  // BridgeInfo and resend requests to be dropped for the duration of its
+  // loop. Two loops are harmed by that, and neither is this connection's
+  // own congestion detector:
+  //
+  //   - the REMOTE's admission controller, which is fed by our BridgeInfo
+  //     and by our echo of what we received. Starve it and it decides on
+  //     stale evidence, or on none.
+  //   - our own resend path, whose re-requests do not go out.
+  //
+  // What it does NOT do is set our own `feedback_stale`. That flag is
+  // driven by `last_receive_time` — INBOUND traffic from the remote —
+  // which a reservation held on our send side does not touch. (An
+  // earlier version of this comment had that causal chain backwards.)
+  // Nor does the large message itself read as an idle link: its own
+  // fragments are succeeding, so `sent_bps > 0` throughout.
+  //
+  // This is NOT a deadlock: the reservation is released unconditionally
+  // on every exit path (see the batch guard below), and the hold is
+  // bounded by the sendto poll budget. But it is bounded by nothing
+  // ELSE, and the harm lands on a loop we cannot see from here. If the
+  // overhead tier is ever observed starving in the field, the fix is a
+  // separate reservation ledger for it rather than a longer refractory
+  // period.
   //
   // is_overhead traffic (BridgeInfo, resend requests, topic lists)
   // reaches this same overload from the same single call site
