@@ -4,6 +4,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -934,6 +935,20 @@ std::pair<double, double> Connection::data_receive_rate(double time)
   const double window_start = time - kReceiveRateWindowSeconds;
   while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < window_start)
     data_size_received_history_.erase(data_size_received_history_.begin());
+
+  // Bounded at the TOP end too (#52, review round 3). The map is sorted
+  // by receive time, so records written before a backwards clock step —
+  // a looping bag replay, a sim reset, an NTP correction — sort to the
+  // BACK and the begin()-erase loop above can never reach them. They
+  // would then be summed into every rate this function reports, on top
+  // of a dt floored at 1 s, inflating the remote's apparent receive rate
+  // for as long as the replay takes to catch back up. That rate is one
+  // side of the admission controller's congestion comparison, so a stale
+  // future record reads as the remote receiving more than we sent — the
+  // same class of measurement fault this branch exists to remove.
+  while(!data_size_received_history_.empty() &&
+        std::prev(data_size_received_history_.end())->first > time)
+    data_size_received_history_.erase(std::prev(data_size_received_history_.end()));
 
   double dt = 1.0;
   if(!data_size_received_history_.empty())

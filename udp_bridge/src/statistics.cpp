@@ -166,7 +166,12 @@ uint64_t PacketSendStatistics::bytes_in_window(PacketSendCategory category, rclc
   uint64_t total = 0;
   for(const auto& entry : data_)
   {
-    if(entry.timestamp < one_second_ago)
+    // Bounded at BOTH ends, for the same reason can_send is (#52, review
+    // round 3): a record stamped after `time` is not evidence about the
+    // window ending at `time`, and after a backwards clock step the
+    // deque is full of them. Counting them here would over-report the
+    // resend spend and shed resends that the budget has room for.
+    if(entry.timestamp < one_second_ago || entry.timestamp > time)
       continue;
     if(entry.send_result == SendResult::dropped)
       continue;
@@ -258,7 +263,23 @@ bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes,
   uint64_t total_sent = 0;
   for(const auto& entry : data_)
   {
-    if(entry.timestamp < one_second_ago)
+    // Bounded at BOTH ends (#52, review round 3). Bounding only below
+    // permanently WEDGES the connection across a backwards clock step —
+    // a looping bag replay, a sim reset, an NTP correction. Every record
+    // written before the step is stamped in what is now the future, and
+    // summing them makes total_sent exceed any sane limit forever:
+    // can_send returns false on every call, the connection admits
+    // nothing, and it presents to an operator as "the link stopped".
+    // Statistics::add now evicts those records too, so this is the
+    // second of two independent bounds rather than the only one; keep
+    // both, because the eviction runs on add and a connection that has
+    // gone quiet across the step would not get one.
+    //
+    // A record stamped after `time` is not evidence about the window
+    // ending at `time`. Excluding it can only under-count, i.e. admit
+    // slightly more, which is the safe direction for a bound whose
+    // failure mode is a dead link.
+    if(entry.timestamp < one_second_ago || entry.timestamp > time)
       continue;
     if(entry.send_result == SendResult::dropped)
       continue;

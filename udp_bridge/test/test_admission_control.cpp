@@ -948,6 +948,166 @@ TEST_F(AdmissionControl, RefractoryGateHoldsAtClockZero)
        "refractory window — 0.0 is a clock value, not a sentinel (#52).";
 }
 
+// ---------------------------------------------------------------------
+// Backwards clock discontinuity (#52, review round 3).
+//
+// A looping bag replay, a sim reset and an NTP correction all step the
+// clock BACKWARDS. Round 2 bounded success_rate_in_window at both ends
+// for exactly that event and stopped at one of four siblings; these
+// tests cover the other three — Statistics::add's eviction,
+// PacketSendStatistics::can_send, PacketSendStatistics::bytes_in_window
+// — plus Connection::data_receive_rate, and the send path end to end.
+//
+// The failure they pin is not subtle: with only a lower bound, every
+// record written before the step is stamped in what is now the future,
+// can_send sums them forever, the connection admits NOTHING, and the
+// statistics deque grows without bound because front-only eviction can
+// never reach a future-stamped front. To an operator that is "the link
+// stopped", on a link that is fine.
+
+namespace
+{
+
+// Exposes the retained-record count. `data_` is protected in
+// Statistics<T>, so a derived probe is the supported way to observe the
+// eviction without adding a production accessor for a test.
+class StatisticsProbe : public udp_bridge::PacketSendStatistics
+{
+public:
+  size_t entry_count() const { return data_.size(); }
+};
+
+udp_bridge::PacketSizeData make_record(rclcpp::Time t, uint16_t size)
+{
+  udp_bridge::PacketSizeData record;
+  record.timestamp = t;
+  record.size = size;
+  record.category = udp_bridge::PacketSendCategory::message;
+  record.send_result = udp_bridge::SendResult::success;
+  return record;
+}
+
+}  // namespace
+
+// Statistics::add — eviction must be bounded at both ends, or it stops
+// entirely and the deque grows without bound.
+TEST(ClockDiscontinuity, StatisticsDequeStaysBoundedAcrossABackwardsClockStep)
+{
+  StatisticsProbe stats;
+  constexpr int kRecords = 1000;
+  constexpr double kSpacing = 0.005;  // 1000 records over 5 s
+
+  const rclcpp::Time before(1000, 0, RCL_ROS_TIME);
+  for(int i = 0; i < kRecords; ++i)
+    stats.add(make_record(before + rclcpp::Duration::from_seconds(i * kSpacing), 100));
+  ASSERT_EQ(stats.entry_count(), static_cast<size_t>(kRecords))
+    << "Setup: 5 s of records must all be retained by the 10 s window.";
+
+  // The step: 900 s backwards, well past the retention window.
+  const rclcpp::Time after(100, 0, RCL_ROS_TIME);
+  for(int i = 0; i < kRecords; ++i)
+    stats.add(make_record(after + rclcpp::Duration::from_seconds(i * kSpacing), 100));
+
+  EXPECT_LE(stats.entry_count(), static_cast<size_t>(kRecords))
+    << "The deque holds " << stats.entry_count() << " records after a "
+       "backwards clock step, more than the " << kRecords << " written "
+       "since the step. Front-only eviction cannot reach a future-stamped "
+       "front, so it stops entirely and the deque grows without bound "
+       "(#52).";
+}
+
+// can_send — the wedge. This queries at a time BEFORE the records
+// without adding anything, which is a connection that has gone quiet
+// across the step: add's eviction never runs, so can_send's own bound is
+// the only thing standing between the operator and a dead link.
+TEST(ClockDiscontinuity, CanSendRecoversAfterABackwardsClockStep)
+{
+  udp_bridge::PacketSendStatistics stats;
+  constexpr uint32_t kLimit = 100000;
+
+  const rclcpp::Time before(1000, 0, RCL_ROS_TIME);
+  for(int i = 0; i < 200; ++i)
+    stats.add(make_record(before + rclcpp::Duration::from_seconds(i * 0.001), 1000));
+  ASSERT_FALSE(stats.can_send(1000, 0, kLimit, before + rclcpp::Duration::from_seconds(0.2)))
+    << "Setup: 200 kB inside a 1 s window must exhaust a 100 kB/s cap.";
+
+  const rclcpp::Time after(100, 0, RCL_ROS_TIME);
+  EXPECT_TRUE(stats.can_send(1000, 0, kLimit, after))
+    << "can_send returned false at a time 900 s BEFORE every record in "
+       "the deque. Records stamped after `time` are not evidence about "
+       "the window ending at `time`; summing them wedges the connection "
+       "permanently after a backwards clock step and presents as 'the "
+       "link stopped' (#52).";
+}
+
+// bytes_in_window — the resend budget's view of the same window.
+TEST(ClockDiscontinuity, BytesInWindowIgnoresRecordsStampedAfterTheWindow)
+{
+  udp_bridge::PacketSendStatistics stats;
+  const rclcpp::Time before(1000, 0, RCL_ROS_TIME);
+  for(int i = 0; i < 50; ++i)
+  {
+    auto record = make_record(before + rclcpp::Duration::from_seconds(i * 0.001), 1000);
+    record.category = udp_bridge::PacketSendCategory::resend;
+    stats.add(record);
+  }
+  ASSERT_GT(stats.bytes_in_window(udp_bridge::PacketSendCategory::resend,
+                                  before + rclcpp::Duration::from_seconds(0.05)),
+            0u)
+    << "Setup: the records must be inside the window they were stamped in.";
+
+  const rclcpp::Time after(100, 0, RCL_ROS_TIME);
+  EXPECT_EQ(stats.bytes_in_window(udp_bridge::PacketSendCategory::resend, after), 0u)
+    << "The resend budget counted spend recorded 900 s in the future, so "
+       "after a backwards clock step it sheds resends the budget has "
+       "room for (#52).";
+}
+
+// Connection::data_receive_rate — the map sorts future records to the
+// BACK, where the begin()-erase loop can never reach them.
+TEST_F(AdmissionControl, ReceiveRateRecoversAfterABackwardsClockStep)
+{
+  auto conn = make_connection();
+  constexpr double kBefore = 1000.0;
+  for(int i = 0; i < 50; ++i)
+    conn->update_last_receive_time(kBefore + i * 0.01, 1000, false);
+  ASSERT_GT(conn->data_receive_rate(kBefore + 0.5).first, 0.0)
+    << "Setup: the records must be inside the window they were stamped in.";
+
+  const double after = 100.0;
+  EXPECT_DOUBLE_EQ(conn->data_receive_rate(after).first, 0.0)
+    << "The remote's apparent receive rate was computed from records "
+       "stamped 900 s in the future. That rate is one side of the "
+       "congestion comparison, so a backwards clock step reads as the "
+       "remote receiving more than we sent (#52).";
+}
+
+// End to end: the send path itself must not be wedged by the step.
+TEST_F(AdmissionControl, SendPathRecoversAfterABackwardsClockStep)
+{
+  auto conn = make_connection();
+  const rclcpp::Time before(1000, 0, RCL_ROS_TIME);
+  std::vector<uint8_t> data(kPacketSize, 0xCD);
+
+  // Exhaust the cap at `before`.
+  for(int i = 0; i < 2 * static_cast<int>(kRateLimit / kPacketSize); ++i)
+    conn->send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, before);
+  ASSERT_EQ(
+    conn->send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, before)
+      .send_result,
+    udp_bridge::SendResult::dropped)
+    << "Setup: the cap must be exhausted at the pre-step timestamp.";
+
+  const rclcpp::Time after(100, 0, RCL_ROS_TIME);
+  EXPECT_EQ(
+    conn->send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, after)
+      .send_result,
+    udp_bridge::SendResult::success)
+    << "The connection admitted nothing after a backwards clock step. "
+       "This is the operator-visible failure: the link reports healthy "
+       "and carries no data (#52).";
+}
+
 TEST_F(AdmissionControl, RefractoryPeriodSetterContract)
 {
   auto conn = make_connection();

@@ -1,6 +1,7 @@
 #ifndef UDP_BRIDGE_STATISTICS_H
 #define UDP_BRIDGE_STATISTICS_H
 
+#include <algorithm>
 #include <deque>
 #include <map>
 #include "rclcpp/time.hpp"
@@ -52,13 +53,50 @@ struct PacketSizeData
 template<typename T> class Statistics
 {
 public:
+  /// Retention window. Records outside `[time - kWindow, time + kWindow]`
+  /// of the newest record are evicted.
+  static constexpr double kWindowSeconds = 10.0;
+
   void add(const T& data)
   {
-    if(data.timestamp.nanoseconds() != 0)
-      data_.push_back(data);
+    // A zero timestamp is not a clock reading this class can order
+    // anything against, so such a record is neither stored nor used as
+    // the eviction reference (using it would date every stored record
+    // 10 s into the "future" and wipe the deque).
+    if(data.timestamp.nanoseconds() == 0)
+      return;
+    data_.push_back(data);
 
-    // only keep 10 seconds of data
-    while(!data_.empty() && data_.front().timestamp < data.timestamp - rclcpp::Duration::from_seconds(10.0))
+    const auto window = rclcpp::Duration::from_seconds(kWindowSeconds);
+    const auto oldest_kept = data.timestamp - window;
+    const auto newest_kept = data.timestamp + window;
+
+    // Eviction has to be bounded at BOTH ends (#52, review round 3).
+    //
+    // A backwards clock step — a looping bag replay, a sim reset, an NTP
+    // correction — leaves the deque full of records stamped in what is
+    // now the future. Front-only eviction can never reach them: the
+    // predicate `front < now - 10 s` is false for a future-stamped
+    // front, so eviction STOPS ENTIRELY and the deque grows without
+    // bound (measured: 1001 -> 3001 entries over 20 s of post-step
+    // traffic). Worse, those stranded bytes are summed by can_send on
+    // every call, so the connection admits nothing, permanently, and
+    // presents to an operator as "the link stopped".
+    //
+    // The check is cheap in the normal case (one comparison against the
+    // front) and the full erase only runs on an actual discontinuity.
+    // The +10 s tolerance is deliberate: PR #16's reserve-then-record
+    // pattern means the deque is NOT monotone in timestamps and a record
+    // may legitimately be added after one stamped later than it, but
+    // only by the duration of a sendto — never by a window.
+    if(data_.front().timestamp > newest_kept)
+      data_.erase(
+        std::remove_if(data_.begin(), data_.end(),
+                       [&newest_kept](const T& entry)
+                       { return entry.timestamp > newest_kept; }),
+        data_.end());
+
+    while(!data_.empty() && data_.front().timestamp < oldest_kept)
       data_.pop_front();
   }
 protected:
