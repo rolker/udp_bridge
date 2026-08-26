@@ -309,6 +309,29 @@ private:
       declare_parameter(name, default_value);
   }
 
+  /// Read a double-valued parameter, accepting an INTEGER override
+  /// (issue #52).
+  ///
+  /// `rclcpp::Parameter::as_double()` throws `ParameterTypeException`
+  /// when the override was written as `5` rather than `5.0` — YAML has
+  /// no way to say "this integer is a double", and ROS 2 types the
+  /// parameter from the literal. The throw happens inside
+  /// `on_configure`, which has no try/catch: `rclcpp_lifecycle` SWALLOWS
+  /// an exception thrown out of a transition callback, so the node is
+  /// left silently unconfigured — no ERROR naming the parameter, no
+  /// failure the operator can see. That trap is documented on three
+  /// operator surfaces and had been guarded nowhere; this is the guard.
+  ///
+  /// Only INTEGER is coerced. Any other wrong type still throws, because
+  /// there is no defensible reading of (say) a string as a rate.
+  double getDoubleParameter(const std::string& name)
+  {
+    const auto parameter = get_parameter(name);
+    if(parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER)
+      return static_cast<double>(parameter.as_int());
+    return parameter.as_double();
+  }
+
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();
 

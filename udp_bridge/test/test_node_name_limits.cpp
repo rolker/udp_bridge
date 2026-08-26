@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -84,11 +85,37 @@ public:
     return *this;
   }
 
+  // Declare a connection under `label`, so on_configure walks the
+  // per-connection parameter block. Loopback host/port: on_configure
+  // resolves the host, and the connection is never sent on here.
+  Bridge& connection(const std::string& label, const std::string& connection_id)
+  {
+    connections_[label].push_back(connection_id);
+    const std::string base = "remotes." + label + ".connections." + connection_id + ".";
+    node_->declare_parameter(base + "host", "127.0.0.1");
+    node_->declare_parameter(base + "port", 4201);
+    return *this;
+  }
+
+  // Set one per-connection parameter with a caller-chosen TYPE — which is
+  // the point for the tests below: `5` and `5.0` are different ROS 2
+  // parameter types for the same YAML-looking value.
+  template<typename T>
+  Bridge& connectionParameter(const std::string& label, const std::string& connection_id,
+                              const std::string& key, const T& value)
+  {
+    node_->declare_parameter(
+      "remotes." + label + ".connections." + connection_id + "." + key, value);
+    return *this;
+  }
+
   // Returns the state id the node lands in. A configure that fails leaves
   // it UNCONFIGURED; one that succeeds leaves it INACTIVE.
   uint8_t configure()
   {
     node_->declare_parameter("remotes_list", labels_);
+    for(const auto& entry: connections_)
+      node_->declare_parameter("remotes." + entry.first + ".connections_list", entry.second);
     return node_->configure().id();
   }
 
@@ -97,6 +124,7 @@ public:
 private:
   std::shared_ptr<udp_bridge::UDPBridge> node_;
   std::vector<std::string> labels_;
+  std::map<std::string, std::vector<std::string>> connections_;
 };
 
 constexpr uint8_t kUnconfigured = lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
@@ -302,6 +330,47 @@ TEST(NodeNameLimits, AddRemoteServiceRefusesOurOwnName)
   spinner.join();
 }
 
+// `link_headroom_fraction` is RETIRED (#52): the `(1 - headroom) x
+// goodput` clamp it fed was removed on 2026-08-25, and nothing stores it
+// any more. It is still DECLARED, purely so a stale key in an existing
+// config is visible — rclcpp surfaces a YAML override only for a
+// declared parameter, so undeclaring it would make the key silently
+// ignored, which is the "set it, nothing happens" shape #52 exists to
+// remove.
+//
+// Unlike the retired `remotes.<label>.name`, a stale value here must NOT
+// fail the transition. That key misroutes traffic when stale (the #51
+// echo bug); this one misroutes nothing, so refusing to configure would
+// ground a boat over a dead config key. One WARN, and the node comes up.
+TEST(RetiredParameters, LinkHeadroomFractionStillConfigures)
+{
+  Bridge bridge("retired_headroom");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "link_headroom_fraction", 0.5);
+  EXPECT_EQ(bridge.configure(), kInactive)
+    << "a config still setting the retired link_headroom_fraction must "
+       "WARN and come up, not fail the transition";
+}
+
+// The double-literal trap, guarded (#52). YAML has no way to say "this
+// integer is a double", so `admission_refractory_period_seconds: 5`
+// arrives as a ROS 2 INTEGER parameter and a bare as_double() throws
+// ParameterTypeException — inside on_configure, where rclcpp_lifecycle
+// SWALLOWS it and leaves a node that silently failed to configure with
+// nothing in the log naming the parameter. The read site coerces
+// PARAMETER_INTEGER instead.
+TEST(RetiredParameters, IntegerLiteralForADoubleParameterConfigures)
+{
+  Bridge bridge("integer_double_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "admission_refractory_period_seconds", 5);
+  bridge.connectionParameter("peer", "c0", "admission_floor_bytes_per_second", 9000);
+  EXPECT_EQ(bridge.configure(), kInactive)
+    << "an integer literal for a double-typed connection parameter must "
+       "be coerced, not thrown out of the lifecycle transition where the "
+       "exception is swallowed and the failure is invisible";
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);
@@ -311,3 +380,4 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
   return rc;
 }
+

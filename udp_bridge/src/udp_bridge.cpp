@@ -207,7 +207,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // large accidental value would otherwise add that much latency to every
   // gap on every topic.
   declareIfMissing("reorder_hold_window_ms", reorder_hold_window_ms_);
-  reorder_hold_window_ms_ = get_parameter("reorder_hold_window_ms").as_double();
+  reorder_hold_window_ms_ = getDoubleParameter("reorder_hold_window_ms");
   {
     constexpr double kMaxReorderHoldWindowMs = 500.0;
     if(reorder_hold_window_ms_ < 0.0)
@@ -237,8 +237,8 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // mid-storm without a reconfigure cycle.
   declareIfMissing("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
   declareIfMissing("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
-  resend_giveup_warn_rate_per_s_ = get_parameter("resend_giveup_warn_rate_per_s").as_double();
-  resend_giveup_error_rate_per_s_ = get_parameter("resend_giveup_error_rate_per_s").as_double();
+  resend_giveup_warn_rate_per_s_ = getDoubleParameter("resend_giveup_warn_rate_per_s");
+  resend_giveup_error_rate_per_s_ = getDoubleParameter("resend_giveup_error_rate_per_s");
   // Validate launch-time values. Launch-line overrides
   // (`-p resend_giveup_warn_rate_per_s:=100.0`) bypass the
   // OnSetParameters callback below, so a bad pair would otherwise
@@ -649,11 +649,11 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
       std::string resend_budget_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".resend_budget_fraction";
       declareIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
-      double resend_budget_fraction = get_parameter(resend_budget_fraction_param).as_double();
+      double resend_budget_fraction = getDoubleParameter(resend_budget_fraction_param);
 
       std::string admission_floor_bps_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_floor_bytes_per_second";
       declareIfMissing(admission_floor_bps_param, static_cast<double>(kDefaultAdmissionFloorBytesPerSecond));
-      double admission_floor_bps = get_parameter(admission_floor_bps_param).as_double();
+      double admission_floor_bps = getDoubleParameter(admission_floor_bps_param);
 
       std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
       declareIfMissing(link_headroom_fraction_param, static_cast<double>(kDefaultLinkHeadroomFraction));
@@ -661,7 +661,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
       std::string admission_refractory_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_refractory_period_seconds";
       declareIfMissing(admission_refractory_param, kDefaultAdmissionRefractoryPeriodSeconds);
-      double admission_refractory = get_parameter(admission_refractory_param).as_double();
+      double admission_refractory = getDoubleParameter(admission_refractory_param);
 
       remote_info.connections.push_back(connection);
       remote_node->update(remote_info);
@@ -736,7 +736,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
         declareIfMissing(period_param, 0.0);
-        double period = get_parameter(period_param).as_double();
+        double period = getDoubleParameter(period_param);
 
         std::string source_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".source";
         declareIfMissing(source_param, topic);
