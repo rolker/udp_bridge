@@ -517,3 +517,46 @@ implicated by keeping this here.
   (issue #552-style host-fetched context). This progress.md entry is the
   canonical record per the skill's best-effort posting contract; the
   comment post is skipped rather than attempted and silently failing.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-25 22:24 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**Plan**: `.agent/work-plans/issue-52/plan.md` at `26f39b8`
+**Branch**: feature/issue-52 at `26f39b8`
+**Phases**: single PR with atomic commits; two independently-testable
+clusters (A1-A3 control-loop fix, C message-level drop granularity) plus a
+doc/config sweep scoped up front
+
+Scope: direction A (stop the AIMD collapse — refractory period with
+exponential growth/reset, a decrease target that ignores goodput when the
+connection was self-limiting this interval, and EWMA smoothing on the
+congestion detector's received-rate input) and direction C (restore
+message-level `can_send` atomicity in `Connection::send`'s batch overload
+via a check-and-reserve aggregate reservation, preserving the existing
+reserve-then-record lock-hold-time discipline). B (priority classes) stays
+split to #19 per the operator-approved scope decision already recorded on
+the issue.
+
+RCA option B (sequence-gap / matched-byte-counter loss detection) is
+explicitly deferred: `updateAdmissionControl`'s signature is fixed by the
+already-committed field-replay regression tests
+(`test_admission_field_replay.cpp`, `4002cad`), so a detector using new
+wire-protocol fields is out of reach without a schema/type-hash change
+requiring coordinated redeploy — flagged as a follow-up rather than a
+silent gap. What A3 delivers instead (local EWMA smoothing of the received
+signal) narrows but does not eliminate defect 2 from the RCA.
+
+The two committed field-replay tests are the acceptance gate; exact
+refractory tuning constants (base period, growth factor, cap) are left as
+an implementation-time build-test-tune loop against those tests rather than
+hand-derived on paper — the plan documents the mechanism and the tuning
+method, not final numbers.
+
+### Open questions
+- [ ] Exact refractory base period / growth factor / cap — tuned during implementation against `test_admission_field_replay.cpp`.
+- [ ] New test file for C's concurrency/TOCTOU regression test, or extend `test_connection_rate_limit.cpp`?
+- [ ] Should the refractory growth/cap be per-connection-configurable too, or fixed constants like `kResendBackoffBase`?
+- [ ] Revisit #71 and #45 after A lands — RCA states they should reduce/close in severity.
+- [ ] File the RCA-option-B (sequence-gap/matched-byte-counter detector) follow-up issue now or after this PR lands and its effect is measured?
