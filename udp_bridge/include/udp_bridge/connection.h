@@ -92,7 +92,7 @@ public:
   /// Exposed for TESTS. It has no diagnostic consumer yet: nothing
   /// publishes it, so a frozen controller and a healthy flat cap look
   /// identical in RemoteConnection.msg. Surfacing the in-force window is
-  /// a candidate for #76, which is already reasoning about the schema.
+  /// a candidate for #75, which is already reasoning about the schema.
   double currentAdmissionRefractoryWindowSeconds() const;
 
   /// Most recent goodput estimate for this connection, bytes/second:

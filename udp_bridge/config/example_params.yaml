@@ -167,7 +167,7 @@
             # mitigation during the 2026-08-25 Appledore transit: the
             # operator could see the cap collapsing and had no way to
             # retune the loop without dropping the link. Live re-tuning
-            # is tracked as issue #76; this knob ships with the same
+            # is tracked as issue #75; this knob ships with the same
             # limitation.
             admission_refractory_period_seconds: 5.0
 

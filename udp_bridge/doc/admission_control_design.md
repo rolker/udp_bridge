@@ -241,9 +241,17 @@ like `resend_budget_fraction` are parameters. Like every other
 admission parameter it is **configure-time only** — which is the exact
 property RCA item D names as what blocked live mitigation on 2026-08-25
 (the floor could not be raised from the boat while it was the problem).
-[#76](https://github.com/rolker/udp_bridge/issues/76) is in flight to
-make connection parameters runtime-reconfigurable; this knob joins that
-set and should be revisited with it.
+[#75](https://github.com/rolker/udp_bridge/issues/75) is the tracking
+issue for making connection parameters runtime-reconfigurable; this knob
+joins that set and should be revisited with it — including giving every
+admission parameter a `ParameterDescriptor` (a `description`, and
+`read_only: true` once the configure-time contract is settled), which was
+deferred out of #52 for exactly that reason.
+
+(#76 is the PULL REQUEST on that issue, not the issue. Five references in
+this change pointed at it; `/issues/76` only resolves by redirect, and
+once #76 merges an operator following the link lands on merged work while
+the question stays open on #75.)
 
 ## `link_headroom_fraction` after the clamp removal (issue #52)
 

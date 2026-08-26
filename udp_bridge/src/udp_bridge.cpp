@@ -715,7 +715,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // All of these are configure-time only, which is the property RCA
       // item D names as what blocked live mitigation on 2026-08-25 — the
       // admission floor could not be raised from the boat while it was
-      // the problem. issue #76 is in flight to make connection
+      // the problem. issue #75 is the tracking issue for making connection
       // parameters runtime-reconfigurable;
       // admission_refractory_period_seconds joins the same set and
       // should be revisited with it.
