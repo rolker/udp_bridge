@@ -1063,13 +1063,33 @@ TEST_F(AdmissionControl, RefractoryPeriodSetterContract)
   const uint32_t after_freeze = frozen->effectiveRateLimit();
   ASSERT_LT(after_freeze, kRateLimit);
 
-  const auto t2 = t1 + rclcpp::Duration::from_seconds(
-    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds *
-      udp_bridge::kAdmissionRefractoryMaximumMultiple + 1.0);
+  // GROWTH does not escape the ceiling. A second decrease inside the
+  // still-open window multiplies the current window by the growth factor
+  // and bounds it by base x kAdmissionRefractoryMaximumMultiple — which
+  // at the maximum base is 120 s, twice the ceiling. The ceiling has to
+  // be re-applied after growth, or a max-configured connection freezes
+  // for longer than the bound whose rationale forbids it (#52, round 2).
+  const auto t_grow = t1 + rclcpp::Duration::from_seconds(
+    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds + 1.0);
+  send_traffic(*frozen, t_grow, 80);
+  frozen->update_last_receive_time(t_grow.seconds(), 100, false);
+  frozen->updateAdmissionControl(20000.0f, 0.0f, t_grow);     // decrease 2
+  EXPECT_LE(frozen->currentAdmissionRefractoryWindowSeconds(),
+            udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds)
+    << "The GROWN window must be re-clamped to "
+       "kMaximumAdmissionRefractoryPeriodSeconds. Bounding growth only "
+       "relative to the base lets a max-configured connection freeze for "
+       "base x multiple — 120 s — which is twice the ceiling the base "
+       "clamp exists to enforce.";
+  const uint32_t after_second = frozen->effectiveRateLimit();
+  ASSERT_LT(after_second, after_freeze);
+
+  const auto t2 = t_grow + rclcpp::Duration::from_seconds(
+    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds + 1.0);
   send_traffic(*frozen, t2, 80);
   frozen->update_last_receive_time(t2.seconds(), 100, false);
   frozen->updateAdmissionControl(80000.0f, 0.0f, t2);         // clean
-  EXPECT_GT(frozen->effectiveRateLimit(), after_freeze)
+  EXPECT_GT(frozen->effectiveRateLimit(), after_second)
     << "An +Inf refractory period must not outlive the clamp: the "
        "controller has to recover once the clamped window elapses.";
 }

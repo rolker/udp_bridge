@@ -135,6 +135,14 @@
             # transit turned a single marginal delivery sample into seven
             # halvings in 12 s, 35 times in 9.5 hours.
             #
+            # 0 disables the gate. The value is CLAMPED to 60 s at the
+            # top — a typo (or `.inf`) does not switch the controller off
+            # for the life of the node, it gets the longest window that
+            # still leaves the loop alive. The window doubles on each
+            # further decrease inside an unresolved episode, bounded by
+            # both 2x the base and that same 60 s ceiling, so the
+            # controller is never frozen for more than 60 s.
+            #
             # Note the DOUBLE literal: `5.0`, not `5`. An integer here is
             # an integer parameter to ROS 2 and the node's as_double()
             # read throws — the same trap admission_floor_bytes_per_second

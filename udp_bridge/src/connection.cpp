@@ -350,17 +350,28 @@ void Connection::updateAdmissionControl(float remote_received_bps,
     // each decrease shrinks our own send rate and so widens the very
     // filter skew that triggered the detector. A fixed window still
     // permits a third and fourth halving inside one such episode.
+    //
+    // The grown window is bounded TWICE, and both bounds are load-bearing
+    // (#52, review round 2). The multiple bounds it relative to the
+    // configured base; kMaximumAdmissionRefractoryPeriodSeconds bounds it
+    // absolutely. Without the second bound a connection configured at the
+    // 60 s maximum base freezes for 120 s on its second decrease — twice
+    // the ceiling whose own rationale (resend_constants.h) says a window
+    // that long leaves the controller unable to answer a link change in
+    // any operator-observable timescale. The setter's clamp is on the
+    // BASE only; growth happens after it, so it has to be re-applied here.
     if(admission_decrease_outstanding_)
       admission_refractory_current_seconds_ =
-        std::min(admission_refractory_current_seconds_ * kAdmissionRefractoryGrowthFactor,
-                 admission_refractory_period_seconds_ * kAdmissionRefractoryMaximumMultiple);
+        std::min({admission_refractory_current_seconds_ * kAdmissionRefractoryGrowthFactor,
+                  admission_refractory_period_seconds_ * kAdmissionRefractoryMaximumMultiple,
+                  kMaximumAdmissionRefractoryPeriodSeconds});
     else
       admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
     admission_decrease_outstanding_ = true;
     last_admission_decrease_time_ = now.seconds();
 
     // Purely multiplicative decrease from the controller's own last
-    // known-good state. The (1 - link_headroom_fraction_) * goodput
+    // known-good state. The (1 - link_headroom_fraction) * goodput
     // clamp that used to bound this was removed on 2026-08-25: goodput
     // is depressed by the throttling the clamp was computing, so it fed
     // back on itself. On the recorded onset the clamp's FIRST step alone
