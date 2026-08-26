@@ -58,8 +58,9 @@ scope split for this cycle:
 - **A — stop the AIMD collapse** (the three defects above). **In scope.**
 - **B — priority classes** (critical telemetry not gated behind video
   traffic). A materially different mechanism (intra-connection topic
-  scheduling), already tracked as #19 with an in-flight branch (PR #76).
-  **Split out, not in scope here.**
+  scheduling), already tracked as **#19**. (The per-topic rate caps in the
+  field-import PR #76 — which is the PR on issue #75, not on #19 — overlap
+  it.) **Split out, not in scope here.**
 - **C — restore message-level drop granularity.** A partially-admitted
   multi-fragment message currently burns uplink on fragments that can never
   be reassembled. **In scope.**
@@ -90,11 +91,24 @@ clamp).
 **A1. Refractory period — one decrease per congestion epoch.**
 
 Add `last_admission_decrease_time_` (seconds, under `config_mutex_`,
-alongside the other AIMD state) and a per-connection
+alongside the other AIMD state), an `admission_decrease_outstanding_`
+boolean beside it, and a per-connection
 `admission_refractory_period_seconds_` parameter (default
 `kDefaultAdmissionRefractoryPeriodSeconds`, new constant in
-`resend_constants.h`). While the refractory window is active
-(`now - last_admission_decrease_time_ < refractory`), **no sample is acted
+`resend_constants.h`).
+
+*(Revised in review round 1.* The original wording made
+`last_admission_decrease_time_` carry both the time AND the fact that a
+decrease was outstanding, with `> 0.0` as the sentinel for the latter.
+0.0 is a legal clock reading — reachable after a backwards clock step, a
+looping bag replay or a sim reset — so a decrease recorded there read as
+"no decrease outstanding" and the gate went silently inert. The two facts
+are now separate members, and
+`AdmissionControl.RefractoryGateHoldsAtClockZero` pins it.)*
+
+While the refractory window is active
+(`admission_decrease_outstanding_` and
+`now - last_admission_decrease_time_ < refractory`), **no sample is acted
 on, congested or clean** — the controller holds its last
 `effective_rate_limit_` exactly as-is, regardless of what the arriving
 sample would otherwise have triggered. (Clarified 2026-08-25 per
@@ -156,17 +170,17 @@ timescales (see the new Verification subsection below) — a refractory
 window that grows past a phase's hold length cannot react within that
 phase, which the field-replay tests alone cannot detect.
 
-**Relationship to configure-time-only parameters (#76).** Per the RCA,
+**Relationship to configure-time-only parameters (#75).** Per the RCA,
 the admission floor's inability to be raised without a redeploy was the
 lever that would have mitigated the 2026-08-25 episode live, and issue
-#76 is already in flight to make connection parameters
+#75 is the tracking issue for making connection parameters
 runtime-reconfigurable. `admission_refractory_period_seconds` is planned
 here as configure-time-only, matching the existing admission-parameter
 convention (`admission_floor_bytes_per_second`,
 `link_headroom_fraction`) — consistent, but it adds a new tunable to the
-same "not reachable from the boat while it's the problem" set #76 exists
+same "not reachable from the boat while it's the problem" set #75 exists
 to close. Not a blocker for this plan; note it so it isn't rediscovered
-as a surprise, and revisit once #76 lands.
+as a surprise, and revisit once #75's work lands.
 
 **A2. Decrease target: drop the post-gate goodput clamp — don't gate it (revised
 2026-08-25 per `review-plan` finding F1).**
@@ -240,16 +254,25 @@ re-run (`UDP_BRIDGE_BENCH_SCENARIOS=1`, full range-degradation scenario)
 shows `test_invariant_cotenant_management_flow_survives` **passing** with
 the clamp removed — every phase the path can carry traffic in, on both
 delivery ratio and p95 latency. The refractory-gated multiplicative
-decrease alone satisfies the co-tenant guarantee on this harness. The
-parameter is therefore **retained but inert**: still declared, clamped
-and reported (existing configs set it; removing it would break them), but
-read by nothing in the control law. That state is documented in
+decrease alone satisfies the co-tenant guarantee on this harness.
+
+**Settled by the operator (review round 2): a third option, RETIRED — not
+"retained inert" and not deleted.** All behaviour is removed
+(`setLinkHeadroomFraction` / `linkHeadroomFraction` /
+`link_headroom_fraction_` are gone, and the two unit tests that pinned
+that API with them). The PARAMETER stays declared as a tripwire and
+`on_configure` WARNs, naming the connection, on any non-default value.
+Deleting it outright would break nothing — an override for an UNDECLARED
+parameter is silently ignored, not an error (`udp_bridge.cpp:363-368`) —
+and that silence is the hazard: a stale key from an old config would be
+accepted, do nothing, and say nothing. The state is documented in
 `doc/admission_control_design.md`, `README.md`, `.agents/README.md`,
-`resend_constants.h` and `connection.h`, and pinned by
-`AdmissionControl.HeadroomFractionDoesNotAffectDecreaseTarget` so
-re-attaching it has to be deliberate. Outright removal is flagged as a
-follow-up to decide against post-deployment field data, not guessed at
-now.
+`config/example_params.yaml`, `resend_constants.h` and `connection.h`,
+and pinned by `RetiredParameters.LinkHeadroomFractionStillConfigures`
+(the node must WARN and still come up — unlike the retired
+`remotes.<label>.name`, which fails). Whether a headroom-like target gets
+a NEW basis, and whether the tripwire is eventually dropped, is tracked
+on #61.
 
 **A3. Detector: compare like-windowed rates instead of raw instantaneous
 ones (revised 2026-08-25 per `review-plan` findings F7/F8).**
@@ -535,7 +558,7 @@ mentioned them:
 
 1. **The resend-amplification invariant passes on its own terms, with no
    loosening of `F_resend_multiplier`.** `test_invariant_resend_amplification`
-   (`test/bench/test_range_degradation.py:678-693`) currently carries
+   (`test/bench/test_range_degradation.py`, `test_invariant_resend_amplification` at `:700`) currently carries
    `xfail(strict=True)`, with a reason string that explicitly forbids
    raising `F_resend_multiplier` to keep it xfailing. The prior #52 cycle
    already closed most of the gap (critical resend/msg 3.108 → 0.144
@@ -547,9 +570,26 @@ mentioned them:
    instructs this). If it does not, that is a plan-blocking result
    requiring the same re-derivation treatment as F1/F2 — not a marker
    left in place with a wider `F_resend_multiplier`.
+
+   **Outcome (recorded 2026-08-26, review round 2).** It did NOT pass
+   cleanly, and the `xfail` marker stays. That is not the plan-blocking
+   result the paragraph above anticipated, and the reason is that the
+   criterion as written assumed a metric that reproduces: three full runs
+   of one build gave `lossy` 0.0131 / 0.0184 / 0.0705 against a 0.060
+   ceiling and `critical` 0.2838 / 0.4735 / 0.1115 against 0.200 — a
+   4-5x run-to-run spread, so "passes on its own terms" is not a property
+   a single run of this invariant can establish either way. What the runs
+   DO establish is stable and is what the criterion was protecting:
+   `F_resend_multiplier` was not touched, the `strict=True` marker held
+   in all three runs (so no XPASS was masked), and the residual is
+   ~34% duplicates at `lossy` — spurious re-requests, a debounce/reorder
+   interaction, not the cap-scaling defect this cycle addresses. That
+   residual is tracked as
+   [#54](https://github.com/rolker/udp_bridge/issues/54). Accepted on
+   that basis rather than re-derived.
 2. **A co-tenant management flow survives every phase.**
    `test_invariant_cotenant_management_flow_survives`
-   (`test/bench/test_range_degradation.py:780-830`) is already committed
+   (`test/bench/test_range_degradation.py`, `test_invariant_cotenant_management_flow_survives` at `:786`) is already committed
    and is *not* currently marked `xfail`. It is the bench-level
    realization of `link_headroom_fraction` — the parameter A2's revision
    above leaves without a call site (see A2's open resolution). The issue
@@ -641,7 +681,7 @@ Files to update alongside the code, in the same PR (list corrected
 | `udp_bridge/include/udp_bridge/connection.h` | New refractory state/config, updated comments |
 | `udp_bridge/include/udp_bridge/resend_constants.h` | New refractory constants (base, growth, cap) |
 | `udp_bridge/src/connection.cpp` | A1 refractory gate (freezes both decrease and recovery), A2 clamp removed (pure multiplicative decrease), A3 window-matched comparison, C batch reserve-then-record + per-exit release |
-| `udp_bridge/src/udp_bridge.cpp` | Declare + apply `admission_refractory_period_seconds` parameter (configure-time-only, matching existing admission params — see #76 relationship note in A1) |
+| `udp_bridge/src/udp_bridge.cpp` | Declare + apply `admission_refractory_period_seconds` parameter (configure-time-only, matching existing admission params — see #75 relationship note in A1) |
 | `udp_bridge/test/test_admission_control.cpp` | New unit tests for A1/A2/A3 |
 | `udp_bridge/test/test_admission_field_replay.cpp` | **New**: `SustainedRealLossMustConverge` two-sided convergence counter-test (F2). The two already-committed tests are unedited — they remain the gate. |
 | `udp_bridge/test/test_connection_rate_limit.cpp` or a new `test_message_atomicity.cpp` | New behavioral + concurrency tests for C, plus `is_overhead` and per-exit-path reservation-release coverage (F5/F6) |
@@ -741,8 +781,12 @@ should chase on one sample.
    `HeadroomFractionAffectsDecreaseTarget` asserted the exact behaviour
    A2 removes. They became
    `DecreaseIsPurelyMultiplicativeFromCurrentCap` and
-   `HeadroomFractionDoesNotAffectDecreaseTarget` (the latter now pinning
-   the parameter's *inertness*, so re-attaching it is deliberate).
+   `HeadroomFractionDoesNotAffectDecreaseTarget`. (Review round 2 then
+   RETIRED the parameter's API entirely, so the latter was deleted too —
+   there is no setter left to pin. The decrease's independence from
+   goodput is covered by `DecreaseIsPurelyMultiplicativeFromCurrentCap`,
+   and the surviving declared tripwire by
+   `RetiredParameters.LinkHeadroomFractionStillConfigures`.)
    `DuplicatesExcludedFromGoodput` moved its assertion from "the cap
    lands lower" to the goodput quantity itself, which is still live as
    the resend budget's basis. `AdditiveRecoveryIsRelativeToEffectiveCap`
@@ -799,6 +843,67 @@ Constants table addition:
 |---|---|---|
 | `kMaximumAdmissionRefractoryPeriodSeconds` | 60.0 s | above: the controller could not answer a link change inside any operator-observable timescale — BridgeInfo arrives ~2 s, `SustainedRealLossMustConverge` bounds convergence at 40 s, and a 30 s base was measured (review round 1) to converge only at 92.8 s. It is a ceiling on garbage, not a recommendation |
 
+### Review round 2 — behaviour changes made while addressing findings
+
+Six of round 2's fixes change behaviour rather than only wording. Two of
+them are defects round 1's own fixes introduced, which is why the
+must-fix count rose from 4 to 7 rather than falling.
+
+1. **The GROWN refractory window is re-clamped to
+   `kMaximumAdmissionRefractoryPeriodSeconds`.** Round 1 clamped the
+   configured BASE at 60 s; growth happens after that clamp and was
+   bounded only by `base x kAdmissionRefractoryMaximumMultiple`, so a
+   connection configured at the maximum base froze for **120 s** on its
+   second decrease — twice the ceiling, and 12x the 10 s statistics
+   retention the constants table gives as the multiple's basis.
+   `RefractoryPeriodSetterContract` now asserts the grown window against
+   the ceiling.
+2. **`PacketSendStatistics::success_rate_in_window` is bounded above as
+   well as below.** After a backwards clock step it summed up to the
+   deque's full 10 s of future-stamped successes over the 1 s `dt` floor,
+   inflating the reported send rate ~10x and reading every following
+   sample as congested on a link that never degraded.
+   `RefractoryGateHoldsAtClockZero` depended on that bug for its setup,
+   so the two moved together: the test now stamps its traffic before the
+   clock origin, and was re-verified to fail against the round-1 sentinel
+   form.
+3. **The inert-AIMD WARN tests the APPLIED floor**, read back from the
+   connection, not the raw parameter. `setAdmissionFloorBytesPerSecond`
+   maps NaN and negatives to 8192, so
+   `admission_floor_bytes_per_second: -1` on a connection capped below
+   8192 was permanently inert AND silent — the one case the WARN exists
+   for.
+4. **The inert-AIMD condition is now also warned at RUNTIME.**
+   `setRateLimit` is reached from the CONNECT decode with a
+   peer-advertised cap and from `add_remote`, neither re-checking the
+   floor; a peer advertising a cap below the floor silently switched
+   adaptive admission off for the life of the node. Throttled, so a
+   flapping CONNECT does not spam.
+5. **Double-typed parameters accept an INTEGER literal.**
+   `on_configure` has no try/catch, and `rclcpp_lifecycle` swallows an
+   exception thrown out of a transition callback, so
+   `admission_refractory_period_seconds: 5` left a node that silently
+   failed to configure. `UDPBridge::getDoubleParameter` coerces
+   `PARAMETER_INTEGER` at every double read site;
+   `RetiredParameters.IntegerLiteralForADoubleParameterConfigures` pins
+   it and fails against the bare `as_double()`.
+6. **`link_headroom_fraction` is RETIRED to a declared tripwire** — see
+   A2 and Open Questions. All Connection state and both its unit tests
+   are gone; the parameter stays declared and `on_configure` WARNs on a
+   non-default value.
+
+Two smaller hardening changes with no behavioural effect in a correct
+build: `BatchReservationGuard::unreserved` is clamped rather than
+bare-decremented (an unsigned underflow there would wedge the connection
+permanently), and `kReceiveRateWindowSeconds` names
+`data_receive_rate`'s window with a `static_assert` pinning it equal to
+`kAdmissionSendRateWindowSeconds` — the equality the whole detector fix
+rests on was previously a bare `time - 5` literal.
+
+Gate values re-measured after all of the above, unchanged: onset
+`lowest` 375000, handover delivered 1.000, handover decreases 1, final
+cap 1500000. Suite: 273 tests, 0 errors, 0 failures, 14 skipped.
+
 ### The `lossy` resend/msg movement — n=3 (2026-08-26)
 
 The Implementation entry reported `lossy` resend/msg moving 0.077 ->
@@ -840,16 +945,20 @@ margin.
 
 ### Not done / follow-ups
 
-- Whether `link_headroom_fraction` gets a new basis or is removed
-  outright — deliberately deferred to post-deployment field data, with
-  the inert state documented and test-pinned meanwhile.
+- Whether a headroom-like target gets a new basis (one that is not
+  post-gate goodput), and whether the declared `link_headroom_fraction`
+  tripwire is eventually dropped once field configs are known not to
+  carry the key — deferred to post-deployment field data. Tracked on
+  [#61](https://github.com/rolker/udp_bridge/issues/61), which is already
+  the open question of whether rate headroom can protect a co-tenant
+  across a capacity downshift at all.
 - RCA option B (sequence-gap / matched-byte-counter detector, needs new
   wire fields and a coordinated redeploy) and the evaluated-but-rejected
   purely-local resend-ratio detector: one follow-up issue, to be filed
   after this lands so it can cite what A3 left unresolved.
-- The `lossy` resend/msg movement above: **settled by measurement**, see
-  "The `lossy` resend/msg movement — n=3" below. What remains for #54 is
-  the residual itself, not the movement.
+- The `lossy` resend/msg movement: **settled by measurement**, see
+  "The `lossy` resend/msg movement — n=3" **above**. What remains for #54
+  is the residual itself, not the movement.
 - #71 and #45 revisit; a durable design record (project-repo ADR) for
   this control loop, now on its third root-cause pass.
 
@@ -898,7 +1007,8 @@ margin.
   (see A2). This must be resolved — new basis, or documented as redundant
   — and checked against `test_invariant_cotenant_management_flow_survives`
   before the PR is done, per the new Verification subsection; it cannot
-  be left as a still-documented, now-inert parameter.
+  be left as a still-documented, now-inert parameter. **Resolved:**
+  retired to a declared tripwire with a WARN — see A2.
 - The batch overload's aggregate check-and-reserve also governs
   `is_overhead` traffic (BridgeInfo, resend requests, topic lists) — not
   a separate call path, per F5's correction to C. This changes admission
@@ -941,20 +1051,44 @@ margin.
 - ~~Exact refractory base period / growth factor / cap.~~ **RESOLVED**:
   base 5.0 s (the receive-rate window both ends measure over), growth
   factor 2.0, maximum multiple 2.0 (10 s — the bench's phase hold and the
-  statistics deque's retention). The bounds on each are tabulated in the
-  Implementation Notes. Review round 1 found the growth constants were
+  statistics deque's retention), with the grown window additionally
+  re-clamped to `kMaximumAdmissionRefractoryPeriodSeconds` (60 s) so a
+  max-configured base cannot freeze for 120 s (review round 2). The
+  bounds on each are tabulated in the constants table in
+  `udp_bridge/doc/admission_control_design.md` ("Tuning constants, and
+  what constrained each") — not in this plan's Implementation Notes,
+  which an earlier wording pointed at. Review round 1 found the growth constants were
   not actually pinned by any test — the field-replay suite was green at
   multiple 1.0 and 1000 — so
   `AdmissionControl.RefractoryWindowGrowthIsBounded` now asserts the two
   properties against absolute values rather than against the symbols.
-- ~~Whether `link_headroom_fraction` gets a new basis.~~ **RESOLVED** as
-  the plan's outcome (b): retained but INERT.
+- ~~Whether `link_headroom_fraction` gets a new basis.~~ **RESOLVED**
+  (operator decision, review round 2) as a third option neither (a) nor
+  (b): **RETIRED — declared, no behaviour, and loud.**
   `test_invariant_cotenant_management_flow_survives` — issue #52's own
   acceptance criterion — passes with the clamp removed, so the co-tenant
-  guarantee does not depend on it. Kept declared and clamped so existing
-  configs keep loading; pinned inert by
-  `HeadroomFractionDoesNotAffectDecreaseTarget`. Removal-or-rebasis is a
-  follow-up for post-deployment data.
+  guarantee does not depend on it. So all behaviour is removed:
+  `Connection::setLinkHeadroomFraction` / `linkHeadroomFraction` and the
+  `link_headroom_fraction_` member are deleted, along with the two unit
+  tests that pinned an API that no longer exists.
+
+  The PARAMETER stays **declared** as a tripwire, and `on_configure`
+  **WARNs** naming the connection on any non-default value. Deleting it
+  outright would break nothing — verified: `udp_bridge.cpp:363-368`
+  records that rclcpp surfaces a YAML override only for a DECLARED
+  parameter, so an override for an undeclared one is silently ignored,
+  not an error — and that silence is exactly the hazard. A stale key from
+  an old config would be accepted, do nothing, and say nothing: the same
+  "set it, nothing happens, draw a false conclusion" shape this branch
+  exists to remove. This repo already uses the declared-tripwire pattern
+  for the retired `remotes.<label>.name` key; the difference is that a
+  stale `name` misroutes traffic (the #51 echo bug) and so FAILS the
+  transition, whereas a stale headroom value misroutes nothing, so it
+  warns and the node comes up.
+  `RetiredParameters.LinkHeadroomFractionStillConfigures` pins that
+  distinction. (The design doc's earlier justification for retaining it —
+  "removing it would break existing configs" — was false and has been
+  corrected.)
 - ~~Whether `is_overhead` traffic gets the same aggregate
   check-and-reserve or a separate path.~~ **RESOLVED**: same atomic
   treatment, no separate path, with its own test. Overhead messages are
@@ -971,7 +1105,7 @@ margin.
   fixed, only higher-level knobs like `resend_budget_fraction` are
   parameters) suggests fixed is fine, but worth confirming during
   implementation once the tuned values are known. Also note the
-  configure-time-only relationship to #76 (see A1) — not blocking, but a
+  configure-time-only relationship to #75 (see A1) — not blocking, but a
   known limitation to carry forward.
 
   **RESOLVED**: growth factor and maximum multiple stay fixed constants;
@@ -979,7 +1113,8 @@ margin.
   (`kResendBackoffBase` is fixed while `resend_budget_fraction` is a
   knob), and the growth is now pinned by a test that asserts absolute
   bounds, which a per-connection override would undercut. The
-  configure-time-only limitation is carried forward to #76 and is now
+  configure-time-only limitation is carried forward to #75 (the issue; #76
+  is its PR) and is now
   stated on both operator-facing surfaces (`README.md`,
   `config/example_params.yaml`) as well as in the code and
   `.agents/README.md`.
