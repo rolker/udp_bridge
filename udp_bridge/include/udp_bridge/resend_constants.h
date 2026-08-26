@@ -259,6 +259,26 @@ inline constexpr double kAdmissionRefractoryMaximumMultiple = 2.0;
 // refractory period above is the primary defence.
 inline constexpr double kAdmissionSendRateWindowSeconds = 5.0;
 
+// Window, in seconds, over which Connection::data_receive_rate measures
+// the rate of data ARRIVING from a remote — the figure echoed back in
+// BridgeInfo and used as the other side of the detector's ratio.
+//
+// This used to be a bare `time - 5` literal in data_receive_rate with
+// nothing tying it to the sender-side window. The whole premise of the
+// detector fix is that the two windows MATCH, so leaving one of them as
+// an unnamed literal meant a future edit to either could silently
+// re-open the 16.1%-impossible-samples skew described above (#52, review
+// round 2). Named, and pinned by the static_assert below.
+inline constexpr double kReceiveRateWindowSeconds = 5.0;
+
+static_assert(
+  kAdmissionSendRateWindowSeconds == kReceiveRateWindowSeconds,
+  "kAdmissionSendRateWindowSeconds must equal kReceiveRateWindowSeconds "
+  "— see issue #52. The congestion detector divides what the remote "
+  "reports receiving over ITS window by what we sent over OURS; if the "
+  "two differ, the ratio measures filter skew rather than loss, which is "
+  "what turned a 1% link into 35 cap collapses on 2026-08-25.");
+
 // Default fraction of measured goodput deliberately left unused, so a
 // co-tenant on the same path (an SSH session, the operator's own
 // management traffic) is not starved by the bridge.

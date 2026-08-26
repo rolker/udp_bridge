@@ -874,8 +874,8 @@ PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int sock
 std::pair<double, double> Connection::data_receive_rate(double time)
 {
   std::lock_guard<std::mutex> lock(receive_history_mutex_);
-  double five_secs_ago = time - 5;
-  while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < five_secs_ago)
+  const double window_start = time - kReceiveRateWindowSeconds;
+  while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < window_start)
     data_size_received_history_.erase(data_size_received_history_.begin());
 
   double dt = 1.0;
