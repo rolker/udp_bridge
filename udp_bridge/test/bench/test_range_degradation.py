@@ -788,9 +788,19 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
     measured a 4 MB/s cap against a 62.5 kB/s path -- 64x above real
     capacity -- and the bridge still took 61% of the link. A degraded link
     is a saturated link, which is exactly the condition a lockout happens
-    in. What protects the operator is headroom against measured
-    throughput (`link_headroom_fraction`, issue #52), and this invariant
-    is what checks the bridge honours it.
+    in. What protects the operator is the admission controller backing
+    off from its own cap rather than from a number the operator typed.
+
+    That mechanism was `link_headroom_fraction` -- the congested branch
+    targeting `(1 - headroom) x goodput` -- until the 2026-08-25 pass on
+    issue #52 removed the clamp: goodput is depressed by the very
+    throttling the target was computing, so it fed back on itself and
+    drove the recorded field onset below its regression bound on the
+    first step. The parameter is retained but inert. What carries the
+    guarantee now is the refractory-gated multiplicative decrease, and
+    this invariant is what checks it -- which is why the removal was
+    gated on running THIS test, not on inspecting the unit tests. See
+    `doc/admission_control_design.md`.
 
     **Two bounds, two phenomena (#61).** Windows are judged against
     `K_cotenant_p95_latency_s` (5 s) in steady state, but against

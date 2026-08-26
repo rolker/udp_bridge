@@ -40,23 +40,36 @@ static cap:
   `received_bytes_per_second` **minus** its `duplicate_bytes_per_second`.
   The raw received figure counts resends and duplicates, so it flatters
   the link exactly when amplification is worst.
+- **Window-matched comparison** (issue #52, 2026-08-25): "our own sent
+  rate" is measured over `kAdmissionSendRateWindowSeconds` (5 s), the
+  same window the remote uses to produce the figure it echoes back
+  (`Connection::data_receive_rate`). It used to come from
+  `PacketSendStatistics::get()`, a variable-span 1–10 s filter, and
+  comparing two differently-shaped filters is not a delivery
+  measurement. See "The 2026-08-25 collapse" below.
 - **Decrease**: when reported delivery < (1 − `kAdmissionLossThreshold`,
   i.e. 90%) of sent, or when this connection's own feedback is stale
   (nothing received for `kAckStarvationThreshold`), the effective cap
-  drops to the **lower** of a `kAdmissionDecreaseFactor` (0.5)
-  multiplicative step and the **headroom target**
-  `(1 − link_headroom_fraction) × goodput` (default headroom 0.2),
-  floored at `admission_floor_bytes_per_second` (default 8192) — the
-  floor keeps control/telemetry topics and the feedback loop itself
-  flowing, and is clamped at use to the configured limit so it can never
-  raise a cap.
+  takes one `kAdmissionDecreaseFactor` (0.5) multiplicative step from
+  **its own current value**, floored at
+  `admission_floor_bytes_per_second` (default 8192) — the floor keeps
+  control/telemetry topics and the feedback loop itself flowing, and is
+  clamped at use to the configured limit so it can never raise a cap.
 
-  The headroom target applies **only** on this branch. Measured goodput
-  is bounded above by offered load, so it is a *lower bound* on capacity
-  and never an estimate of it; clamping to it on the clean branch too
-  would ratchet a healthy, lightly-loaded link down to nothing. Stale
-  feedback carries no usable goodput reading — that is what stale means
-  — so it falls back to the multiplicative step alone.
+  The decrease reads **no goodput term at all**. Until 2026-08-25 it
+  targeted the lower of the multiplicative step and a *headroom target*
+  `(1 − link_headroom_fraction) × goodput`; that clamp was removed —
+  see "`link_headroom_fraction` after the clamp removal" below.
+- **Refractory period — one decision per congestion epoch** (issue #52,
+  2026-08-25): after a decrease, the controller **freezes** for
+  `admission_refractory_period_seconds` (default
+  `kDefaultAdmissionRefractoryPeriodSeconds` = 5.0). Inside the window
+  no sample is acted on — **not a congested one, and not a clean one
+  either**. The window grows by `kAdmissionRefractoryGrowthFactor` (2×)
+  on each successive decrease within an *unresolved* episode, capped at
+  `kAdmissionRefractoryMaximumMultiple` (2×) the configured base, and
+  resets to the base on the first clean sample — which is what "the
+  episode resolved" means.
 - **Increase**: on clean feedback, recover by
   `kAdmissionAdditiveStepFraction` (0.1) of the **current effective cap**,
   with an absolute minimum of
@@ -114,6 +127,126 @@ The lesson generalises beyond this file: **a controller whose step sizes
 are scaled by a configured constant cannot converge on a physical
 quantity that constant does not describe.**
 
+## The 2026-08-25 collapse, and the refractory period (issue #52)
+
+The scaling fix above landed, and the same control loop failed again on
+the very next deployment — differently, and worse. On the Isles of Shoals
+transit and station work
+([unh_echoboats_project11#459](https://github.com/rolker/unh_echoboats_project11/issues/459))
+the `vpn` connection's cap collapsed to its 8192 B/s floor **35 times in
+9.5 hours**. Every episode bottomed at exactly the floor and every one
+lasted 102–110 s — a constancy that identifies the outage length as a
+property of *this controller*, not of the link. 1.95 GB of video and
+telemetry was discarded by the boat at its own gate before reaching the
+radio, while Starlink reported `pop_ping_drop_rate` 0.0–0.05, no
+obstruction and flat 17–24 ms latency throughout. Whenever the cap was
+left at maximum — 80% of the transit, 90% on station — median and p95
+drops were zero. The trigger was ~1.11% loss. The response was a 183×
+cap reduction, and the operator hand-drove the boat alongside with no
+RGB video.
+
+Three compounding defects, and what each got:
+
+1. **No rate limit on the controller itself.** `updateAdmissionControl`
+   runs on every BridgeInfo arrival (~2 s) and applied another halving
+   on every congested sample. One marginal reading (442300/513563 = 0.86
+   against the 0.9 threshold) became seven halvings in 12 s. → the
+   **refractory period**.
+
+   The freeze is deliberately unconditional on sample type. Letting a
+   clean sample recover inside the window re-opens the loop from the
+   other side — recover, re-cross the threshold on the next
+   differently-filtered sample, halve again — and it changes the outcome
+   of both field-replay regression tests.
+
+   The window *grows* because the recorded onset reads congested on the
+   raw ratio for its full ~14 s: each decrease shrinks our own send
+   rate, which widens the filter skew that triggered the detector in the
+   first place. A fixed window still permits a third and fourth halving
+   inside one episode. The growth mirrors the exponential backoff the
+   resend re-request path already uses (`kResendBackoffBase` /
+   `kResendBackoffCap`) rather than introducing a second idiom.
+
+2. **The detector compared two differently-smoothed rates.** Our own
+   rate came from a variable-span 1–10 s box filter; the remote's came
+   from its 5 s box filter, delivered one BridgeInfo period later.
+   16.1% of the field samples show `remote_rx > 1.05 × sent_on_wire` —
+   physically impossible if the two figures described the same interval,
+   and proof that the ratio was dominated by filter skew during any
+   transient rather than by loss. → the **window-matched comparison**
+   (`PacketSendStatistics::success_rate_in_window`), which narrows the
+   skew but does not eliminate it: propagation delay remains, which is
+   why the refractory period is the primary defence and not the
+   detector fix.
+
+3. **The decrease target was derived from post-gate goodput.** →
+   the clamp removal, next section.
+
+### Tuning constants, and what constrained each
+
+| constant | value | what fixed it there |
+|---|---|---|
+| `kDefaultAdmissionRefractoryPeriodSeconds` | 5.0 s | The length of the receive-rate measurement window both ends use. One full window is the shortest interval after which *both* filters describe traffic sent at the new cap rather than the old one; reacting sooner is reacting to our own previous decrease. Empirically it holds the recorded onset to two decreases (`lowest = 375000` against the test's `> 187500` bound). |
+| `kAdmissionRefractoryGrowthFactor` | 2.0 | Matches the resend backoff idiom. One growth step is what the recorded onset needs; without it a third and fourth halving land inside the same episode (`lowest = 187500`, exactly at the bound). |
+| `kAdmissionRefractoryMaximumMultiple` | 2.0 (→ 10 s at the default base) | Bounded above by the bench harness's 10 s phase holds — a window grown past a phase could not react inside it — and by the statistics deque's own 10 s retention: freezing longer than the whole measurement record means deciding on evidence the controller can no longer see. Bounded below by `SustainedRealLossMustConverge`, which fails if convergence on a genuine sustained drop takes longer than 40 s. |
+| `kAdmissionSendRateWindowSeconds` | 5.0 s | Not a tuning value: it is `Connection::data_receive_rate`'s window, which is the number it has to match. |
+
+The refractory base is per-connection configurable
+(`admission_refractory_period_seconds`, a **double** —
+`5.0`, not `5`). The growth factor and cap stay fixed constants, matching
+the precedent that `kResendBackoffBase` is fixed while higher-level knobs
+like `resend_budget_fraction` are parameters. Like every other
+admission parameter it is **configure-time only** — which is the exact
+property RCA item D names as what blocked live mitigation on 2026-08-25
+(the floor could not be raised from the boat while it was the problem).
+[#76](https://github.com/rolker/udp_bridge/issues/76) is in flight to
+make connection parameters runtime-reconfigurable; this knob joins that
+set and should be revisited with it.
+
+## `link_headroom_fraction` after the clamp removal (issue #52)
+
+The decrease used to target
+`min(cap × 0.5, (1 − link_headroom_fraction) × goodput)`. That clamp was
+**removed** on 2026-08-25, which leaves `link_headroom_fraction` with no
+call site in the control law.
+
+**Why it had to go.** `goodput` is depressed by the very throttling the
+formula is computing — a positive feedback loop. On the recorded field
+onset the clamp's first step alone landed at
+`0.8 × (254615 − 51715) = 162320`, already below the regression bound,
+*before a second decrease existed for the refractory gate to suppress*;
+no refractory tuning rescues it. Nor is goodput a capacity estimate in
+the regime where the clamp bites hardest: as the "Decrease" bullet's own
+reasoning says, goodput is bounded above by *offered* load, and the field
+day's operating point was ~495 kB/s offered against a 1,500,000 B/s cap
+— so the clamp there was a 3.8× cut carrying no capacity information at
+all. When the gate *is* limiting, goodput tracks the cap and the clamp is
+circular. There is no regime in which it is trustworthy.
+
+**Where that leaves the parameter.** The plan for this cycle required
+resolving this by *measurement* — not by inspection — against the bench
+invariant that is the parameter's operational claim,
+`test_invariant_cotenant_management_flow_survives` (issue #52's own
+acceptance criterion: "this invariant should pass before the cap is
+relaxed on anything that goes to sea"). It **passes** with the clamp
+removed, on every phase the path can carry traffic in. The
+refractory-gated multiplicative decrease alone satisfies the co-tenant
+guarantee on this harness.
+
+So the parameter is **retained but inert**: existing configs set it, and
+removing it would break them, so it is still declared, clamped and
+reported — but nothing reads it. That is a state worth flagging rather
+than leaving to be rediscovered:
+`AdmissionControl.HeadroomFractionDoesNotAffectDecreaseTarget` pins the
+inertness, so re-attaching headroom to the control law has to be a
+deliberate act with its own basis (one that is *not* post-gate goodput)
+and its own re-run of the field-replay gate. **Follow-up:** decide
+whether headroom gets a new basis or the parameter is removed outright,
+after post-deployment field data exists — the same follow-up that should
+carry RCA option B (a sequence-gap / matched-byte-counter detector, which
+needs new wire fields and so a coordinated redeploy) and the
+evaluated-but-not-adopted purely-local resend-ratio detector.
+
 ## Headroom, and what the rate limit is actually for
 
 `maximum_bytes_per_second` was added after a udp_bridge saturating a link
@@ -123,11 +256,14 @@ protection where it counts: the cap was 64× above real capacity at
 `critical` and the bridge still saturated the path. A degraded link is a
 saturated link, and that is exactly the condition a lockout happens in.
 
-Hence `link_headroom_fraction`: the controller targets a fraction of what
-the link is *measured* to deliver, so a co-tenant — an SSH session, the
-operator's own management traffic — keeps a share on a 62.5 kB/s path as
-well as on a 30 Mbit one. The bench asserts this directly; see the
-management-flow survivability invariant in `test/bench/`.
+Hence `link_headroom_fraction`, which used to make the controller target
+a fraction of what the link is *measured* to deliver, so a co-tenant — an
+SSH session, the operator's own management traffic — keeps a share on a
+62.5 kB/s path as well as on a 30 Mbit one. **That clamp was removed on
+2026-08-25** (see the section above); what now provides the co-tenant
+guarantee is the refractory-gated multiplicative decrease itself, and
+the bench's management-flow survivability invariant in `test/bench/` —
+the thing that actually asserts the property — passes on it.
 
 The rate limit is **not** obsolete. It remains a hard ceiling and the
 cost control on metered cell links. What it is no longer asked to be is
@@ -146,10 +282,15 @@ the system's model of link capacity.
   scenario — congestion with feedback still flowing — is fully covered.
 - **The ratio is a trend signal, not an exact loss measure.** The
   remote's `received_bytes_per_second` includes cross-connection
-  duplicates; our sent rate includes resend traffic; the two sides use
-  different smoothing windows; BridgeInfo adds up to ~1 s of propagation
-  delay. The 10% loss threshold absorbs this inflation — do not treat
-  the ratio as a precise loss percentage.
+  duplicates; our sent rate includes resend traffic; BridgeInfo adds up
+  to ~1 s of propagation delay. The two sides' smoothing windows now
+  match (5 s on both, since #52) — they did not, and the mismatch was
+  the 2026-08-25 detector defect — but matching the windows does not
+  make them the *same* interval, so skew during a transient is narrowed,
+  not eliminated. The 10% loss threshold absorbs the residual inflation
+  — do not treat the ratio as a precise loss percentage, and note that
+  the refractory period, not the threshold, is what bounds the damage
+  when the ratio is wrong.
 - **Locking**: `updateAdmissionControl` reads the sent-stats and
   receive-history values under their own mutexes, then takes
   `config_mutex_` for the AIMD update — the mutexes are never held
@@ -167,11 +308,46 @@ schema-evolution contract documented in `Remote.msg`.
 
 ## Verification
 
-`test/test_admission_control.cpp` pins: decrease-on-congestion, additive
-recovery, floor/ceiling clamps, stale-feedback fallback, never-received
-sentinel, effective-cap metering in `send()`, and the `setRateLimit`
-clamp semantics. The
-[#18](https://github.com/rolker/udp_bridge/issues/18) bench harness's
-range-degradation scenario is the eventual end-to-end gate. Field
-validation: watch `effective_rate_limit` track WiFi loss episodes on the
-next BizzyBoat deployment.
+`test/test_admission_control.cpp` pins: decrease-on-congestion (purely
+multiplicative, no goodput term), additive recovery, floor/ceiling
+clamps, stale-feedback fallback, never-received sentinel, effective-cap
+metering in `send()`, the `setRateLimit` clamp semantics, the refractory
+gate (freeze of both branches, exponential growth, reset on a clean
+sample, setter contract) and the window-matched comparison.
+
+`test/test_admission_field_replay.cpp` is the acceptance gate for the
+2026-08-25 fix, and it is deliberately **two-sided**:
+
+- `FieldOnsetMustNotCascadeToFloor` replays the recorded 07:20 sender /
+  receiver telemetry. The cap must not run to the floor: `lowest =
+  375000` against a `> 187500` bound (pre-fix: 8192).
+- `HandoverBlipMustNotCostTwoMinutesOfVideo` models the day's operating
+  point through a single ~4 s Starlink handover. Delivered fraction
+  `1.000` against a `> 0.90` bound, final cap back at 1500000 (pre-fix:
+  0.398 and 633091).
+- `SustainedRealLossMustConverge` is the counter-test that keeps the
+  other two honest. Both of them assert only that the cap does *not*
+  fall; a controller that has stopped detecting congestion altogether
+  passes both. (The `review-plan` pass on this cycle demonstrated
+  exactly that: EWMA smoothing at α = 0.2 leaves the cap pinned at
+  1500000 for the whole recorded onset, both tests green.) This one
+  replays a *sustained* 10× capacity drop and requires the cap to find
+  it within 40 s and then stay inside [0.5×, 2×] real capacity. It is
+  also what bounds how far `kAdmissionRefractoryMaximumMultiple` may
+  grow.
+
+`test/test_message_atomicity.cpp` covers the send-path half of #52 — see
+the file header.
+
+The [#18](https://github.com/rolker/udp_bridge/issues/18) bench harness's
+range-degradation scenario is the end-to-end gate and must be re-run for
+any change to this control loop:
+
+```bash
+UDP_BRIDGE_BENCH_SCENARIOS=1 colcon test --packages-select udp_bridge \
+    --pytest-args -k test_bench_range_degradation
+```
+
+Field validation: watch `effective_rate_limit` track loss episodes on
+the next BizzyBoat deployment — specifically, that the 102–110 s
+floor-to-recovery excursions do not recur.
