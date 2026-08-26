@@ -1449,33 +1449,33 @@ Specialists: Static Analysis (pre-commit clean, 11 hooks, over `origin/jazzy..HE
 
 ### Findings
 
-- [ ] (must-fix, **cross-confirmed by BOTH adversarial lenses, independently re-verified by me**) **the integer-literal guard is at the wrong site: `admission_refractory_period_seconds: 5` in a real config still fails the whole lifecycle transition.** With static parameter typing, an INTEGER override for a parameter declared with a DOUBLE default throws at `declare_parameter`, inside `declareIfMissing` — before `getDoubleParameter` is ever reached. I compiled a standalone rclcpp probe against `/opt/ros/jazzy`: `declare_parameter THREW: InvalidParameterTypeException: parameter 'refract' has invalid type: ... parameter {refract} is of type {double}, setting it to {integer} is not allowed.` A parameter *override* is not a declared parameter, so `has_parameter` is false and `declareIfMissing` calls the throwing overload. `RetiredParameters.IntegerLiteralForADoubleParameterConfigures` passes only because its harness **pre-declares** the key as INTEGER (`test_node_name_limits.cpp:104-110`), which short-circuits `declareIfMissing` and moves the failure to `as_double()` — a state no YAML file or `-p` override can produce. The fixer's "restoring bare `as_double()` makes it fail" check was honest and is true of that path; the path is not the field path. Same exposure for `admission_floor_bytes_per_second: 9000`, `resend_budget_fraction: 1`, `period: 1`. Coerce at declaration (inspect `get_parameter_overrides()`, or catch `InvalidParameterTypeException` and re-declare coerced) and drive the test through `NodeOptions::parameter_overrides` — `udp_bridge/include/udp_bridge/udp_bridge.h:306,312-333`, `udp_bridge/test/test_node_name_limits.cpp:362`
-- [ ] (must-fix, Lens A with an empirical probe, Lens B independently) **a backwards clock step permanently wedges `can_send` and grows the statistics deque without bound** — the layer directly beneath the two this branch hardened for exactly that event. `Statistics::add` (`statistics.h:57-61`) evicts only from the front and only relative to the *incoming* record's timestamp, so after a backwards step the future-stamped front entries make the predicate false forever. `can_send` and `bytes_in_window` are bounded only below, so those stranded entries are summed on every call. Lens A's probe against the real library: deque 1001 -> 3001 over 20 s of post-step traffic (should stay ~1000), and `can_send(1000, 0, 1500000, t=20)` returns **0** — the connection admits nothing, permanently, presenting as "the link stopped". `Connection::data_receive_rate` has the same shape (`std::map`, large keys sort to the back, the `begin()` erase loop never reaches them). Round 2 bounded `success_rate_in_window` at both ends for precisely "a looping bag replay, a sim reset" and stopped at one of four siblings — `udp_bridge/src/statistics.cpp:159,237`, `udp_bridge/include/udp_bridge/statistics.h:57`, `udp_bridge/src/connection.cpp:931-940`
-- [ ] (must-fix, Lens B; Lens A independently established the premise) **`ConcurrentMessagesAreAllOrNothing` — the ONLY test that discriminates against a regression of direction C — silently disables itself entirely on one `ENOBUFS`.** Lens A's revert experiment confirms it is the sole discriminator (reverting to the check-only aggregate fails this test and no other). `GTEST_SKIP()` returns from the *test function*, not the round, so one throw in round 0 skips all 25 rounds and the closing `EXPECT_GT(total_successes, 0)`, and the run reports green. The comment says "Skip the round instead", which is not what the mechanism does. Probability rises exactly as the machine gets busier — i.e. as the race gets more catchable. Use `continue`, count skipped rounds, and fail if too few completed — `udp_bridge/test/test_message_atomicity.cpp:371-378`
-- [ ] (must-fix, Lens B) **the AIMD cap and the refractory window reach no diagnostic surface, so the failure this branch exists to make legible is still invisible where an over-horizon operator looks.** `diagnoseConnection` publishes `rate_limit_bytes_per_sec` — the *configured* limit, the number that never moves — and never `effectiveRateLimit()` or `currentAdmissionRefractoryWindowSeconds()`. `effective_rate_limit` exists only as a `BridgeInfo` field, requiring the operator to subscribe to a bridge topic and diff two numbers by eye: precisely what did not happen on 2026-08-25. `connection.h:92-95` concedes "a frozen controller and a healthy flat cap look identical" and defers to #75 — but that reasoning is about the **message schema**, where a field costs a type-hash break and a coordinated redeploy. A diagnostic KeyValue costs neither. Two `stat.add` lines close the operator-visibility gap for this release rather than the next. (Related, same function: the WARN at `:2882` says "tx failures/drops" identically for socket failures and for deliberate admission shedding, and a throttled connection now sits in it continuously) — `udp_bridge/src/udp_bridge.cpp:2862,2882`
-- [ ] (must-fix, **triple-confirmed: Lens A, Governance, and my own arithmetic check**) **the retirement tripwire is correct only by an accidental float widening, and three operator surfaces state behaviour it does not have.** The WARN fires on `link_headroom_fraction != static_cast<double>(kDefaultLinkHeadroomFraction)`. Measured: `static_cast<double>(0.2f)` = 0.20000000298023223877, YAML `0.2` = 0.20000000000000001110 — unequal, so `link_headroom_fraction: 0.2` **does** warn. That is the desirable behaviour and it is an accident: make `kDefaultLinkHeadroomFraction` a `double` — a plausible tidy-up — and the tripwire goes silent on the shipped default, the single most likely stale value in a real config, with no test failing. This is the same "correct by an incidental property of another declaration" pattern round 2 deliberately removed from `earliest.nanoseconds() == 0`. Meanwhile the cited precedent (`remotes.<label>.name`) is **presence**-based with a test pinning exactly that ("rejected on presence, not on whether it would have changed the identity"), so the divergence is wider than the WARN-vs-FAIL axis the Implementation entry names. Warn on presence via `get_parameter_overrides()`; `README.md:213`, `config/example_params.yaml:133-134`, `.agents/README.md:109` all say "anything but the default" and are false as written — `udp_bridge/src/udp_bridge.cpp:684`
-- [ ] (must-fix, Governance, cross-confirmed by the accuracy sweep) **seven live comments still describe the removed `(1 - headroom) x goodput` clamp as the operative decrease target.** Third round running for this class, after two dedicated sweeps. All are untouched context lines, none imply a code change: `connection.cpp:249-252` ("left in the headroom target below that slams the cap to the floor"), `connection.cpp:260-262` ("treated as congested with a headroom target of 0"), and `test_admission_control.cpp:465-469,503-506,526-529,569-572,604-611` (four "the headroom target would slam the cap" variants plus "the one congested path that does NOT apply the headroom target" — every congested path is now identical, so the stated reason for that test's construction no longer exists)
-- [ ] (must-fix, Governance, verified by grep) **a code comment points readers at a test that does not exist.** `test_admission_control.cpp:250` names `RetiredHeadroomParameterStillConfigures`; the only match in the repo is that comment itself. The real test is `RetiredParameters.LinkHeadroomFractionStillConfigures` (`test_node_name_limits.cpp:346`). `plan.md` gets the name right; the code comment does not — `udp_bridge/test/test_admission_control.cpp:250`
-- [ ] (must-fix, measured) **the strict `xfail` on `test_invariant_resend_amplification` XPASSes at HEAD, and the plan's verification record says it does not.** Four full range-degradation runs at `18d5eca`: **3 XPASS(strict) -> FAILED, 1 xfailed**. `plan.md:695` records "**Outcome**: the marker stays (strict, no XPASS)" and the xfail reason string this branch itself rewrote (`90a16cf`) asserts "What IS stable is that at least one phase violates every run, so the marker holds" — both false at HEAD, 3 times in 4. The branch's own n=3 was measured at `a06f0af`, before `33a10f1` reworked the detector window; and its own n=3 data shows the margin was always thin (one run violated only via `lossy` at 0.0705 against a 0.060 ceiling). Per the repo's own `#57` note the marker must NOT be removed and `F_resend_multiplier` must NOT be raised to keep it xfailing — so the required action is to record the measurement and route the decision to #54, not to silence it. A strict xfail on a metric with 4-5x run-to-run spread is a coin-flip red suite either way, which is itself worth saying — `udp_bridge/test/bench/test_range_degradation.py:678-699`, `.agent/work-plans/issue-52/plan.md:686,695`
-- [ ] (suggestion, Lens A) the co-tenant claim is stronger than the mechanism supports. The removed clamp had a **structural** property — it reserved a share of measured throughput whether or not the bridge itself was losing. A pure multiplicative decrease fires only when `remote_received < 0.9 x sent_bps`, i.e. only when the bridge's OWN delivery degrades; on a saturated path where the bridge wins the queue and the co-tenant is the one starved, the bridge reads clean and never backs off. The invariant passes (I confirmed, 3/3 at HEAD) because the recorded trajectory has the bridge losing too. Honest statement: no headroom mechanism remains; the co-tenant is protected insofar as the bridge shares the loss. Belongs on #61, where a replacement basis would be argued. (Lens A's accompanying claim that the bench invariants "skip in this environment" is wrong — they are opt-in and I ran them) — `test/bench/README.md`, `test/bench/test_range_degradation.py`, `test/bench/cotenant.py`
-- [ ] (suggestion, Governance) two feedback-validation tests no longer discriminate. With the clamp gone, `DuplicateExceedingReceivedTreatedAsCongestion` (received 40000 vs sent ~80000) and `NegativeRatesTreatedAsCongestion` (received -100) both satisfy `received < 0.9 x sent` on their own, so deleting the `feedback_unusable` guard entirely leaves both green. The guard IS still load-bearing in general (received 100000 / sent 100000 / duplicate 200000 reads clean without it) — these two just do not exercise it. `NanFeedbackTreatedAsCongestion` still does. Drive them from a clean-looking received rate, or label them contract tests as the atomicity file already labels its own — `udp_bridge/test/test_admission_control.cpp:519-540,560-580`
-- [ ] (suggestion, Lens B) `BatchReservationGuard::unreserved` was clamped in round 2, but `sendPacket`'s two releases still bare-decrement `reserved_bytes_in_flight_` — the counter whose underflow actually wedges the connection permanently, which is the failure mode the clamp's own comment describes. Clamp both, or replace the argument-by-comment with a one-time ERROR when `data.size() > reserved_bytes_in_flight_` — `udp_bridge/src/connection.cpp:723-736,782,870`
-- [ ] (suggestion, mine) `warnIfAdmissionInert`'s throttle rationale is wrong. `RCLCPP_WARN_STREAM_THROTTLE` keeps its state per **call site**, not per connection, so a second connection entering the inert state within 60 s of the first is suppressed — and because the call is event-driven (CONNECT decode / `add_remote`), not periodic, it is never re-emitted. The comment says throttling was chosen precisely so a second connection would not be hidden; it does not achieve that — `udp_bridge/src/udp_bridge.cpp:93-95`
-- [ ] (suggestion, mine) round 2's `ffa787d` tightened the clock-zero reachability statement in `connection.cpp` but not in its sibling in the header, which still carries the loose form the fix rejected ("Under `use_sim_time` before the first `/clock`, or a bag replayed from t=0") — `udp_bridge/include/udp_bridge/connection.h:353-357`
-- [ ] (suggestion, mine) `currentAdmissionRefractoryWindowSeconds()`'s doc still says the grown window is "capped at base x kAdmissionRefractoryMaximumMultiple" — omitting the 60 s third bound round 2 added, which is exactly the bound that matters at a max-configured base — `udp_bridge/include/udp_bridge/connection.h:87-90`
-- [ ] (suggestion, mine) `success_rate_in_window`'s window is documented as `(time - w, time]` but implemented as `[time - w, time]` (`entry.timestamp < window_start` keeps the equal case). `WindowMatchedSendRateSurvivesABurst` depends on the closed lower bound — its 90 kB is stamped at exactly `t1 - 5` — so the doc and the test disagree about which end is open — `udp_bridge/include/udp_bridge/statistics.h:113-115`, `udp_bridge/src/statistics.cpp:180,197`
-- [ ] (suggestion, Lens B) `admission_refractory_period_seconds: 0` — documented as restoring the behaviour that caused the incident — is accepted silently, while a retired parameter and an inert floor each get a WARN. Same class of capability-limiting configuration the other two WARNs exist for — `udp_bridge/src/udp_bridge.cpp:696-698`
-- [ ] (suggestion, Lens A) `effectiveRateLimit()` casts a `float` to `uint32_t` with no clamp, so a peer-advertised `return_maximum_bytes_per_second` near `UINT32_MAX` rounds to 4294967296.0f and the cast is out of range — on x86-64 the metered cap reads **0** and the connection admits nothing. Pre-existing (#43), but this branch made `effective_rate_limit_` load-bearing at three read sites and added peer-input clamps elsewhere for #53. Corruption/version-skew robustness, not a security claim — `udp_bridge/src/connection.cpp:175-179`
-- [ ] (suggestion, Lens B) `warnIfAdmissionInert` is the first caller to nest a `Connection` mutex under a `UDPBridge` one (called while `remote_nodes_mutex_` and `pending_connections_mutex_` are held; it takes `config_mutex_` twice). Safe today — `Connection` never reaches back up — but `connection.h:292-303` and `updateAdmissionControl`'s locking preamble both go out of their way to record that Connection's mutexes are never nested. One line keeps the invariant auditable — `udp_bridge/src/udp_bridge.cpp:2044,2651,2679`
-- [ ] (suggestion, Lens A) `FloorNeverExceedsConfiguredLimit` feeds ten congested samples at one timestamp; under the new gate only the first is acted on, so the loop is decorative. It still discriminates for its stated property, but the "repeatedly" framing no longer holds — space the samples like its siblings or drop the loop — `udp_bridge/test/test_admission_control.cpp:~404`
-- [ ] (suggestion, mine) `send_at_rate` now has no callers — both replays moved to `send_over_interval`. It is still referenced by two comments as the contrast; either say so at the definition or remove it — `udp_bridge/test/test_admission_field_replay.cpp:165`
-- [ ] (suggestion, Governance) the design doc carries review-round bookkeeping about this branch's own prior mistake ("Five references in this change pointed at it") inside a durable document; the correction belongs in `progress.md`, which already has it. The doc needs only the #75 link — `udp_bridge/doc/admission_control_design.md:279-283`
-- [ ] (suggestion, Governance) `resend_constants.h` keeps eight lines of present-tense headroom rationale ("A headroom target **scales** with whatever the link is actually delivering, so it **holds**...") immediately before the RETIRED block that contradicts it. Recast to past tense — `udp_bridge/include/udp_bridge/resend_constants.h:286-293`
-- [ ] (suggestion, Governance) `CMakeLists.txt` claims the atomicity test covers "reservation release on every exit path a fragment can take"; the test file itself states ECONNREFUSED is unreachable on an unconnected UDP socket and is covered only by inference. The test file is honest, the build file is not — `udp_bridge/CMakeLists.txt:159`
-- [ ] (suggestion, Governance + Lens A + mine) typo: "a fragment ... that can never be reassembled **is spend** on a degraded link" -> "is spent" — `udp_bridge/README.md:231`
-- [ ] (suggestion, Plan Drift) `plan.md:686` states "The two already-committed tests are **unedited** — they remain the gate." Both were edited on this branch after that line was written: `516037c` (+44/-10, touching both) and `4f807c0` (+8/-1, `send_at_rate` -> `send_over_interval` in the handover test). The edits are defensible and `progress.md` records them; the plan row does not — `.agent/work-plans/issue-52/plan.md:686`
-- [ ] (suggestion, Plan Drift) three changed-but-unplanned files missing from Files to Change, which already uses an "Added during implementation" convention: `include/udp_bridge/udp_bridge.h` (+23, the `getDoubleParameter` helper — a behaviour change to four existing parameter reads), `test/test_node_name_limits.cpp` (+69, the only coverage of the tripwire), `test/bench/cotenant.py` (+20/-9) — `.agent/work-plans/issue-52/plan.md:677-695`
-- [ ] (suggestion, Governance) this is the third root-cause pass on this control loop in ~2 weeks and the project repo still has no `docs/decisions/`. The plan recommends a project-repo ADR (`plan.md:940-945`) without committing to it. Fine to defer; worth the operator seeing it named
+- [x] (must-fix, **cross-confirmed by BOTH adversarial lenses, independently re-verified by me**) **the integer-literal guard is at the wrong site: `admission_refractory_period_seconds: 5` in a real config still fails the whole lifecycle transition.** With static parameter typing, an INTEGER override for a parameter declared with a DOUBLE default throws at `declare_parameter`, inside `declareIfMissing` — before `getDoubleParameter` is ever reached. I compiled a standalone rclcpp probe against `/opt/ros/jazzy`: `declare_parameter THREW: InvalidParameterTypeException: parameter 'refract' has invalid type: ... parameter {refract} is of type {double}, setting it to {integer} is not allowed.` A parameter *override* is not a declared parameter, so `has_parameter` is false and `declareIfMissing` calls the throwing overload. `RetiredParameters.IntegerLiteralForADoubleParameterConfigures` passes only because its harness **pre-declares** the key as INTEGER (`test_node_name_limits.cpp:104-110`), which short-circuits `declareIfMissing` and moves the failure to `as_double()` — a state no YAML file or `-p` override can produce. The fixer's "restoring bare `as_double()` makes it fail" check was honest and is true of that path; the path is not the field path. Same exposure for `admission_floor_bytes_per_second: 9000`, `resend_budget_fraction: 1`, `period: 1`. Coerce at declaration (inspect `get_parameter_overrides()`, or catch `InvalidParameterTypeException` and re-declare coerced) and drive the test through `NodeOptions::parameter_overrides` — `udp_bridge/include/udp_bridge/udp_bridge.h:306,312-333`, `udp_bridge/test/test_node_name_limits.cpp:362`
+- [x] (must-fix, Lens A with an empirical probe, Lens B independently) **a backwards clock step permanently wedges `can_send` and grows the statistics deque without bound** — the layer directly beneath the two this branch hardened for exactly that event. `Statistics::add` (`statistics.h:57-61`) evicts only from the front and only relative to the *incoming* record's timestamp, so after a backwards step the future-stamped front entries make the predicate false forever. `can_send` and `bytes_in_window` are bounded only below, so those stranded entries are summed on every call. Lens A's probe against the real library: deque 1001 -> 3001 over 20 s of post-step traffic (should stay ~1000), and `can_send(1000, 0, 1500000, t=20)` returns **0** — the connection admits nothing, permanently, presenting as "the link stopped". `Connection::data_receive_rate` has the same shape (`std::map`, large keys sort to the back, the `begin()` erase loop never reaches them). Round 2 bounded `success_rate_in_window` at both ends for precisely "a looping bag replay, a sim reset" and stopped at one of four siblings — `udp_bridge/src/statistics.cpp:159,237`, `udp_bridge/include/udp_bridge/statistics.h:57`, `udp_bridge/src/connection.cpp:931-940`
+- [x] (must-fix, Lens B; Lens A independently established the premise) **`ConcurrentMessagesAreAllOrNothing` — the ONLY test that discriminates against a regression of direction C — silently disables itself entirely on one `ENOBUFS`.** Lens A's revert experiment confirms it is the sole discriminator (reverting to the check-only aggregate fails this test and no other). `GTEST_SKIP()` returns from the *test function*, not the round, so one throw in round 0 skips all 25 rounds and the closing `EXPECT_GT(total_successes, 0)`, and the run reports green. The comment says "Skip the round instead", which is not what the mechanism does. Probability rises exactly as the machine gets busier — i.e. as the race gets more catchable. Use `continue`, count skipped rounds, and fail if too few completed — `udp_bridge/test/test_message_atomicity.cpp:371-378`
+- [x] (must-fix, Lens B) **the AIMD cap and the refractory window reach no diagnostic surface, so the failure this branch exists to make legible is still invisible where an over-horizon operator looks.** `diagnoseConnection` publishes `rate_limit_bytes_per_sec` — the *configured* limit, the number that never moves — and never `effectiveRateLimit()` or `currentAdmissionRefractoryWindowSeconds()`. `effective_rate_limit` exists only as a `BridgeInfo` field, requiring the operator to subscribe to a bridge topic and diff two numbers by eye: precisely what did not happen on 2026-08-25. `connection.h:92-95` concedes "a frozen controller and a healthy flat cap look identical" and defers to #75 — but that reasoning is about the **message schema**, where a field costs a type-hash break and a coordinated redeploy. A diagnostic KeyValue costs neither. Two `stat.add` lines close the operator-visibility gap for this release rather than the next. (Related, same function: the WARN at `:2882` says "tx failures/drops" identically for socket failures and for deliberate admission shedding, and a throttled connection now sits in it continuously) — `udp_bridge/src/udp_bridge.cpp:2862,2882`
+- [x] (must-fix, **triple-confirmed: Lens A, Governance, and my own arithmetic check**) **the retirement tripwire is correct only by an accidental float widening, and three operator surfaces state behaviour it does not have.** The WARN fires on `link_headroom_fraction != static_cast<double>(kDefaultLinkHeadroomFraction)`. Measured: `static_cast<double>(0.2f)` = 0.20000000298023223877, YAML `0.2` = 0.20000000000000001110 — unequal, so `link_headroom_fraction: 0.2` **does** warn. That is the desirable behaviour and it is an accident: make `kDefaultLinkHeadroomFraction` a `double` — a plausible tidy-up — and the tripwire goes silent on the shipped default, the single most likely stale value in a real config, with no test failing. This is the same "correct by an incidental property of another declaration" pattern round 2 deliberately removed from `earliest.nanoseconds() == 0`. Meanwhile the cited precedent (`remotes.<label>.name`) is **presence**-based with a test pinning exactly that ("rejected on presence, not on whether it would have changed the identity"), so the divergence is wider than the WARN-vs-FAIL axis the Implementation entry names. Warn on presence via `get_parameter_overrides()`; `README.md:213`, `config/example_params.yaml:133-134`, `.agents/README.md:109` all say "anything but the default" and are false as written — `udp_bridge/src/udp_bridge.cpp:684`
+- [x] (must-fix, Governance, cross-confirmed by the accuracy sweep) **seven live comments still describe the removed `(1 - headroom) x goodput` clamp as the operative decrease target.** Third round running for this class, after two dedicated sweeps. All are untouched context lines, none imply a code change: `connection.cpp:249-252` ("left in the headroom target below that slams the cap to the floor"), `connection.cpp:260-262` ("treated as congested with a headroom target of 0"), and `test_admission_control.cpp:465-469,503-506,526-529,569-572,604-611` (four "the headroom target would slam the cap" variants plus "the one congested path that does NOT apply the headroom target" — every congested path is now identical, so the stated reason for that test's construction no longer exists)
+- [x] (must-fix, Governance, verified by grep) **a code comment points readers at a test that does not exist.** `test_admission_control.cpp:250` names `RetiredHeadroomParameterStillConfigures`; the only match in the repo is that comment itself. The real test is `RetiredParameters.LinkHeadroomFractionStillConfigures` (`test_node_name_limits.cpp:346`). `plan.md` gets the name right; the code comment does not — `udp_bridge/test/test_admission_control.cpp:250`
+- [x] (must-fix, measured) **the strict `xfail` on `test_invariant_resend_amplification` XPASSes at HEAD, and the plan's verification record says it does not.** Four full range-degradation runs at `18d5eca`: **3 XPASS(strict) -> FAILED, 1 xfailed**. `plan.md:695` records "**Outcome**: the marker stays (strict, no XPASS)" and the xfail reason string this branch itself rewrote (`90a16cf`) asserts "What IS stable is that at least one phase violates every run, so the marker holds" — both false at HEAD, 3 times in 4. The branch's own n=3 was measured at `a06f0af`, before `33a10f1` reworked the detector window; and its own n=3 data shows the margin was always thin (one run violated only via `lossy` at 0.0705 against a 0.060 ceiling). Per the repo's own `#57` note the marker must NOT be removed and `F_resend_multiplier` must NOT be raised to keep it xfailing — so the required action is to record the measurement and route the decision to #54, not to silence it. A strict xfail on a metric with 4-5x run-to-run spread is a coin-flip red suite either way, which is itself worth saying — `udp_bridge/test/bench/test_range_degradation.py:678-699`, `.agent/work-plans/issue-52/plan.md:686,695`
+- [x] (suggestion, Lens A) the co-tenant claim is stronger than the mechanism supports. The removed clamp had a **structural** property — it reserved a share of measured throughput whether or not the bridge itself was losing. A pure multiplicative decrease fires only when `remote_received < 0.9 x sent_bps`, i.e. only when the bridge's OWN delivery degrades; on a saturated path where the bridge wins the queue and the co-tenant is the one starved, the bridge reads clean and never backs off. The invariant passes (I confirmed, 3/3 at HEAD) because the recorded trajectory has the bridge losing too. Honest statement: no headroom mechanism remains; the co-tenant is protected insofar as the bridge shares the loss. Belongs on #61, where a replacement basis would be argued. (Lens A's accompanying claim that the bench invariants "skip in this environment" is wrong — they are opt-in and I ran them) — `test/bench/README.md`, `test/bench/test_range_degradation.py`, `test/bench/cotenant.py`
+- [x] (suggestion, Governance) two feedback-validation tests no longer discriminate. With the clamp gone, `DuplicateExceedingReceivedTreatedAsCongestion` (received 40000 vs sent ~80000) and `NegativeRatesTreatedAsCongestion` (received -100) both satisfy `received < 0.9 x sent` on their own, so deleting the `feedback_unusable` guard entirely leaves both green. The guard IS still load-bearing in general (received 100000 / sent 100000 / duplicate 200000 reads clean without it) — these two just do not exercise it. `NanFeedbackTreatedAsCongestion` still does. Drive them from a clean-looking received rate, or label them contract tests as the atomicity file already labels its own — `udp_bridge/test/test_admission_control.cpp:519-540,560-580`
+- [x] (suggestion, Lens B) `BatchReservationGuard::unreserved` was clamped in round 2, but `sendPacket`'s two releases still bare-decrement `reserved_bytes_in_flight_` — the counter whose underflow actually wedges the connection permanently, which is the failure mode the clamp's own comment describes. Clamp both, or replace the argument-by-comment with a one-time ERROR when `data.size() > reserved_bytes_in_flight_` — `udp_bridge/src/connection.cpp:723-736,782,870`
+- [x] (suggestion, mine) `warnIfAdmissionInert`'s throttle rationale is wrong. `RCLCPP_WARN_STREAM_THROTTLE` keeps its state per **call site**, not per connection, so a second connection entering the inert state within 60 s of the first is suppressed — and because the call is event-driven (CONNECT decode / `add_remote`), not periodic, it is never re-emitted. The comment says throttling was chosen precisely so a second connection would not be hidden; it does not achieve that — `udp_bridge/src/udp_bridge.cpp:93-95`
+- [x] (suggestion, mine) round 2's `ffa787d` tightened the clock-zero reachability statement in `connection.cpp` but not in its sibling in the header, which still carries the loose form the fix rejected ("Under `use_sim_time` before the first `/clock`, or a bag replayed from t=0") — `udp_bridge/include/udp_bridge/connection.h:353-357`
+- [x] (suggestion, mine) `currentAdmissionRefractoryWindowSeconds()`'s doc still says the grown window is "capped at base x kAdmissionRefractoryMaximumMultiple" — omitting the 60 s third bound round 2 added, which is exactly the bound that matters at a max-configured base — `udp_bridge/include/udp_bridge/connection.h:87-90`
+- [x] (suggestion, mine) `success_rate_in_window`'s window is documented as `(time - w, time]` but implemented as `[time - w, time]` (`entry.timestamp < window_start` keeps the equal case). `WindowMatchedSendRateSurvivesABurst` depends on the closed lower bound — its 90 kB is stamped at exactly `t1 - 5` — so the doc and the test disagree about which end is open — `udp_bridge/include/udp_bridge/statistics.h:113-115`, `udp_bridge/src/statistics.cpp:180,197`
+- [x] (suggestion, Lens B) `admission_refractory_period_seconds: 0` — documented as restoring the behaviour that caused the incident — is accepted silently, while a retired parameter and an inert floor each get a WARN. Same class of capability-limiting configuration the other two WARNs exist for — `udp_bridge/src/udp_bridge.cpp:696-698`
+- [x] (suggestion, Lens A) `effectiveRateLimit()` casts a `float` to `uint32_t` with no clamp, so a peer-advertised `return_maximum_bytes_per_second` near `UINT32_MAX` rounds to 4294967296.0f and the cast is out of range — on x86-64 the metered cap reads **0** and the connection admits nothing. Pre-existing (#43), but this branch made `effective_rate_limit_` load-bearing at three read sites and added peer-input clamps elsewhere for #53. Corruption/version-skew robustness, not a security claim — `udp_bridge/src/connection.cpp:175-179`
+- [x] (suggestion, Lens B) `warnIfAdmissionInert` is the first caller to nest a `Connection` mutex under a `UDPBridge` one (called while `remote_nodes_mutex_` and `pending_connections_mutex_` are held; it takes `config_mutex_` twice). Safe today — `Connection` never reaches back up — but `connection.h:292-303` and `updateAdmissionControl`'s locking preamble both go out of their way to record that Connection's mutexes are never nested. One line keeps the invariant auditable — `udp_bridge/src/udp_bridge.cpp:2044,2651,2679`
+- [x] (suggestion, Lens A) `FloorNeverExceedsConfiguredLimit` feeds ten congested samples at one timestamp; under the new gate only the first is acted on, so the loop is decorative. It still discriminates for its stated property, but the "repeatedly" framing no longer holds — space the samples like its siblings or drop the loop — `udp_bridge/test/test_admission_control.cpp:~404`
+- [x] (suggestion, mine) `send_at_rate` now has no callers — both replays moved to `send_over_interval`. It is still referenced by two comments as the contrast; either say so at the definition or remove it — `udp_bridge/test/test_admission_field_replay.cpp:165`
+- [x] (suggestion, Governance) the design doc carries review-round bookkeeping about this branch's own prior mistake ("Five references in this change pointed at it") inside a durable document; the correction belongs in `progress.md`, which already has it. The doc needs only the #75 link — `udp_bridge/doc/admission_control_design.md:279-283`
+- [x] (suggestion, Governance) `resend_constants.h` keeps eight lines of present-tense headroom rationale ("A headroom target **scales** with whatever the link is actually delivering, so it **holds**...") immediately before the RETIRED block that contradicts it. Recast to past tense — `udp_bridge/include/udp_bridge/resend_constants.h:286-293`
+- [x] (suggestion, Governance) `CMakeLists.txt` claims the atomicity test covers "reservation release on every exit path a fragment can take"; the test file itself states ECONNREFUSED is unreachable on an unconnected UDP socket and is covered only by inference. The test file is honest, the build file is not — `udp_bridge/CMakeLists.txt:159`
+- [x] (suggestion, Governance + Lens A + mine) typo: "a fragment ... that can never be reassembled **is spend** on a degraded link" -> "is spent" — `udp_bridge/README.md:231`
+- [x] (suggestion, Plan Drift) `plan.md:686` states "The two already-committed tests are **unedited** — they remain the gate." Both were edited on this branch after that line was written: `516037c` (+44/-10, touching both) and `4f807c0` (+8/-1, `send_at_rate` -> `send_over_interval` in the handover test). The edits are defensible and `progress.md` records them; the plan row does not — `.agent/work-plans/issue-52/plan.md:686`
+- [x] (suggestion, Plan Drift) three changed-but-unplanned files missing from Files to Change, which already uses an "Added during implementation" convention: `include/udp_bridge/udp_bridge.h` (+23, the `getDoubleParameter` helper — a behaviour change to four existing parameter reads), `test/test_node_name_limits.cpp` (+69, the only coverage of the tripwire), `test/bench/cotenant.py` (+20/-9) — `.agent/work-plans/issue-52/plan.md:677-695`
+- [x] (suggestion, Governance) this is the third root-cause pass on this control loop in ~2 weeks and the project repo still has no `docs/decisions/`. The plan recommends a project-repo ADR (`plan.md:940-945`) without committing to it. Fine to defer; worth the operator seeing it named
 
 ### The parameter decision — judging the divergence on safety grounds
 
@@ -1523,3 +1523,241 @@ My recommendation to the operator: fix the 8, and change one thing about how the
 - Lens A's claim that "the bench co-tenant invariants skip in this environment" is **wrong** and I have not carried it forward — they are opt-in, I ran them, they pass.
 - Round 2's three claimed correctness fixes are all genuinely correct, including the subtle one (the reworked `RefractoryGateHoldsAtClockZero` pins the same property, not a new one). The problems are in what round 2's fixes *also* introduced, not in what they claimed.
 - ADR-0018: `git notes --ref=ci-local` still empty at HEAD. Expected pre-push; it is the merge gate.
+
+## Implementation
+**Status**: complete
+**When**: 2026-08-26 06:43 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-52 at `6120722`
+**Addressed**: `## Local Review (Pre-Push)` (round 3), 2026-08-26 01:40 -04:00, at `18d5eca` — 8 must-fix, 17 suggestions, all 25 actioned
+**Commits**: `c896320` `6960762` `de32e74` `6e4199e` `44125b3` `4dcef7a` `9d21edf` `cd4a2f6` `d5b251d` `6120722`
+
+### The rule this pass adopted, and what applying it found
+
+**Any test that exercises a configuration entry point must drive the REAL
+entry point** — `rclcpp::NodeOptions::parameter_overrides` or an actual
+params YAML — never a hand-declared stand-in, and never a harness that
+pre-establishes a state the real entry point cannot produce.
+
+**Tests converted**: the entire `Bridge` harness in
+`test/test_node_name_limits.cpp` — the only configuration-entry test
+harness in the package, and the one that certified round 2's fix. Every
+value it takes (`name`, `port`, `remotes_list`, `remotes.<label>.name`,
+per-connection `host`/`port` and arbitrary typed parameters, and the new
+per-topic block) is now a `NodeOptions` parameter OVERRIDE, and the node
+is not constructed until `configure()`, because overrides are fixed at
+construction. Nothing is pre-declared. `UDPBridge` gained a
+`NodeOptions` constructor parameter to make that possible. All 18 tests
+in that file — 13 pre-existing, 5 new — now run through the real path.
+
+**Applying it exposed a previously-"fixed" finding as still broken:
+yes.** `RetiredParameters.IntegerLiteralForADoubleParameterConfigures`
+passed at `18d5eca` and its subject did not work. Converting the harness
+made it FAIL, exactly as the reviewer predicted: the throw is at
+`declare_parameter`, and the round-2 guard sat at the read site, one
+call too late. Verified in both directions — with the declaration-site
+guard reverted the converted test fails; with it in place it passes.
+The same conversion also exposed a second, unflagged case: the retired
+`link_headroom_fraction` tripwire had **no observable assertion at all**
+(nothing in this package captures log content), so the only thing any
+test could check was the outcome the tripwire must NOT have. That is why
+the float-widening accident could have been tidied away with no test
+failing. A `retiredParameterWarningCountForTest` counter closes it.
+
+Every other fix in this pass carries a verified-by-breaking-it check
+where one is possible: the five clock-discontinuity tests were run with
+each bound removed (all five fail), and the extreme-rate-limit test was
+written against the unclamped cast.
+
+### Actions
+
+**Must-fix**
+
+- [x] **Integer literal for a double parameter fails the whole lifecycle
+  transition** — fixed at the DECLARATION site. `declareDoubleIfMissing`
+  reads the parameter overrides and, for an INTEGER override, declares
+  the coerced double with `ignore_override = true`, so the parameter
+  stays statically typed as a DOUBLE. Applied to all eight
+  double-defaulted declarations (`reorder_hold_window_ms`,
+  `resend_giveup_warn/error_rate_per_s`, `resend_budget_fraction`,
+  `admission_floor_bytes_per_second`,
+  `admission_refractory_period_seconds`, per-topic `period`).
+  `getDoubleParameter` stays for the already-declared route (a composed
+  node). Tests drive `NodeOptions::parameter_overrides` and assert the
+  parameter is DOUBLE-typed *and* carries the configured magnitude — a
+  guard that swallowed the override and installed the default would also
+  reach INACTIVE. A wrong type with no defensible reading (a string) is
+  still refused — `udp_bridge/include/udp_bridge/udp_bridge.h:298-360`,
+  `udp_bridge/test/test_node_name_limits.cpp:406-480` (`c896320`)
+- [x] **A backwards clock step permanently wedges `can_send`** — the
+  both-ends bound is applied to all four siblings, not one.
+  `Statistics::add` now evicts records stamped past the window as well as
+  before it (front-only eviction cannot reach a future-stamped front, so
+  it stopped entirely and the deque grew without bound); `can_send` and
+  `bytes_in_window` exclude records stamped after `time`; and
+  `Connection::data_receive_rate` erases from the back of its map, where
+  future-stamped records sort and its `begin()`-erase loop never reached
+  them. Five tests, each verified to fail with its bound removed: deque
+  growth, `can_send` recovery, `bytes_in_window`, `data_receive_rate`,
+  and the `Connection` send path end to end —
+  `udp_bridge/include/udp_bridge/statistics.h:52-110`,
+  `udp_bridge/src/statistics.cpp`, `udp_bridge/src/connection.cpp:955-975`,
+  `udp_bridge/test/test_admission_control.cpp:900-1050` (`6960762`)
+- [x] **`ConcurrentMessagesAreAllOrNothing` silently disables itself on
+  one ENOBUFS** — `GTEST_SKIP()` replaced with `continue`. Skipped rounds
+  are counted, and the test FAILS after the loop if fewer than 10 of 25
+  completed, naming the environment as the cause. The closing
+  `total_successes > 0` check is now always reached —
+  `udp_bridge/test/test_message_atomicity.cpp:316-450` (`de32e74`)
+- [x] **The AIMD cap reaches no diagnostic surface** — fixed, not
+  declined. `diagnoseConnection` now publishes
+  `effective_rate_limit_bytes_per_sec`, `admission_refractory_window_s`
+  and `admission_floor_bytes_per_sec` beside the configured
+  `rate_limit_bytes_per_sec`; the summary line names the cap when one is
+  in force; and the single "tx failures/drops" WARN is split into
+  socket-level `tx failures` and deliberate `shedding at admission cap N
+  of M B/s`. The level/summary decision is extracted to a pure
+  `computeConnectionDiagnostic`, following the `computeGiveupDiagnostic`
+  precedent, with 9 tests —
+  `udp_bridge/include/udp_bridge/connection_diagnostic.h`,
+  `udp_bridge/src/udp_bridge.cpp:2862-2905`,
+  `udp_bridge/test/test_connection_diagnostic.cpp` (`6e4199e`)
+- [x] **The retirement tripwire is correct only by a float widening
+  accident, and three operator surfaces describe behaviour it does not
+  have** — detection moved to PRESENCE in
+  `get_node_parameters_interface()->get_parameter_overrides()`, which
+  rclcpp carries whether or not a parameter is declared. That removed the
+  reason to declare the parameter at all (the "declare it or rclcpp hides
+  the override" rationale was simply wrong), so it is no longer declared
+  and `kDefaultLinkHeadroomFraction` is deleted — a retired key must not
+  appear in `ros2 param list` looking live. `README.md:213`,
+  `config/example_params.yaml:111-136` and `.agents/README.md:109` all
+  corrected, and all three now also state that **no headroom mechanism
+  remains**. Five tests through the real entry point, including the old
+  `0.2` default, an integer literal, absence, and one WARN per connection
+  — `udp_bridge/src/udp_bridge.cpp:660-720` (`44125b3`)
+- [x] **Seven live comments describe the removed clamp as operative** —
+  all seven rewritten to say what the guard actually protects now (a
+  collapsed goodput reads as total loss to the congestion comparison and
+  is published to the resend budget). The remaining `headroom` mentions
+  in these files are explicit past-tense retirement records —
+  `udp_bridge/src/connection.cpp:249-262`,
+  `udp_bridge/test/test_admission_control.cpp:465-611` (`44125b3`)
+- [x] **A code comment names a test that does not exist** — corrected to
+  `RetiredParameters.LinkHeadroomFraction*` in
+  `test_node_name_limits.cpp` — `udp_bridge/test/test_admission_control.cpp:250`
+  (`44125b3`)
+- [x] **The strict `xfail` XPASSes at HEAD and the plan says it does
+  not** — measured, corrected, and routed to #54 rather than resolved
+  here. **4 runs at the round-3 fix-pass HEAD: 2 XPASS(strict) → FAILED,
+  2 xfailed**; with the reviewer's 3-in-4 at `18d5eca` that is 5 of 8
+  across two builds, i.e. the opt-in bench suite is red about half the
+  times it runs. The marker is deliberately NOT removed and
+  `F_resend_multiplier` deliberately NOT raised — the repo's own #57 note
+  forbids both as a way to silence this. Both false statements
+  corrected: `plan.md:699` and the round-2 verification narrative at
+  `plan.md:574-590`, plus the `xfail` reason string this branch itself
+  wrote —
+  `udp_bridge/test/bench/test_range_degradation.py:668-700`,
+  `.agent/work-plans/issue-52/plan.md` (`6120722`)
+
+**Suggestions** (all 17 actioned; none deferred)
+
+- [x] The co-tenant claim is stronger than the mechanism supports — the
+  design doc, the bench README and `resend_constants.h` now state that
+  the clamp had a STRUCTURAL property the multiplicative decrease does
+  not, that the decrease fires only when the bridge's own delivery
+  degrades, and that the invariant passes because the recorded trajectory
+  has the bridge losing too. "No headroom mechanism remains"; #61 is
+  where a replacement basis is argued (`9d21edf`, `44125b3`)
+- [x] Two feedback-validation tests no longer discriminate —
+  `DuplicateExceedingReceivedTreatedAsCongestion` is driven from a
+  clean-looking received rate (100000 against ~80000 sent, so the
+  duplicate>received guard is on the critical path);
+  `NegativeRatesTreatedAsCongestion` is labelled a contract test, with
+  the reason it cannot be made to discriminate, and a new
+  `NegativeDuplicateWithCleanReceivedIsStillUnusable` puts the negative
+  guard on the critical path (`44125b3`)
+- [x] `sendPacket`'s releases still bare-decrement the counter whose
+  underflow wedges the connection — all four release sites now go through
+  one clamped `releaseReservedBytes` helper (`4dcef7a`)
+- [x] `warnIfAdmissionInert`'s throttle rationale is wrong — corrected:
+  the throttle is per CALL SITE, so it does not keep a second connection
+  visible, and on an event-driven path the suppressed line is never
+  re-emitted. What covers it instead is named (`4dcef7a`)
+- [x] The clock-zero reachability statement in the header still carries
+  the loose form — tightened to match its sibling, and both updated for
+  the fact that a backwards step no longer leaves pre-step history usable
+  (`4dcef7a`)
+- [x] `currentAdmissionRefractoryWindowSeconds`' doc omits the 60 s third
+  bound — added, and its "no diagnostic consumer yet" note replaced with
+  the consumer it now has (`4dcef7a`)
+- [x] `success_rate_in_window`'s window documented half-open but
+  implemented closed — documented as `[time - w, time]`, naming the test
+  that depends on the closed lower bound (`4dcef7a`)
+- [x] `admission_refractory_period_seconds: 0` accepted silently — now
+  WARNs, saying it restores the behaviour that caused the incident
+  (`4dcef7a`)
+- [x] `effectiveRateLimit()` casts a float to `uint32_t` with no clamp —
+  clamped to the largest float below 2^32, with a non-finite guard, and
+  tested at `UINT32_MAX` (`4dcef7a`)
+- [x] `warnIfAdmissionInert` nests a Connection mutex under a UDPBridge
+  one — recorded at the definition so the invariant stays auditable
+  (`4dcef7a`)
+- [x] `FloorNeverExceedsConfiguredLimit`'s loop is decorative — samples
+  spaced past the refractory window, like its siblings (`4dcef7a`)
+- [x] `send_at_rate` has no callers — removed; the two comments that
+  referenced it now describe the bias directly (`4dcef7a`)
+- [x] Design doc carries review-round bookkeeping — removed; the #75 link
+  stays (`44125b3`)
+- [x] `resend_constants.h` keeps present-tense headroom rationale —
+  recast to past tense as a RETIRED block, and the constant itself
+  deleted since presence-detection needs no default (`44125b3`)
+- [x] `CMakeLists.txt` claims coverage of every fragment exit path —
+  corrected to match what the test file itself says about ECONNREFUSED
+  (`4dcef7a`)
+- [x] Typo "is spend" → "is spent" — `udp_bridge/README.md:231` (`44125b3`)
+- [x] `plan.md` says the two committed field-replay tests are unedited —
+  corrected, naming both edits and their SHAs (`6120722`, `d5b251d`)
+- [x] Three changed-but-unplanned files missing from Files to Change —
+  added under the existing "Added during implementation" convention,
+  along with the three files this round added (`6120722`)
+- [x] No `docs/decisions/` in this project repo after three root-cause
+  passes — the plan's existing recommendation is strengthened and the
+  operator is told explicitly that it is a decision being asked of them,
+  not an omission. Still not committed to in this PR's scope (`6120722`)
+
+### Verification
+
+- **Suite**: `./core_ws/test.sh udp_bridge` on a clean tree at `6120722`
+  — **296 tests, 0 errors, 0 failures, 14 skipped** (was 273; +23 from
+  this pass). All 14 skips are the opt-in netns bench, unchanged.
+- **The four gate values, re-measured at this HEAD** (via temporary
+  instrumentation on the field-replay tests, since they are not printed
+  on pass; the instrumentation was reverted and the tree is clean):
+  onset `lowest` **375000** (> 187500), handover delivered **1.000**
+  (> 0.90), handover final cap **1500000** (> 750000), handover
+  decreases **1** (≤ 1). No regression.
+- **Bench**: `test_invariant_resend_amplification`, 4 full
+  `range_degradation` runs at this HEAD — 2 XPASS(strict) → FAILED, 2
+  xfailed. Recorded above and routed to #54.
+- **Lint**: `pre-commit run --from-ref origin/jazzy --to-ref HEAD` — all
+  11 hooks pass.
+- Nothing pushed. `git notes --ref=ci-local` still empty (expected
+  pre-push; it is the merge gate).
+
+### For the next reviewer
+
+- The one judgement call worth checking: `link_headroom_fraction` is no
+  longer DECLARED. The review asked for presence-based detection; not
+  declaring follows from it (the override map carries the key either
+  way), and it removes a retired parameter from `ros2 param list`. If the
+  operator wants the key to stay introspectable, that is a one-line
+  change back.
+- `UDPBridge`'s new `NodeOptions` constructor parameter is public API.
+  It exists so tests can reach the real configuration entry point; the
+  default preserves the previous behaviour exactly
+  (`enable_logger_service(true)` is still forced on).
+- `retiredParameterWarningCountForTest` is a test accessor on the node.
+  It is the only way anything in this package can observe a WARN.
