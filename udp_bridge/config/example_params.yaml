@@ -139,6 +139,21 @@
             # an integer parameter to ROS 2 and the node's as_double()
             # read throws — the same trap admission_floor_bytes_per_second
             # hit above.
+            #
+            # CONFIGURE-TIME ONLY, like every other admission parameter
+            # here (resend_budget_fraction,
+            # admission_floor_bytes_per_second, link_headroom_fraction).
+            # These are read once during on_configure and pushed to the
+            # live Connection then. `ros2 param set` afterwards changes
+            # the parameter and NOT the controller — the node has to be
+            # reconfigured or restarted for a new value to take effect.
+            #
+            # This is the property RCA item D names as what blocked live
+            # mitigation during the 2026-08-25 Appledore transit: the
+            # operator could see the cap collapsing and had no way to
+            # retune the loop without dropping the link. Live re-tuning
+            # is tracked as issue #76; this knob ships with the same
+            # limitation.
             admission_refractory_period_seconds: 5.0
 
             # List of topics to forward over this connection.
