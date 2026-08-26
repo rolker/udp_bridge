@@ -72,6 +72,50 @@ drops `link_headroom_fraction` from the runtime validation set, the
 push. Do not start the rebase until that answer is known — the two outcomes need
 different work, and the smaller one is not a subset of the larger.
 
+## Confirmed by the #52 session after their fix pass
+
+Their three doc sites are corrected in their tree (not yet pushed):
+`admission_control_design.md` now says the decrease "reads no goodput term at
+all" and carries a dedicated section on the clamp removal; `README.md:213` goes
+further than deleting the false claim and states the parameter is
+**"Currently inert"** in those words. `.agents/README.md` and the test remain
+ours, untouched by them.
+
+**New scope for this branch**: they deliberately DEFERRED the
+`ParameterDescriptor` half to #76 — i.e. to us. Their reasoning, which holds:
+`read_only: true` is the load-bearing part and is a behaviour change belonging
+with the work that decides which parameters stop being configure-time-only, and
+a bare `description` on 4 of ~30 parameters is inconsistency without the
+contract. So the descriptor for `link_headroom_fraction` — the thing an operator
+actually reads under pressure — lands here regardless of which way the
+delete-vs-retain question goes.
+
+Refractory constants to add to the runtime validation set, final:
+
+- `admission_refractory_period_seconds` — per-connection double, default **5.0**
+- `kMaximumAdmissionRefractoryPeriodSeconds` = **60.0**; the setter clamps DOWN
+  to it rather than falling back to the default, so an operator asking for a
+  slower loop gets the slowest one that still leaves the loop alive. NaN and
+  negatives fall back to the default.
+- `kAdmissionRefractoryGrowthFactor` = 2.0, `kAdmissionRefractoryMaximumMultiple`
+  = 2.0 (window doubles within an unresolved episode, capped at 2x base, resets
+  on the first clean sample)
+
+Caveat they flagged: `Connection` has no logger, so a clamped value is silently
+clamped at that layer. The clamp is the fix; the "nothing logged" half cannot be
+closed there — it would have to be surfaced from the parameter callback, which
+is this branch's territory.
+
+## Do not trust a single bench run
+
+They overturned an earlier claim of theirs that a `lossy` bench regression was
+"not noise". Re-measured at n=3, resend/msg on `lossy` gave 0.0131 / 0.0184 /
+0.0705 — a 5.4x spread — and `critical` 0.2838 / 0.4735 / 0.1115. The move that
+had been called significant sits inside that spread. The durable finding is
+about the measurement, not the control law: single-run values from that
+invariant do not support three decimals. **If this branch touches those bench
+assertions, do not trust a single run either.**
+
 ## Raised, not decided
 
 After #52, `link_headroom_fraction` is accepted, reads back, and does nothing —
