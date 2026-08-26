@@ -696,7 +696,19 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     PacketSendCategory category = PacketSendCategory::message;
     if(is_overhead)
       category = PacketSendCategory::overhead;
-    batch_guard.unreserved -= static_cast<uint32_t>(packet.packet.size());
+    // Clamped, not just decremented. `unreserved` is unsigned, and the
+    // invariant that the per-fragment sizes sum to exactly total_size is
+    // argued for above (WrappedPacket's copy constructor preserves
+    // packet_size) rather than checked. If it ever stopped holding, the
+    // subtraction would WRAP, the guard would then "release" a
+    // near-4 GB quantity out of reserved_bytes_in_flight_, and that
+    // counter — also unsigned — would wrap in turn and wedge the
+    // connection permanently: can_send would refuse everything, with no
+    // way back short of a restart. A clamp costs one comparison (#52,
+    // review round 2).
+    const uint32_t fragment_bytes = static_cast<uint32_t>(packet.packet.size());
+    batch_guard.unreserved -=
+      std::min(batch_guard.unreserved, fragment_bytes);
     auto send_ret = sendPacket(packet.packet, socket, category, now, true);
     if(send_ret.send_result != SendResult::success)
       ret = send_ret.send_result;
