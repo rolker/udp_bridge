@@ -118,6 +118,22 @@ pattern. Reset the window to its base value the first time a clean
 (non-congested) sample is observed after a decrease — that is what "the
 episode resolved" means.
 
+**RESOLVED during implementation (2026-08-26).** Base
+`kDefaultAdmissionRefractoryPeriodSeconds` = **5.0 s**, growth
+`kAdmissionRefractoryGrowthFactor` = **2.0**, cap
+`kAdmissionRefractoryMaximumMultiple` = **2.0 x base** (10 s). The base
+turned out not to need hand-tuning after all: 5.0 s is the length of the
+receive-rate measurement window BOTH ends use, and one full window is the
+shortest interval after which both filters describe traffic sent at the
+new cap rather than the old one. The growth cap is bounded above by the
+bench harness's 10 s phase holds and by the statistics deque's 10 s
+retention, and below by `SustainedRealLossMustConverge`'s 40 s
+convergence deadline. Measured outcomes: onset `lowest = 375000`
+(bound `> 187500`), handover delivered `1.000` (bound `> 0.90`), final
+cap 1500000 — matching `review-plan`'s model prediction exactly. Full
+rationale table in `doc/admission_control_design.md`, "Tuning constants,
+and what constrained each".
+
 **The base period, growth factor, and cap are tuning constants, not
 something to hand-derive on paper — but the oracle they're tuned against
 must be two-sided (revised per `review-plan` finding F2).** Implementation
@@ -219,6 +235,22 @@ kept as an inert, still-documented parameter. Either outcome must be
 settled before the PR is considered done — the bench run is the gate, not
 inspection of the field-replay tests alone.
 
+**RESOLVED during implementation (2026-08-26): outcome (b).** The bench
+re-run (`UDP_BRIDGE_BENCH_SCENARIOS=1`, full range-degradation scenario)
+shows `test_invariant_cotenant_management_flow_survives` **passing** with
+the clamp removed — every phase the path can carry traffic in, on both
+delivery ratio and p95 latency. The refractory-gated multiplicative
+decrease alone satisfies the co-tenant guarantee on this harness. The
+parameter is therefore **retained but inert**: still declared, clamped
+and reported (existing configs set it; removing it would break them), but
+read by nothing in the control law. That state is documented in
+`doc/admission_control_design.md`, `README.md`, `.agents/README.md`,
+`resend_constants.h` and `connection.h`, and pinned by
+`AdmissionControl.HeadroomFractionDoesNotAffectDecreaseTarget` so
+re-attaching it has to be deliberate. Outright removal is flagged as a
+follow-up to decide against post-deployment field data, not guessed at
+now.
+
 **A3. Detector: compare like-windowed rates instead of raw instantaneous
 ones (revised 2026-08-25 per `review-plan` findings F7/F8).**
 
@@ -273,7 +305,18 @@ compute the sender-side rate over the *same* 5 s window
 `Connection::data_receive_rate` already uses on the receive side.
 `PacketSendStatistics::bytes_in_window` is already exactly this shape —
 the resend budget uses it for the same reason (the smoothed `get()` rate
-lags in precisely the transient that matters). This narrows — doesn't
+lags in precisely the transient that matters).
+
+**Implementation deviation (2026-08-26):** `bytes_in_window`'s window is
+hardcoded to 1 second and it filters to a single category, so it could
+not be reused directly. Added a sibling with the same scan discipline,
+`PacketSendStatistics::success_rate_in_window(time, window_seconds)`,
+which sums successful bytes across all categories over a caller-supplied
+window and divides by `max(1.0, time - oldest sample in window)` —
+deliberately mirroring `Connection::data_receive_rate`'s divisor, since
+matching that filter is the entire point. The window itself is
+`kAdmissionSendRateWindowSeconds` = 5.0, which is not a tuning value: it
+is `data_receive_rate`'s window. This narrows — doesn't
 eliminate — defect 2, and is complementary to A1: A1 stops the
 *response* to repeated crossings within a window; this reduces spurious
 *first* crossings. Keep the existing, already-tested rationale for using
@@ -375,6 +418,17 @@ concurrency shape:**
    tested decision — does `is_overhead` traffic get the same aggregate
    reservation treatment as regular messages, or does it need its own
    path? — not an accident of a mis-described call graph.
+
+   **RESOLVED during implementation (2026-08-26): overhead gets the SAME
+   aggregate check-and-reserve, no separate path.** Overhead messages are
+   one packet in the overwhelming majority of cases, so for them atomic
+   and per-packet coincide; where a topic list does fragment, half a topic
+   list is no more useful than half a video frame. The failure path
+   already dropped them atomically before this change — it is the success
+   path that is now consistent with it. Pinned by
+   `MessageAtomicity.OverheadTrafficIsAdmittedAtomically`, which also
+   asserts the category accounting stays separate from message traffic
+   (the resend budget and the admission detector both read it).
 3. Wrap the batch loop in a reservation guard (same RAII shape as the
    existing single-packet `ReservationGuard`) sized to the *remaining*
    unreleased portion of `total_size`, so a mid-loop exception (a fragment's
@@ -416,6 +470,20 @@ regardless of which exit path each fragment in the message takes.
   current per-second budget is dropped **as a whole** — zero fragments sent
   — rather than partially sent. (Direct regression test for the defect the
   issue describes.)
+
+  **Finding during implementation (2026-08-26):** this behavioural case,
+  taken single-threaded, is NOT a regression discriminator — it passes
+  against the pre-fix code too. Sequentially nothing can consume budget
+  between the aggregate pre-check and the per-fragment loop, so the
+  check-only pre-check already made the message all-or-nothing. The
+  partial send requires a second sender inside that gap, which is what
+  `republish_group_`'s Reentrant callback group produces in the field.
+  The test is kept (it pins a real contract), but the **concurrency test
+  below is the discriminator**, and it was verified to fail against the
+  pre-fix code — `Round 0: a message reported successful was not fully on
+  the wire` — before being kept. It needs a start barrier, long messages
+  (40 fragments) and repeated rounds to expose the window; an unbarriered
+  8-thread version passed against the pre-fix code, i.e. proved nothing.
 - Behavioral: a message that fully fits is sent complete and once (no
   regression to the aggregate-reserve accounting under-counting or
   double-counting bytes).
@@ -441,6 +509,22 @@ regardless of which exit path each fragment in the message takes.
   thrown `ConnectionException`), asserting `reserved_bytes_in_flight_`
   returns to its pre-message value in every case — not just the success
   path the behavioral tests above already cover.
+
+  **Implementation note (2026-08-26):** a
+  `reserved_bytes_in_flight_for_test()` accessor was added (gated behind
+  `UDP_BRIDGE_BUILD_TESTING`, like the existing test helpers) so the
+  counter is asserted directly rather than through a downstream symptom —
+  a leak here is invisible until the connection quietly stops admitting
+  anything. Coverage as built: success and whole-message drop asserted
+  directly; the throw path forced with an invalid socket fd (which also
+  exercises the batch guard's unwind over never-attempted fragments);
+  `no_address` mid-loop exercised probabilistically under concurrent
+  `setHostAndPort` churn, asserting the accounting invariant rather than
+  a schedule it cannot deterministically produce. **`ECONNREFUSED` is
+  not reachable at all** from a unit test on an unconnected UDP socket —
+  it releases through the same `record_and_release()` call the success
+  path uses, which is asserted. Stated here rather than left as an
+  unexplained gap in the F6 list.
 
 ### Verification against issue #52's own acceptance criteria and the bench
 suite (new section, added 2026-08-25 per `review-plan` finding F3)
@@ -568,6 +652,134 @@ Files to update alongside the code, in the same PR (list corrected
 | `udp_bridge/CMakeLists.txt` | **New (F4)**: register new test binary(ies) via `add_udp_bridge_gtest(...)`, pattern at line 154 |
 | `.agents/README.md` | **Path corrected (F4)**: repo root, not `udp_bridge/.agents/README.md`. Parameter table update. |
 | `udp_bridge/test/bench/README.md`, `udp_bridge/test/bench/test_range_degradation.py` | Docstring/count sync — likely `xfail` marker removal on `test_invariant_resend_amplification` if it passes cleanly (see Verification) |
+
+## Implementation Notes (2026-08-26)
+
+### Gate results
+
+| test | bound | pre-fix | after |
+|---|---|---|---|
+| `FieldOnsetMustNotCascadeToFloor` (`lowest`) | > 187500 | 8192 FAIL | **375000 PASS** |
+| `HandoverBlipMustNotCostTwoMinutesOfVideo` (delivered) | > 0.90 | 0.398 FAIL | **1.000 PASS** |
+| `HandoverBlip...` (final cap) | > 750000 | 633091 FAIL | **1500000 PASS** |
+| `SustainedRealLossMustConverge` (new) | converge < 40 s, band [0.5x, 2x] | n/a | **PASS** |
+
+Both committed gate numbers match `review-plan`'s model prediction
+exactly (375000 / 1.000), which is the check the dispatch asked for:
+reproducing the model rather than tuning until green.
+
+The counter-test was verified to be genuinely two-sided by deafening the
+controller (`congested = false`): the two committed tests stay green and
+`SustainedRealLossMustConverge` fails. The `test_message_atomicity`
+concurrency test was verified the same way, against the pre-fix
+check-only aggregate.
+
+Unit suite: **271 tests, 0 failures, 14 skipped** (bench, opt-in), up
+from 257 with 2 failures at branch start.
+
+### Bench re-run (`UDP_BRIDGE_BENCH_SCENARIOS=1`, full scenario)
+
+`10 passed, 2 xfailed` — no failures, no XPASS.
+
+**Issue acceptance criterion 2 — co-tenant management flow:**
+`test_invariant_cotenant_management_flow_survives` **PASSES**. This is
+what resolves the `link_headroom_fraction` open question (A2) by
+measurement. Per-window delivery / p95 latency, after:
+
+| window | delivered | p95 (s) |
+|---|---|---|
+| in_range_clean#0 | 1.000 | 0.130 |
+| fringe#1 | 1.004 | 0.748 |
+| lossy#2 | 0.974 | 2.336 |
+| critical#3 | 0.840 | 14.222 |
+| over_horizon#4 | (excluded — 100% loss) | — |
+| critical#5 | 0.920 | 0.131 |
+| lossy#6 | 0.920 | 0.055 |
+| fringe#7 | 0.999 | 0.019 |
+| in_range_clean#8 | 1.000 | 0.006 |
+
+The `critical#3` p95 of 14.2 s is the netem standing-queue drain
+(#61), which the invariant judges against its per-window transient
+bound, not the 5 s steady ceiling — unchanged in character from the
+prior cycle.
+
+**Issue acceptance criterion 1 — resend amplification:**
+`test_invariant_resend_amplification` **still xfails** (strict, no
+XPASS), so the marker stays and `F_resend_multiplier` was not touched —
+which is what the marker's own comment demands. Per-phase resend/msg on
+the boat→operator wifi connection, after:
+
+| phase | msg kB/s | resend kB/s | resend/msg (after) | prior cycle |
+|---|---|---|---|---|
+| in_range_clean | 1449.06 | 0.000 | 0.0000 | — |
+| fringe | 1045.62 | 11.580 | 0.0111 | 0.018 |
+| lossy | 696.44 | 98.218 | 0.1410 | 0.077 |
+| critical | 146.86 | 17.380 | 0.1183 | 0.144 |
+| over_horizon | 53.16 | 9.885 | 0.1860 | — |
+
+`fringe` and `critical` improved; **`lossy` moved the wrong way
+(0.077 → 0.141)** and is reported rather than buried. Two caveats before
+reading much into it: the invariant's verdict is unchanged (still over
+its ceiling, still xfail, so this is not a gate result), and run-to-run
+variance on this harness is material — two runs of the *same* build in
+this session gave `critical#3` co-tenant delivery of 0.904 and 0.840.
+Worth a look under #54/#60 with repeated runs; not something this PR
+should chase on one sample.
+
+`test_invariant_recovery_completeness` remains xfail for
+[#60](https://github.com/rolker/udp_bridge/issues/60), unchanged.
+
+### Deviations from the plan
+
+1. **A3's detector helper.** `PacketSendStatistics::bytes_in_window`
+   could not be reused (fixed 1 s window, single category); added
+   `success_rate_in_window(time, window_seconds)` alongside it with the
+   same scan discipline. Recorded inline in A3 above.
+2. **Existing unit tests pinning the removed clamp had to be rewritten**,
+   not merely extended: `DecreaseTargetsHeadroomOfGoodput` and
+   `HeadroomFractionAffectsDecreaseTarget` asserted the exact behaviour
+   A2 removes. They became
+   `DecreaseIsPurelyMultiplicativeFromCurrentCap` and
+   `HeadroomFractionDoesNotAffectDecreaseTarget` (the latter now pinning
+   the parameter's *inertness*, so re-attaching it is deliberate).
+   `DuplicatesExcludedFromGoodput` moved its assertion from "the cap
+   lands lower" to the goodput quantity itself, which is still live as
+   the resend budget's basis. `AdditiveRecoveryIsRelativeToEffectiveCap`
+   and `FloorIsAbsoluteNotCapRelative` drove their loops by feeding N
+   samples at ONE timestamp, which the refractory gate now collapses to
+   a single decision — they advance time and re-offer traffic per step.
+   The plan listed the file but not that its existing contents were
+   partly invalidated.
+3. **The single-threaded whole-message-drop test is not a regression
+   discriminator** (see Tests (C) above). Kept as a contract test; the
+   barriered concurrency test is what actually fails against the pre-fix
+   code.
+4. **`ECONNREFUSED` release is not unit-testable** on an unconnected UDP
+   socket. Stated in the test file and in Tests (C) rather than left as
+   a silent gap in F6's four-path list.
+5. **Bench doc corrections beyond the plan's list.**
+   `test/bench/README.md` and the
+   `test_invariant_cotenant_management_flow_survives` docstring both
+   asserted that `link_headroom_fraction` is the mechanism the invariant
+   checks. That became false with the clamp removal, so both were
+   updated — the plan had scoped these files only for an invariant
+   count/basis change. `doc/resend_budget_design.md` gained a note that
+   goodput is still ITS basis even though the admission decrease no
+   longer reads it, and that the refractory freeze deliberately does not
+   withhold the measurement.
+
+### Not done / follow-ups
+
+- Whether `link_headroom_fraction` gets a new basis or is removed
+  outright — deliberately deferred to post-deployment field data, with
+  the inert state documented and test-pinned meanwhile.
+- RCA option B (sequence-gap / matched-byte-counter detector, needs new
+  wire fields and a coordinated redeploy) and the evaluated-but-rejected
+  purely-local resend-ratio detector: one follow-up issue, to be filed
+  after this lands so it can cite what A3 left unresolved.
+- The `lossy` resend/msg movement above, under #54.
+- #71 and #45 revisit; a durable design record (project-repo ADR) for
+  this control loop, now on its third root-cause pass.
 
 ## Principles Self-Check
 
