@@ -675,6 +675,13 @@ def _transient_latency_ceiling_s(link_bps: float | None) -> float:
 # the residual this marker exists to record. Whether the marker comes off is a
 # #54 question, decided from the host bench run's numbers -- see
 # .agent/work-plans/issue-57/plan.md, step 6.
+#
+# STATUS (#52 review round 3, 2026-08-26): that flip HAS happened, and it
+# is not stable in either direction -- 3 XPASS(strict) in 4 runs at
+# 18d5eca, 2 in 4 at the round-3 fix-pass HEAD. So this suite is red
+# roughly half the times it is run, opt-in, on this host. Left as-is per
+# the paragraph above: the disposition belongs to #54, and silencing it
+# here would destroy the measurement #54 needs.
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -688,8 +695,17 @@ def _transient_latency_ceiling_s(link_bps: float | None) -> float:
         'run-to-run spread on this metric, far wider than any single pair of '
         'runs suggests. Read single-run values from this invariant as '
         'indicative only; anything quoted to three decimals from one run is '
-        'over-precise. What IS stable is that at least one phase violates '
-        'every run, so the marker holds. Duplicates were ~34% of the '
+        'over-precise. CORRECTION (#52 review round 3): an earlier version of '
+        'this string claimed at least one phase violates EVERY run, so the '
+        'marker holds. That is FALSE. Measured since: 3 XPASS(strict) in 4 '
+        'runs at 18d5eca (review round 3), and 2 XPASS(strict) in 4 runs at '
+        'the round-3 fix-pass HEAD -- 5 of 8 runs across two builds. A strict '
+        'xfail on a metric with this spread is a coin-flip red suite either '
+        'way. The marker is LEFT IN PLACE deliberately: removing it, or '
+        'raising F_resend_multiplier to keep it xfailing, would erase the '
+        'residual it exists to record. Its disposition is a #54 decision from '
+        'the host bench numbers, not this branch to make. Duplicates were '
+        '~34% of the '
         'remaining resend traffic at lossy, pointing at spurious re-requests '
         '(debounce/reorder interaction) rather than the cap-scaling defect '
         '#52 documents. strict=True so this turns into a failure the moment '

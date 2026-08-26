@@ -580,13 +580,26 @@ mentioned them:
    4-5x run-to-run spread, so "passes on its own terms" is not a property
    a single run of this invariant can establish either way. What the runs
    DO establish is stable and is what the criterion was protecting:
-   `F_resend_multiplier` was not touched, the `strict=True` marker held
-   in all three runs (so no XPASS was masked), and the residual is
+   `F_resend_multiplier` was not touched and the residual is
    ~34% duplicates at `lossy` — spurious re-requests, a debounce/reorder
    interaction, not the cap-scaling defect this cycle addresses. That
    residual is tracked as
    [#54](https://github.com/rolker/udp_bridge/issues/54). Accepted on
    that basis rather than re-derived.
+
+   **CORRECTION (review round 3, 2026-08-26).** "The `strict=True` marker
+   held in all three runs" is no longer true, and stating it as a settled
+   property was wrong even then — those three runs predate `33a10f1`,
+   which reworked the detector window. Re-measured: **3 XPASS(strict) in
+   4 runs at `18d5eca`**, and **2 XPASS(strict) in 4 runs at the round-3
+   fix-pass HEAD**. The opt-in bench suite is therefore RED about half
+   the times it is run. The marker is deliberately left in place and
+   `F_resend_multiplier` deliberately not raised (the repo's own #57 note
+   forbids both as a way to silence this); the disposition is surfaced to
+   [#54](https://github.com/rolker/udp_bridge/issues/54) rather than
+   decided here. A strict `xfail` on a metric with 4-5x run-to-run spread
+   is a coin-flip red suite in either direction, which is itself part of
+   what #54 has to weigh.
 2. **A co-tenant management flow survives every phase.**
    `test_invariant_cotenant_management_flow_survives`
    (`test/bench/test_range_degradation.py`, `test_invariant_cotenant_management_flow_survives` at `:786`) is already committed
@@ -683,7 +696,7 @@ Files to update alongside the code, in the same PR (list corrected
 | `udp_bridge/src/connection.cpp` | A1 refractory gate (freezes both decrease and recovery), A2 clamp removed (pure multiplicative decrease), A3 window-matched comparison, C batch reserve-then-record + per-exit release |
 | `udp_bridge/src/udp_bridge.cpp` | Declare + apply `admission_refractory_period_seconds` parameter (configure-time-only, matching existing admission params — see #75 relationship note in A1) |
 | `udp_bridge/test/test_admission_control.cpp` | New unit tests for A1/A2/A3 |
-| `udp_bridge/test/test_admission_field_replay.cpp` | **New**: `SustainedRealLossMustConverge` two-sided convergence counter-test (F2). The two already-committed tests are unedited — they remain the gate. |
+| `udp_bridge/test/test_admission_field_replay.cpp` | **New**: `SustainedRealLossMustConverge` two-sided convergence counter-test (F2). **Correction (round 3):** the two already-committed tests are NOT unedited, as this row said. Both were edited on this branch after the row was written — `516037c` (+44/-10, touching both) and `4f807c0` (+8/-1, moving the handover test from `send_at_rate` to `send_over_interval`). The edits are defensible (they correct a ~24% measurement bias in the offered rate) and `progress.md` records them; the plan did not. They remain the gate. |
 | `udp_bridge/test/test_connection_rate_limit.cpp` or a new `test_message_atomicity.cpp` | New behavioral + concurrency tests for C, plus `is_overhead` and per-exit-path reservation-release coverage (F5/F6) |
 | `udp_bridge/config/example_params.yaml` | New parameter, correctly-typed double literal (precedent at line 109) |
 | `udp_bridge/doc/admission_control_design.md` | Refractory/dropped-clamp/window-matching sections, `link_headroom_fraction` resolution, tuned constants |
@@ -691,8 +704,12 @@ Files to update alongside the code, in the same PR (list corrected
 | `udp_bridge/README.md` | **New (F4)**: prose parameter reference at lines 211-212 — decrease-target rule, new refractory parameter, `link_headroom_fraction` role |
 | `udp_bridge/CMakeLists.txt` | **New (F4)**: register new test binary(ies) via `add_udp_bridge_gtest(...)`, pattern at line 154 |
 | `.agents/README.md` | **Path corrected (F4)**: repo root, not `udp_bridge/.agents/README.md`. Parameter table update. |
-| `udp_bridge/include/udp_bridge/statistics.h`, `udp_bridge/src/statistics.cpp` | **Added during implementation**: `PacketSendStatistics::success_rate_in_window()` for A3. `bytes_in_window` could not be reused — fixed 1 s window, single category (see Deviations) |
-| `udp_bridge/test/bench/README.md`, `udp_bridge/test/bench/test_range_degradation.py` | Docstring/count sync — likely `xfail` marker removal on `test_invariant_resend_amplification` if it passes cleanly (see Verification). **Outcome**: the marker stays (strict, no XPASS); the reason string was refreshed with this cycle's residuals |
+| `udp_bridge/include/udp_bridge/statistics.h`, `udp_bridge/src/statistics.cpp` | **Added during implementation**: `PacketSendStatistics::success_rate_in_window()` for A3. `bytes_in_window` could not be reused — fixed 1 s window, single category (see Deviations). **Round 3**: `Statistics::add`, `can_send` and `bytes_in_window` bounded at BOTH ends against a backwards clock step |
+| `udp_bridge/include/udp_bridge/udp_bridge.h` | **Added during implementation**: `declareDoubleIfMissing` (coerces an INTEGER parameter override at the DECLARATION — round 3), `getDoubleParameter` (the already-declared route), a `NodeOptions` constructor parameter so tests can drive real overrides, and `retiredParameterWarningCountForTest`. A behaviour change to four existing parameter reads |
+| `udp_bridge/test/test_node_name_limits.cpp` | **Added during implementation**: the only coverage of the retired-parameter tripwires and the integer-literal trap. **Round 3**: the harness was converted from pre-declared parameters to `NodeOptions::parameter_overrides` — the real configuration entry point — which is what exposed the round-2 integer-literal guard as unfixed |
+| `udp_bridge/include/udp_bridge/connection_diagnostic.h`, `udp_bridge/test/test_connection_diagnostic.cpp` | **Added during implementation (round 3)**: the per-connection diagnostic level/summary, surfacing the effective admission cap and splitting shedding from socket failures |
+| `udp_bridge/test/bench/cotenant.py` | **Added during implementation**: co-tenant flow tracing for the bench invariant (+20/-9) |
+| `udp_bridge/test/bench/README.md`, `udp_bridge/test/bench/test_range_degradation.py` | Docstring/count sync — likely `xfail` marker removal on `test_invariant_resend_amplification` if it passes cleanly (see Verification). **Outcome (CORRECTED, round 3)**: the marker stays (strict) — but "no XPASS" was FALSE. Measured: **3 XPASS(strict) in 4 runs at `18d5eca`** (review round 3) and **2 XPASS(strict) in 4 runs at the round-3 fix-pass HEAD** — 5 of 8 runs across two builds, i.e. the opt-in bench suite is red about half the times it is run. The marker is deliberately NOT removed and `F_resend_multiplier` deliberately NOT raised: per the repo's own #57 note either would erase the residual the marker exists to record. **Its disposition is a [#54](https://github.com/rolker/udp_bridge/issues/54) decision, not this branch's** — surfaced there rather than resolved here. The reason string carries the same correction. |
 
 ## Implementation Notes (2026-08-26)
 
@@ -1021,6 +1038,15 @@ margin.
   Worth a durable design record (ADR-equivalent in this project repo)
   once it lands, rather than only `doc/admission_control_design.md` prose
   — flagged as a recommendation, not committed to in this PR's scope.
+  **Round 3 raises the strength of that recommendation** (governance
+  finding): the repo still has no `docs/decisions/`, this is now the
+  third root-cause pass on the same control loop, and the
+  retire-vs-keep decision on `link_headroom_fraction` — including the
+  safety argument for WARN rather than FAIL, and the fact that no
+  headroom mechanism remains — currently lives only in a design-doc
+  section and a review entry. Still not committed to in this PR's scope;
+  named here so the operator sees it as a decision they are being asked
+  to make, not an omission.
 
 ## Documentation & Instruction Impact
 
