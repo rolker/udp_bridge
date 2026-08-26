@@ -651,7 +651,8 @@ Files to update alongside the code, in the same PR (list corrected
 | `udp_bridge/README.md` | **New (F4)**: prose parameter reference at lines 211-212 — decrease-target rule, new refractory parameter, `link_headroom_fraction` role |
 | `udp_bridge/CMakeLists.txt` | **New (F4)**: register new test binary(ies) via `add_udp_bridge_gtest(...)`, pattern at line 154 |
 | `.agents/README.md` | **Path corrected (F4)**: repo root, not `udp_bridge/.agents/README.md`. Parameter table update. |
-| `udp_bridge/test/bench/README.md`, `udp_bridge/test/bench/test_range_degradation.py` | Docstring/count sync — likely `xfail` marker removal on `test_invariant_resend_amplification` if it passes cleanly (see Verification) |
+| `udp_bridge/include/udp_bridge/statistics.h`, `udp_bridge/src/statistics.cpp` | **Added during implementation**: `PacketSendStatistics::success_rate_in_window()` for A3. `bytes_in_window` could not be reused — fixed 1 s window, single category (see Deviations) |
+| `udp_bridge/test/bench/README.md`, `udp_bridge/test/bench/test_range_degradation.py` | Docstring/count sync — likely `xfail` marker removal on `test_invariant_resend_amplification` if it passes cleanly (see Verification). **Outcome**: the marker stays (strict, no XPASS); the reason string was refreshed with this cycle's residuals |
 
 ## Implementation Notes (2026-08-26)
 
@@ -768,6 +769,36 @@ should chase on one sample.
    longer reads it, and that the refractory freeze deliberately does not
    withhold the measurement.
 
+### Review round 1 — behaviour changes made while addressing findings
+
+Three of the fixes change behaviour rather than only wording, so they
+belong here rather than only in the commit log:
+
+1. **The refractory base period is now clamped at the top**, to the new
+   `kMaximumAdmissionRefractoryPeriodSeconds` (60 s). It previously
+   guarded NaN and negatives only, so `+Inf` — or a large finite typo —
+   froze the controller for the life of the node. Clamping (not falling
+   back to the default) keeps an operator's intent to slow the loop while
+   keeping it alive.
+2. **"A decrease is outstanding" is now its own boolean**
+   (`admission_decrease_outstanding_`) instead of
+   `last_admission_decrease_time_ > 0.0`. 0.0 is a legal clock reading; a
+   decrease recorded there read as "no decrease", leaving the gate inert.
+   Reaching it needs a backwards clock step (a looping bag replay, a sim
+   reset), since `Statistics::add` drops records stamped exactly 0 — the
+   regression test drives that path and was verified to fail against the
+   sentinel form.
+3. **`on_configure` now WARNs when `admission_floor_bytes_per_second` is
+   at or above the connection's `maximum_bytes_per_second`**, which makes
+   AIMD inert on that connection with nothing in its behaviour to reveal
+   it.
+
+Constants table addition:
+
+| constant | value | bound by |
+|---|---|---|
+| `kMaximumAdmissionRefractoryPeriodSeconds` | 60.0 s | above: the controller could not answer a link change inside any operator-observable timescale — BridgeInfo arrives ~2 s, `SustainedRealLossMustConverge` bounds convergence at 40 s, and a 30 s base was measured (review round 1) to converge only at 92.8 s. It is a ceiling on garbage, not a recommendation |
+
 ### Not done / follow-ups
 
 - Whether `link_headroom_fraction` gets a new basis or is removed
@@ -866,26 +897,33 @@ should chase on one sample.
 
 ## Open Questions
 
-- Exact refractory base period / growth factor / cap — tuning constants,
-  to be derived during implementation against
-  `test_admission_field_replay.cpp`'s two committed tests **and** the new
-  `SustainedRealLossMustConverge` counter-test (see Approach A1/A3, F2),
-  cross-checked against the bench harness's 10 s phase holds (see
-  Verification, F3). Not blocking plan approval; blocking only the
-  specific numeric choice.
-- Whether `link_headroom_fraction` gets a new basis (e.g. applied to the
-  floor or the additive-recovery target) or is confirmed redundant and
-  flagged for removal, once A2's clamp is dropped (see A2, F1). Resolve
-  via the bench re-run against `test_invariant_cotenant_management_flow_survives`
-  before the PR is done — not blocking plan approval, but blocking PR
-  completion.
-- Whether `is_overhead` traffic through the batch overload gets the same
-  aggregate check-and-reserve as regular messages, or a separate path
-  (see C step 2, F5). Resolve with test coverage during implementation.
-- Where to add the C concurrency/TOCTOU regression test — a new
-  `test_message_atomicity.cpp`, or extend `test_connection_rate_limit.cpp`?
-  Lean toward a new file given the distinct concern (message-level
-  admission vs. per-connection rate limiting), but not a strong preference.
+- ~~Exact refractory base period / growth factor / cap.~~ **RESOLVED**:
+  base 5.0 s (the receive-rate window both ends measure over), growth
+  factor 2.0, maximum multiple 2.0 (10 s — the bench's phase hold and the
+  statistics deque's retention). The bounds on each are tabulated in the
+  Implementation Notes. Review round 1 found the growth constants were
+  not actually pinned by any test — the field-replay suite was green at
+  multiple 1.0 and 1000 — so
+  `AdmissionControl.RefractoryWindowGrowthIsBounded` now asserts the two
+  properties against absolute values rather than against the symbols.
+- ~~Whether `link_headroom_fraction` gets a new basis.~~ **RESOLVED** as
+  the plan's outcome (b): retained but INERT.
+  `test_invariant_cotenant_management_flow_survives` — issue #52's own
+  acceptance criterion — passes with the clamp removed, so the co-tenant
+  guarantee does not depend on it. Kept declared and clamped so existing
+  configs keep loading; pinned inert by
+  `HeadroomFractionDoesNotAffectDecreaseTarget`. Removal-or-rebasis is a
+  follow-up for post-deployment data.
+- ~~Whether `is_overhead` traffic gets the same aggregate
+  check-and-reserve or a separate path.~~ **RESOLVED**: same atomic
+  treatment, no separate path, with its own test. Overhead messages are
+  one packet in the overwhelming majority of cases, and half a topic list
+  is no more useful than half a video frame. Review round 1 noted that
+  overhead consequently shares the message reservation's budget for the
+  length of the fragment loop; that property is now documented in
+  `doc/admission_control_design.md` and at the call site.
+- ~~Where to add the C concurrency/TOCTOU regression test.~~
+  **RESOLVED**: a new `test/test_message_atomicity.cpp`.
 - Should the `admission_refractory_period_seconds` growth/cap also become
   per-connection-configurable, or stay fixed constants with only the base
   period configurable? The existing precedent (`kResendBackoffBase` is
@@ -894,6 +932,16 @@ should chase on one sample.
   implementation once the tuned values are known. Also note the
   configure-time-only relationship to #76 (see A1) — not blocking, but a
   known limitation to carry forward.
+
+  **RESOLVED**: growth factor and maximum multiple stay fixed constants;
+  only the base period is a parameter. The precedent holds
+  (`kResendBackoffBase` is fixed while `resend_budget_fraction` is a
+  knob), and the growth is now pinned by a test that asserts absolute
+  bounds, which a per-connection override would undercut. The
+  configure-time-only limitation is carried forward to #76 and is now
+  stated on both operator-facing surfaces (`README.md`,
+  `config/example_params.yaml`) as well as in the code and
+  `.agents/README.md`.
 - After A lands, #71 (idle-link cap collapse) and #45 (2026-08-04 RCA,
   unstarted) should be revisited — RCA states A/B/C should reduce or close
   their severity. Not part of this PR; flagged so it isn't dropped.
