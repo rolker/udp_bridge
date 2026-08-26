@@ -277,7 +277,14 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
   {
     const float cap = static_cast<float>(conn->effectiveRateLimit());
     const float admitted = std::min(kOfferedBps, cap);
-    send_at_rate(*conn, t, admitted);
+    // Spread over the feedback interval, not bunched at one instant.
+    // send_at_rate stamps a whole second of bytes at a single timestamp,
+    // which reads ~24% LOW over the detector's 5 s window — and here the
+    // bias runs toward FEWER decreases, weakening EXPECT_LE(decreases, 1)
+    // below, which is the assertion that actually pins the gate (#52,
+    // review round 2). Same correction FieldOnsetMustNotCascadeToFloor
+    // already carries.
+    send_over_interval(*conn, t, kFeedbackInterval, admitted);
     conn->update_last_receive_time(t.seconds(), 100, false);
 
     const bool blip = (i >= kBlipStep && i < kBlipStep + kBlipLength);
