@@ -163,21 +163,161 @@ inline constexpr float kAdmissionLossThreshold = 0.1f;
 // 13% of that same degraded 62.5 kB/s link.
 inline constexpr float kDefaultAdmissionFloorBytesPerSecond = 8192.0f;
 
-// Default fraction of measured goodput deliberately left unused, so a
-// co-tenant on the same path (an SSH session, the operator's own
-// management traffic) is not starved by the bridge.
+// Refractory period between admission decreases (issue #52, the
+// 2026-08-25 Appledore RCA). The controller runs on every BridgeInfo
+// arrival (~2 s in the field), and before this constant existed each
+// arriving congested sample applied another kAdmissionDecreaseFactor.
+// On the Isles of Shoals transit that turned ONE marginal delivery
+// sample (442300/513563 = 0.86 against a 0.9 threshold) into seven
+// halvings in 12 s: a 183x cap reduction, 35 times in 9.5 hours,
+// 1.95 GB discarded at the boat's own gate while Starlink reported
+// 0.0-0.05% drop and flat 17-24 ms latency throughout.
 //
-// This is the property that actually prevents the lockout
-// `maximum_bytes_per_second` was originally added for. A ceiling in
-// absolute bytes binds only while the link is healthy: the same bench
-// run had a 4 MB/s cap and still saw the bridge take 61% of a 62.5 kB/s
-// path (100% in individual samples), because a degraded link is a
-// saturated link. A headroom target scales with whatever the link is
-// actually delivering, so it holds in exactly the case the ceiling
-// abandons.
+// While the window is active the controller freezes: NO sample is acted
+// on, congested or clean. That is deliberate and unconditional on
+// sample type — letting a clean sample recover inside the window would
+// re-open the same feedback path from the other side (recover, re-trigger,
+// halve) and, per the review model, changes both field-replay gate
+// outcomes.
 //
-// Overridable per connection via `link_headroom_fraction`.
-inline constexpr float kDefaultLinkHeadroomFraction = 0.2f;
+// 5.0 s is not "a couple of feedback intervals" picked by feel: it is
+// the length of the receive-rate measurement window both ends use
+// (Connection::data_receive_rate, and the sender-side window the
+// congestion detector now matches against it). One full window is the
+// shortest interval after which BOTH filters describe traffic sent at
+// the new cap rather than the old one — reacting again before that is
+// reacting to our own previous decrease.
+inline constexpr double kDefaultAdmissionRefractoryPeriodSeconds = 5.0;
+
+// Upper bound on the configurable refractory base period, seconds
+// (issue #52 review round 1).
+//
+// Every other admission setter clamps both ends; this one guarded only
+// NaN and negatives, so `+Inf` — or any large finite typo — was accepted
+// verbatim. One congested sample then opened a window that never
+// expires: no decrease, no recovery, and no log line, for the life of
+// the node. A control loop that can be switched off by a config typo is
+// worse than one tuned badly.
+//
+// 60 s is the ceiling, not a recommendation. Above it the controller
+// cannot answer a link change inside any operator-observable timescale:
+// BridgeInfo arrives about every 2 s, `SustainedRealLossMustConverge`
+// requires convergence within 40 s, and a base of 30 s was measured
+// (review round 1, deliberately deafened controller) to converge only at
+// 92.8 s. Out-of-range values clamp to this bound rather than falling
+// back to the default, so an operator asking for a long window still
+// gets the longest one that leaves the loop alive.
+inline constexpr double kMaximumAdmissionRefractoryPeriodSeconds = 60.0;
+
+// Growth factor applied to the refractory window on each successive
+// decrease within an UNRESOLVED congestion episode.
+//
+// "Unresolved" means no clean sample has been ACTED ON since the last
+// decrease. A clean sample arriving while the window is still open does
+// NOT resolve the episode: the gate returns before the clean branch, so
+// the flag stays set and the next decrease still grows the window. That
+// is deliberate and follows from the same argument as the freeze itself
+// — a sample taken inside the window describes traffic sent at the OLD
+// cap, so it is no more trustworthy as evidence the episode ended than
+// it would be as grounds for recovering. Only a clean sample the
+// controller was free to act on clears it.
+//
+// Mirrors the exponential backoff the
+// resend re-request path already uses (kResendBackoffBase /
+// kResendBackoffCap) rather than inventing a second idiom. The recorded
+// onset stays "congested" on the raw ratio for its full ~14 s — the
+// sender's own rate keeps falling, which is itself an artifact of the
+// pre-fix controller that produced the trace — so a single fixed window
+// still permits a third and fourth halving inside one episode.
+inline constexpr double kAdmissionRefractoryGrowthFactor = 2.0;
+
+// Cap on the grown window, as a multiple of the configured base — so an
+// operator who retunes the base retunes the ceiling with it.
+//
+// 2x (10 s at the default base) is bounded on both sides. Below: one
+// growth step is what the field-replay onset needs to hold the recorded
+// cascade to two decreases. Above: the range-degradation bench holds
+// each phase for 10 s, so a window grown past that could not react
+// inside a phase at all, and the smoothed statistics deque only retains
+// 10 s of history — freezing longer than the whole measurement record
+// means deciding on evidence the controller can no longer see.
+inline constexpr double kAdmissionRefractoryMaximumMultiple = 2.0;
+
+// Window, in seconds, over which the congestion detector measures OUR
+// OWN send rate (issue #52).
+//
+// The detector compares what the remote reports receiving against what
+// we sent. Before this, the two sides of that ratio came from
+// differently-shaped filters: the remote's figure from a 5 s box filter
+// (Connection::data_receive_rate), ours from PacketSendStatistics::get(),
+// a variable-span 1-10 s filter. 16.1% of samples in the field data
+// showed remote_rx > 1.05 x sent_on_wire — physically impossible if both
+// described the same interval — proving the ratio was dominated by
+// filter skew during any transient rather than by loss. Matching the
+// sender's window to the receiver's 5 s window narrows that skew; it
+// does not eliminate it (propagation delay remains), which is why the
+// refractory period above is the primary defence.
+inline constexpr double kAdmissionSendRateWindowSeconds = 5.0;
+
+// Window, in seconds, over which Connection::data_receive_rate measures
+// the rate of data ARRIVING from a remote — the figure echoed back in
+// BridgeInfo and used as the other side of the detector's ratio.
+//
+// This used to be a bare `time - 5` literal in data_receive_rate with
+// nothing tying it to the sender-side window. The whole premise of the
+// detector fix is that the two windows MATCH, so leaving one of them as
+// an unnamed literal meant a future edit to either could silently
+// re-open the 16.1%-impossible-samples skew described above (#52, review
+// round 2). Named, and pinned by the static_assert below.
+inline constexpr double kReceiveRateWindowSeconds = 5.0;
+
+static_assert(
+  kAdmissionSendRateWindowSeconds == kReceiveRateWindowSeconds,
+  "kAdmissionSendRateWindowSeconds must equal kReceiveRateWindowSeconds "
+  "— see issue #52. The congestion detector divides what the remote "
+  "reports receiving over ITS window by what we sent over OURS; if the "
+  "two differ, the ratio measures filter skew rather than loss, which is "
+  "what turned a 1% link into 35 cap collapses on 2026-08-25.");
+
+// RETIRED: `link_headroom_fraction` and its default constant (issue #52,
+// 2026-08-25). Recorded here because the mechanism it provided is gone
+// and nothing replaced it — a reader reaching for a headroom knob should
+// find out why there is not one, not find a live-sounding rationale.
+//
+// What it DID: it named a fraction of measured goodput to leave unused,
+// so a co-tenant on the same path (an SSH session, the operator's own
+// management traffic) was not starved by the bridge. That was a
+// STRUCTURAL property: it reserved a share of measured throughput
+// whether or not the bridge itself was losing, which an absolute
+// ceiling never does. A ceiling in bytes binds only while the link is
+// healthy — one bench run had a 4 MB/s cap and still saw the bridge take
+// 61% of a 62.5 kB/s path (100% in individual samples), because a
+// degraded link is a saturated link.
+//
+// Why it WENT: its only call site was the congested branch's
+// `min(cap x 0.5, (1 - headroom) x goodput)` clamp, and measured goodput
+// is depressed by the very throttling the formula was computing, so the
+// clamp was a positive feedback loop. On the recorded 2026-08-25 onset
+// its first step alone landed at 0.8 x (254615 - 51715) = 162320 — below
+// the regression bound — before any second decrease existed for the
+// refractory gate to suppress, and no refractory value rescued it. It
+// was measurably harmful and cannot return in that form.
+//
+// What protects a co-tenant NOW: the refractory-gated multiplicative
+// decrease, and only insofar as the bridge SHARES the loss — it fires
+// when `remote_received < 0.9 x sent`, i.e. when the bridge's own
+// delivery degrades. On a saturated path where the bridge wins the queue
+// and the co-tenant is the one starved, the bridge reads clean and never
+// backs off. No headroom mechanism remains; a replacement basis is
+// argued on issue #61.
+//
+// The parameter itself is detected on PRESENCE from the node's parameter
+// overrides and WARNed about (`UDPBridge::on_configure`) — there is no
+// declared default to compare against, deliberately: a value comparison
+// against `static_cast<double>(0.2f)` matched YAML `0.2` only by a
+// float-to-double widening accident. See
+// doc/admission_control_design.md, "link_headroom_fraction after the
+// clamp removal".
 
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant

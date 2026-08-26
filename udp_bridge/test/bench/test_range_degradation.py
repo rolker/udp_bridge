@@ -675,20 +675,42 @@ def _transient_latency_ceiling_s(link_bps: float | None) -> float:
 # the residual this marker exists to record. Whether the marker comes off is a
 # #54 question, decided from the host bench run's numbers -- see
 # .agent/work-plans/issue-57/plan.md, step 6.
+#
+# STATUS (#52 review round 3, 2026-08-26): that flip HAS happened, and it
+# is not stable in either direction -- 3 XPASS(strict) in 4 runs at
+# 18d5eca, 2 in 4 at the round-3 fix-pass HEAD. So this suite is red
+# roughly half the times it is run, opt-in, on this host. Left as-is per
+# the paragraph above: the disposition belongs to #54, and silencing it
+# here would destroy the measurement #54 needs.
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        'rolker/udp_bridge#52 first pass fixed the dominant cause but left a '
-        'residual. Rescaling the AIMD step/floor and the resend budget off '
-        'measured goodput cut resend traffic 24-29x -- lossy 13.94 -> 0.59 '
-        'kB/s, critical 26.36 -> 0.90 kB/s -- and the worst phase now passes '
-        'with margin (critical resend/msg 3.108 -> 0.144 against a 0.200 '
-        'ceiling). Two low-loss phases remain just over: fringe 0.018 vs '
-        '0.010, lossy 0.077 vs 0.060. Duplicates are ~34% of the remaining '
-        'resend traffic at lossy, which points at spurious re-requests '
+        'rolker/udp_bridge#52 fixed the dominant cause but left a residual. '
+        'Rescaling the AIMD step/floor and the resend budget off measured '
+        'goodput cut resend traffic 24-29x (lossy 13.94 -> 0.59 kB/s, '
+        'critical 26.36 -> 0.90 kB/s). WHICH phase is over the ceiling is '
+        'not stable across runs: three runs of one build (2026-08-26, #52 '
+        'review round 1) gave lossy 0.013 / 0.018 / 0.070 against a 0.060 '
+        'ceiling and critical 0.284 / 0.474 / 0.112 against 0.200 -- a 4-5x '
+        'run-to-run spread on this metric, far wider than any single pair of '
+        'runs suggests. Read single-run values from this invariant as '
+        'indicative only; anything quoted to three decimals from one run is '
+        'over-precise. CORRECTION (#52 review round 3): an earlier version of '
+        'this string claimed at least one phase violates EVERY run, so the '
+        'marker holds. That is FALSE. Measured since: 3 XPASS(strict) in 4 '
+        'runs at 18d5eca (review round 3), and 2 XPASS(strict) in 4 runs at '
+        'the round-3 fix-pass HEAD -- 5 of 8 runs across two builds. A strict '
+        'xfail on a metric with this spread is a coin-flip red suite either '
+        'way. The marker is LEFT IN PLACE deliberately: removing it, or '
+        'raising F_resend_multiplier to keep it xfailing, would erase the '
+        'residual it exists to record. Its disposition is a #54 decision from '
+        'the host bench numbers, not this branch to make. Duplicates were '
+        '~34% of the '
+        'remaining resend traffic at lossy, pointing at spurious re-requests '
         '(debounce/reorder interaction) rather than the cap-scaling defect '
         '#52 documents. strict=True so this turns into a failure the moment '
-        'the residual is closed -- do NOT loosen F_resend_multiplier.'
+        'the residual is closed -- do NOT loosen F_resend_multiplier, and do '
+        'not conclude anything from fewer than three runs (#54).'
     ),
 )
 def test_invariant_resend_amplification(artifacts):
@@ -788,9 +810,19 @@ def test_invariant_cotenant_management_flow_survives(artifacts):
     measured a 4 MB/s cap against a 62.5 kB/s path -- 64x above real
     capacity -- and the bridge still took 61% of the link. A degraded link
     is a saturated link, which is exactly the condition a lockout happens
-    in. What protects the operator is headroom against measured
-    throughput (`link_headroom_fraction`, issue #52), and this invariant
-    is what checks the bridge honours it.
+    in. What protects the operator is the admission controller backing
+    off from its own cap rather than from a number the operator typed.
+
+    That mechanism was `link_headroom_fraction` -- the congested branch
+    targeting `(1 - headroom) x goodput` -- until the 2026-08-25 pass on
+    issue #52 removed the clamp: goodput is depressed by the very
+    throttling the target was computing, so it fed back on itself and
+    drove the recorded field onset below its regression bound on the
+    first step. The parameter is retained but inert. What carries the
+    guarantee now is the refractory-gated multiplicative decrease, and
+    this invariant is what checks it -- which is why the removal was
+    gated on running THIS test, not on inspecting the unit tests. See
+    `doc/admission_control_design.md`.
 
     **Two bounds, two phenomena (#61).** Windows are judged against
     `K_cotenant_p95_latency_s` (5 s) in steady state, but against

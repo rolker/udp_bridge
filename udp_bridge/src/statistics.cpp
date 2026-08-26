@@ -1,5 +1,7 @@
 #include "udp_bridge/statistics.h"
 
+#include <algorithm>
+
 namespace udp_bridge
 {
 
@@ -42,7 +44,7 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
   };
 
   std::map<std::pair<std::string, std::string>, Totals> totals_by_connection;
-  
+
   for(auto data_point: data_)
     for(auto remote_send_result: data_point.send_results)
       for(auto connection_send_result: remote_send_result.second)
@@ -98,7 +100,7 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
     ret.push_back(ts);
 
   }
-  
+
   return ret;
 }
 
@@ -164,7 +166,12 @@ uint64_t PacketSendStatistics::bytes_in_window(PacketSendCategory category, rclc
   uint64_t total = 0;
   for(const auto& entry : data_)
   {
-    if(entry.timestamp < one_second_ago)
+    // Bounded at BOTH ends, for the same reason can_send is (#52, review
+    // round 3): a record stamped after `time` is not evidence about the
+    // window ending at `time`, and after a backwards clock step the
+    // deque is full of them. Counting them here would over-report the
+    // resend spend and shed resends that the budget has room for.
+    if(entry.timestamp < one_second_ago || entry.timestamp > time)
       continue;
     if(entry.send_result == SendResult::dropped)
       continue;
@@ -173,6 +180,63 @@ uint64_t PacketSendStatistics::bytes_in_window(PacketSendCategory category, rclc
     total += entry.size;
   }
   return total;
+}
+
+float PacketSendStatistics::success_rate_in_window(rclcpp::Time time, double window_seconds) const
+{
+  // Same full-deque scan as can_send / bytes_in_window — the deque is not
+  // monotone in timestamps under the reserve-then-record pattern, so a
+  // skip-prefix scan would be incorrect. Bounded to ~10 s of records.
+  const auto window_start = time - rclcpp::Duration::from_seconds(window_seconds);
+  uint64_t total = 0;
+  bool have_earliest = false;
+  rclcpp::Time earliest;
+  for(const auto& entry : data_)
+  {
+    // Bounded at BOTH ends. Bounding only below let a backwards clock
+    // step — a looping bag replay, a sim reset — sum up to the deque's
+    // full 10 s of now-future-stamped successes and divide them by the
+    // 1 s dt floor, inflating the reported rate roughly tenfold and
+    // reading every following sample as congested on a link that never
+    // degraded (#52, review round 2). A sample stamped after `time` is
+    // not evidence about the window ending at `time`.
+    if(entry.timestamp < window_start || entry.timestamp > time)
+      continue;
+    if(entry.send_result != SendResult::success)
+      continue;
+    total += entry.size;
+    // `have_earliest` rather than `earliest.nanoseconds() == 0`: a
+    // timestamp of 0 is a legal clock reading, not a sentinel. It is the
+    // same conflation the refractory gate had removed in round 1, and
+    // relying on Statistics::add dropping zero-stamped records would
+    // make this correct only by an incidental property of another class.
+    if(!have_earliest || entry.timestamp < earliest)
+    {
+      earliest = entry.timestamp;
+      have_earliest = true;
+    }
+  }
+  if(total == 0)
+    return 0.0f;
+  // dt floor of 1 s mirrors data_receive_rate: a window holding only a
+  // few hundred milliseconds of samples must not report a rate spike.
+  //
+  // The span is measured from the oldest SUCCESSFUL sample in the
+  // window, whereas data_receive_rate measures from the oldest sample of
+  // any kind. When successes cluster late in the window — the throttled
+  // regime, where early attempts fail and later ones land — this reports
+  // a shorter span and so a higher rate than the receive-side filter
+  // would for the same traffic, biasing the comparison toward reading
+  // congestion. Left as-is deliberately: the alternative (measuring from
+  // the oldest attempt, successful or not) makes the divisor depend on
+  // failures the remote never saw, and the residual skew is bounded by
+  // the window and is in the conservative direction — it can only make
+  // the controller back off sooner, never later. Documented rather than
+  // silently differing (#52, review round 2).
+  double dt = 1.0;
+  if(have_earliest)
+    dt = std::max(dt, (time - earliest).seconds());
+  return static_cast<float>(static_cast<double>(total) / dt);
 }
 
 bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes, uint32_t bytes_per_second_limit, rclcpp::Time time) const
@@ -199,7 +263,23 @@ bool PacketSendStatistics::can_send(uint32_t data_size, uint32_t reserved_bytes,
   uint64_t total_sent = 0;
   for(const auto& entry : data_)
   {
-    if(entry.timestamp < one_second_ago)
+    // Bounded at BOTH ends (#52, review round 3). Bounding only below
+    // permanently WEDGES the connection across a backwards clock step —
+    // a looping bag replay, a sim reset, an NTP correction. Every record
+    // written before the step is stamped in what is now the future, and
+    // summing them makes total_sent exceed any sane limit forever:
+    // can_send returns false on every call, the connection admits
+    // nothing, and it presents to an operator as "the link stopped".
+    // Statistics::add now evicts those records too, so this is the
+    // second of two independent bounds rather than the only one; keep
+    // both, because the eviction runs on add and a connection that has
+    // gone quiet across the step would not get one.
+    //
+    // A record stamped after `time` is not evidence about the window
+    // ending at `time`. Excluding it can only under-count, i.e. admit
+    // slightly more, which is the safe direction for a bound whose
+    // failure mode is a dead link.
+    if(entry.timestamp < one_second_ago || entry.timestamp > time)
       continue;
     if(entry.send_result == SendResult::dropped)
       continue;

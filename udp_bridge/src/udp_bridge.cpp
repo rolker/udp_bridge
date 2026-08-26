@@ -39,6 +39,7 @@
 //     read-only afterward — no synchronization needed.
 
 #include "udp_bridge/udp_bridge.h"
+#include "udp_bridge/connection_diagnostic.h"
 #include "udp_bridge/qos_resolution.h"
 #include "udp_bridge/destination_selection.h"
 #include "udp_bridge/relay_send.h"
@@ -74,13 +75,78 @@ using namespace udp_bridge_interfaces::srv;
 using namespace std::placeholders;
 using namespace std::chrono_literals;
 
-UDPBridge::UDPBridge(const std::string &node_name)
-: rclcpp_lifecycle::LifecycleNode(node_name, rclcpp::NodeOptions().enable_logger_service(true))
+namespace
+{
+
+// A rate limit at or below the connection's admission floor makes AIMD
+// INERT: the floor is clamped to the cap at use, so the congested
+// branch's max(floor, cap x 0.5) returns the cap unchanged and the
+// controller can never back off, however bad the link gets.
+//
+// on_configure warns about the CONFIGURED case. This covers the RUNTIME
+// routes, which are the more reachable ones and were unwarned (#52,
+// review round 2): setRateLimit is called from the CONNECT decode with a
+// peer-advertised cap and from the add_remote service, and neither
+// re-checks the floor. A peer advertising a cap below
+// kDefaultAdmissionFloorBytesPerSecond would otherwise switch adaptive
+// admission off for the life of the node, silently.
+//
+// Throttled rather than one-shot: a flapping CONNECT re-adopts on every
+// reconnect, and one line per flap is noise.
+//
+// KNOWN LIMIT of the throttle (#52, review round 3).
+// RCLCPP_WARN_STREAM_THROTTLE keeps its suppression state per CALL SITE,
+// not per connection, so a second connection entering the inert state
+// within 60 s of the first IS suppressed — and because this is
+// event-driven (a CONNECT decode, an add_remote call) rather than
+// periodic, the suppressed line is never re-emitted. An earlier version
+// of this comment claimed the throttle was chosen so that would not
+// happen; it does not achieve that. Per-connection state would fix it
+// and is not worth a map keyed by remote+connection here: the
+// configure-time WARN covers the configured case unthrottled, and the
+// inert state is now also visible on the per-connection diagnostic
+// (`admission_floor_bytes_per_sec` against
+// `effective_rate_limit_bytes_per_sec`), which is per connection by
+// construction.
+//
+// LOCKING: this is the first caller to take a Connection mutex while a
+// UDPBridge mutex is held (remote_nodes_mutex_ / pending_connections_
+// _mutex_ at the call sites; it takes Connection::config_mutex_ twice).
+// That is safe — Connection never reaches back up to UDPBridge, so no
+// cycle exists — but connection.h and updateAdmissionControl's locking
+// preamble both record that Connection's own mutexes are never nested,
+// and this nests a Connection mutex under a foreign one. Stated so the
+// invariant stays auditable (#52, review round 3).
+void warnIfAdmissionInert(const rclcpp::Logger& logger, rclcpp::Clock& clock,
+                          const std::string& remote_name,
+                          const std::string& connection_id,
+                          const Connection& connection)
+{
+  const uint32_t cap = connection.rateLimit();
+  const double floor = static_cast<double>(connection.admissionFloorBytesPerSecond());
+  if(floor < static_cast<double>(cap))
+    return;
+  RCLCPP_WARN_STREAM_THROTTLE(logger, clock, 60000,
+    "Connection '" << remote_name << "/" << connection_id
+    << "': the rate limit now in force (" << cap
+    << " B/s) is at or below the admission floor (" << floor
+    << " B/s), so adaptive admission control is INERT on it — the cap can "
+    "never be reduced, whatever the link reports. This limit came from a "
+    "peer's CONNECT or from add_remote, not from this node's parameters.");
+}
+
+}  // namespace
+
+UDPBridge::UDPBridge(const std::string &node_name, const rclcpp::NodeOptions &options)
+: rclcpp_lifecycle::LifecycleNode(
+    node_name, rclcpp::NodeOptions(options).enable_logger_service(true))
 {
 }
 
 UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State & state)
 {
+  // Per-cycle, so a cleanup->configure reports this cycle's tripwires.
+  retired_parameter_warning_count_ = 0;
   // start with the ROS2 node name
   std::string name = get_name();
   auto last_slash = name.rfind('/');
@@ -167,8 +233,8 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // discipline used for maximum_packet_size / publish_queue_max_bytes — a
   // large accidental value would otherwise add that much latency to every
   // gap on every topic.
-  declareIfMissing("reorder_hold_window_ms", reorder_hold_window_ms_);
-  reorder_hold_window_ms_ = get_parameter("reorder_hold_window_ms").as_double();
+  declareDoubleIfMissing("reorder_hold_window_ms", reorder_hold_window_ms_);
+  reorder_hold_window_ms_ = getDoubleParameter("reorder_hold_window_ms");
   {
     constexpr double kMaxReorderHoldWindowMs = 500.0;
     if(reorder_hold_window_ms_ < 0.0)
@@ -196,10 +262,10 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // OnSetParameters callback below propagates `ros2 param set` to the
   // cached members under remote_nodes_mutex_, so operators can adjust
   // mid-storm without a reconfigure cycle.
-  declareIfMissing("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
-  declareIfMissing("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
-  resend_giveup_warn_rate_per_s_ = get_parameter("resend_giveup_warn_rate_per_s").as_double();
-  resend_giveup_error_rate_per_s_ = get_parameter("resend_giveup_error_rate_per_s").as_double();
+  declareDoubleIfMissing("resend_giveup_warn_rate_per_s", resend_giveup_warn_rate_per_s_);
+  declareDoubleIfMissing("resend_giveup_error_rate_per_s", resend_giveup_error_rate_per_s_);
+  resend_giveup_warn_rate_per_s_ = getDoubleParameter("resend_giveup_warn_rate_per_s");
+  resend_giveup_error_rate_per_s_ = getDoubleParameter("resend_giveup_error_rate_per_s");
   // Validate launch-time values. Launch-line overrides
   // (`-p resend_giveup_warn_rate_per_s:=100.0`) bypass the
   // OnSetParameters callback below, so a bad pair would otherwise
@@ -609,16 +675,93 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         connection.maximum_bytes_per_second = mbps;
 
       std::string resend_budget_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".resend_budget_fraction";
-      declareIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
-      double resend_budget_fraction = get_parameter(resend_budget_fraction_param).as_double();
+      declareDoubleIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
+      double resend_budget_fraction = getDoubleParameter(resend_budget_fraction_param);
 
       std::string admission_floor_bps_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_floor_bytes_per_second";
-      declareIfMissing(admission_floor_bps_param, static_cast<double>(kDefaultAdmissionFloorBytesPerSecond));
-      double admission_floor_bps = get_parameter(admission_floor_bps_param).as_double();
+      declareDoubleIfMissing(admission_floor_bps_param, static_cast<double>(kDefaultAdmissionFloorBytesPerSecond));
+      double admission_floor_bps = getDoubleParameter(admission_floor_bps_param);
 
-      std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
-      declareIfMissing(link_headroom_fraction_param, static_cast<double>(kDefaultLinkHeadroomFraction));
-      double link_headroom_fraction = get_parameter(link_headroom_fraction_param).as_double();
+      // RETIRED (#52). `link_headroom_fraction` has no behaviour left:
+      // the `(1 - headroom) x goodput` clamp it fed was removed on
+      // 2026-08-25, and nothing stores it any more — no Connection
+      // state, no message field, no control-law read.
+      //
+      // Detected on PRESENCE, from the parameter overrides directly.
+      // Two reasons, both learned the hard way in review round 3:
+      //
+      // 1. The precedent this follows — the retired
+      //    `remotes.<label>.name` key above — rejects on presence, not
+      //    on whether the value would have changed anything, and
+      //    `RetiredRemoteNameMatchingItsLabelStillFailsToConfigure`
+      //    pins exactly that. A value comparison here diverged from the
+      //    precedent it cited.
+      // 2. A value comparison against the default was correct only by
+      //    ACCIDENT. `static_cast<double>(0.2f)` is
+      //    0.20000000298023223877 and YAML `0.2` is
+      //    0.20000000000000001110, so the shipped default — the single
+      //    most likely stale value in a real config — warned only
+      //    because the constant happened to be a `float`. Making
+      //    `kDefaultLinkHeadroomFraction` a `double`, a plausible
+      //    tidy-up, would have silenced the tripwire on that value with
+      //    no test failing. That is the same "correct by an incidental
+      //    property of another declaration" pattern round 2 removed
+      //    from the refractory gate.
+      //
+      // Presence also removes the reason to declare the parameter at
+      // all: `get_parameter_overrides()` carries a config file's key
+      // whether or not it is declared, so the earlier "declare it or
+      // rclcpp hides the override" rationale was simply wrong. Not
+      // declaring it is better — a retired parameter must not show up
+      // in `ros2 param list` looking live.
+      //
+      // WARN rather than FAIL, which is where this differs from
+      // `remotes.<label>.name`: that key, left stale, actively
+      // MISROUTES traffic (the #51 echo bug), so a config carrying it is
+      // broken. A stale headroom value misroutes nothing — the link is
+      // still protected, by the refractory-gated multiplicative decrease
+      // — so refusing to configure would ground a boat over a dead
+      // config key. The operator gets one loud line per offending
+      // connection instead.
+      const std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
+      const auto& parameter_overrides =
+        get_node_parameters_interface()->get_parameter_overrides();
+      if(parameter_overrides.count(link_headroom_fraction_param) > 0)
+      {
+        ++retired_parameter_warning_count_;
+        RCLCPP_WARN_STREAM(get_logger(),
+          "Connection '" << remote_name << "/" << connection_name
+          << "': link_headroom_fraction is set, but the parameter is "
+          "RETIRED and does nothing (#52). The `(1 - headroom) x goodput` "
+          "clamp it controlled was removed on 2026-08-25 because goodput "
+          "is depressed by the very throttling the clamp was computing. "
+          "Co-tenant traffic on this path is now protected by the "
+          "refractory-gated multiplicative decrease instead — no headroom "
+          "mechanism remains. Remove the key from your config; setting it "
+          "to any value, including the old default, changes nothing.");
+      }
+
+      std::string admission_refractory_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_refractory_period_seconds";
+      declareDoubleIfMissing(admission_refractory_param, static_cast<double>(kDefaultAdmissionRefractoryPeriodSeconds));
+      double admission_refractory = getDoubleParameter(admission_refractory_param);
+      // 0 DISABLES the refractory gate, restoring exactly the behaviour
+      // that produced the 2026-08-25 collapse — one marginal delivery
+      // sample became seven halvings in 12 s, 35 times in 9.5 hours. It
+      // is supported deliberately (an operator may need to reproduce
+      // that), but it is a capability-limiting configuration in the same
+      // class as an inert admission floor and a retired parameter, both
+      // of which WARN. Accepting it silently is the "set it, nothing
+      // says anything" shape this branch exists to remove (#52, review
+      // round 3).
+      if(admission_refractory == 0.0)
+        RCLCPP_WARN_STREAM(get_logger(),
+          "Connection '" << remote_name << "/" << connection_name
+          << "': admission_refractory_period_seconds is 0, which DISABLES "
+          "the refractory gate. Every congestion sample is then acted on "
+          "individually — the pre-#52 behaviour that turned one marginal "
+          "delivery sample into seven cap halvings in 12 s on 2026-08-25. "
+          "Set it only to reproduce that; the default is "
+          << kDefaultAdmissionRefractoryPeriodSeconds << " s.");
 
       remote_info.connections.push_back(connection);
       remote_node->update(remote_info);
@@ -631,14 +774,53 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // created there keep the field-initializer defaults
       // (kDefaultResendBudgetFraction,
       // kDefaultAdmissionFloorBytesPerSecond,
-      // kDefaultLinkHeadroomFraction); the parameters here are the only
-      // non-default source (see doc/resend_budget_design.md and
-      // doc/admission_control_design.md).
+      // kDefaultAdmissionRefractoryPeriodSeconds); the parameters here
+      // are the only non-default source (see doc/resend_budget_design.md
+      // and doc/admission_control_design.md).
+      //
+      // All of these are configure-time only, which is the property RCA
+      // item D names as what blocked live mitigation on 2026-08-25 — the
+      // admission floor could not be raised from the boat while it was
+      // the problem. issue #75 is the tracking issue for making connection
+      // parameters runtime-reconfigurable;
+      // admission_refractory_period_seconds joins the same set and
+      // should be revisited with it.
       if(auto live_connection = remote_node->connection(connection_name))
       {
         live_connection->setResendBudgetFraction(static_cast<float>(resend_budget_fraction));
         live_connection->setAdmissionFloorBytesPerSecond(static_cast<float>(admission_floor_bps));
-        live_connection->setLinkHeadroomFraction(static_cast<float>(link_headroom_fraction));
+        live_connection->setAdmissionRefractoryPeriodSeconds(admission_refractory);
+
+        // A floor at or above the connection's own cap makes AIMD a
+        // no-op: the floor is clamped to the cap at use, so the
+        // congested branch's max(floor, cap x 0.5) returns the cap
+        // unchanged and this connection can never back off, however bad
+        // the link gets. That is a legitimate configuration to want (a
+        // link you have decided never to throttle), but it is not one
+        // to arrive at by accident — say so once, at configure time,
+        // rather than leaving an operator to infer it from a cap that
+        // never moves (#52).
+        //
+        // Read the APPLIED floor back from the connection, not the raw
+        // parameter. setAdmissionFloorBytesPerSecond maps NaN and
+        // negatives to kDefaultAdmissionFloorBytesPerSecond, so
+        // `admission_floor_bytes_per_second: -1` on a connection capped
+        // below 8192 B/s is exactly the inert case this WARN exists for —
+        // and testing the raw -1 against the cap would stay silent on it
+        // (#52, review round 2).
+        const uint32_t effective_cap = live_connection->rateLimit();
+        const double applied_floor =
+          static_cast<double>(live_connection->admissionFloorBytesPerSecond());
+        if(applied_floor >= static_cast<double>(effective_cap))
+          RCLCPP_WARN_STREAM(get_logger(),
+            "Connection '" << remote_name << "/" << connection_name
+            << "': admission_floor_bytes_per_second (" << applied_floor
+            << ", from a configured " << admission_floor_bps
+            << ") is at or above the connection's rate limit ("
+            << effective_cap << " B/s), so adaptive admission control is "
+            "INERT on it — the cap can never be reduced, whatever the link "
+            "reports. Lower the floor, or raise maximum_bytes_per_second, "
+            "if that was not intended.");
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
@@ -651,8 +833,8 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         int queue_size = get_parameter(queue_size_param).as_int();
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
-        declareIfMissing(period_param, 0.0);
-        double period = get_parameter(period_param).as_double();
+        declareDoubleIfMissing(period_param, 0.0);
+        double period = getDoubleParameter(period_param);
 
         std::string source_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".source";
         declareIfMissing(source_param, topic);
@@ -1923,7 +2105,11 @@ void UDPBridge::decodeConnection(std::vector<uint8_t> const &message, const Sour
         else
           connection->setHostAndPort(host, port);
         if(connection_internal.return_maximum_bytes_per_second > 0)
+        {
           connection->setRateLimit(connection_internal.return_maximum_bytes_per_second);
+          warnIfAdmissionInert(get_logger(), *get_clock(), source_info.node_name,
+                               connection_internal.connection_id, *connection);
+        }
         connection_internal.operation = ConnectionInternal::OPERATION_CONNECT_ACKNOWLEDGE;
         connection_internal.return_host = connection->returnHost();
         connection_internal.return_port = connection->returnPort();
@@ -2529,6 +2715,8 @@ void UDPBridge::addRemote(
     {
       connection->setReturnHostAndPort(request->return_address, request->return_port);
       connection->setRateLimit(request->maximum_bytes_per_second);
+      warnIfAdmissionInert(get_logger(), *get_clock(), request->name, connection_id,
+                           *connection);
       should_send_bridge_info = true;
     }
     if(should_send_bridge_info)
@@ -2554,6 +2742,8 @@ void UDPBridge::addRemote(
       {
         connection_internal.connection = std::make_shared<Connection>(connection_id, request->address, request->port);
         connection_internal.connection->setRateLimit(request->maximum_bytes_per_second);
+        warnIfAdmissionInert(get_logger(), *get_clock(), request->name, connection_id,
+                             *connection_internal.connection);
       }
       connection_internal_message = connection_internal.message;
     }
@@ -2735,7 +2925,27 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
 
   stat.add("host", connection->host());
   stat.add("port", static_cast<int>(connection->port()));
-  stat.add("rate_limit_bytes_per_sec", static_cast<unsigned int>(connection->rateLimit()));
+  const uint32_t configured_rate_limit = connection->rateLimit();
+  const uint32_t effective_rate_limit = connection->effectiveRateLimit();
+  stat.add("rate_limit_bytes_per_sec", static_cast<unsigned int>(configured_rate_limit));
+  // The AIMD cap and the refractory window, on the surface an
+  // over-the-horizon operator actually looks at (#52).
+  //
+  // `rate_limit_bytes_per_sec` above is the CONFIGURED limit — the
+  // number that never moves. On 2026-08-25 the controller collapsed the
+  // effective cap to the floor and this diagnostic went on reporting the
+  // configured value, so the collapse was invisible: the only other
+  // place `effective_rate_limit` appears is a BridgeInfo field, which
+  // requires subscribing to a bridge topic and diffing two numbers by
+  // eye. That is precisely what did not happen. The message-schema
+  // argument for deferring more visibility to #75 (a field costs a
+  // type-hash break and a coordinated redeploy) does not apply to a
+  // diagnostic KeyValue, which costs neither.
+  stat.add("effective_rate_limit_bytes_per_sec",
+           static_cast<unsigned int>(effective_rate_limit));
+  stat.add("admission_refractory_window_s",
+           connection->currentAdmissionRefractoryWindowSeconds());
+  stat.add("admission_floor_bytes_per_sec", connection->admissionFloorBytesPerSecond());
   stat.add("tx_ok_bytes_per_sec", totals.success_bytes_per_second);
   stat.add("tx_failed_bytes_per_sec", totals.failed_bytes_per_second);
   stat.add("tx_dropped_bytes_per_sec", totals.dropped_bytes_per_second);
@@ -2747,27 +2957,12 @@ void UDPBridge::diagnoseConnection(const std::string& remote_name,
   constexpr double kStaleWarnSeconds = 5.0;
   constexpr double kStaleErrorSeconds = 10.0;
 
-  std::string summary = "tx " + std::to_string(static_cast<uint64_t>(totals.success_bytes_per_second))
-                      + " B/s, rx " + std::to_string(static_cast<uint64_t>(rx.first)) + " B/s";
-
-  if(last_rx > 0.0 && rx_age > kStaleErrorSeconds)
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR,
-                 "no rx for " + std::to_string(static_cast<uint64_t>(rx_age)) + "s");
-  }
-  else if(totals.failed_bytes_per_second > 0 || totals.dropped_bytes_per_second > 0)
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "tx failures/drops");
-  }
-  else if(last_rx > 0.0 && rx_age > kStaleWarnSeconds)
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
-                 "no rx for " + std::to_string(static_cast<uint64_t>(rx_age)) + "s");
-  }
-  else
-  {
-    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, summary);
-  }
+  const auto diagnostic = computeConnectionDiagnostic(
+    configured_rate_limit, effective_rate_limit,
+    totals.success_bytes_per_second, totals.failed_bytes_per_second,
+    totals.dropped_bytes_per_second, rx.first, rx_age,
+    kStaleWarnSeconds, kStaleErrorSeconds);
+  stat.summary(diagnostic.level, diagnostic.message);
 }
 
 void UDPBridge::diagnoseRemoteGiveups(const std::string& remote_name,

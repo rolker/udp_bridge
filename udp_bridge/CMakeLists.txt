@@ -144,6 +144,13 @@ if(BUILD_TESTING)
   # through the same helper so it gets UDP_BRIDGE_BUILD_TESTING too —
   # required for in-package ABI alignment per the helper's contract.
   add_udp_bridge_gtest(test_giveup_diagnostic test/test_giveup_diagnostic.cpp)
+  # test_connection_diagnostic (issue #52) pins the per-connection
+  # DiagnosticStatus level + summary: the EFFECTIVE admission cap is
+  # named on the surface an over-the-horizon operator reads, and
+  # deliberate admission shedding is distinguished from socket-level
+  # tx failures (one shared "tx failures/drops" wording hid both
+  # through the 2026-08-25 incident).
+  add_udp_bridge_gtest(test_connection_diagnostic test/test_connection_diagnostic.cpp)
   # Sender-side resend budget (issue #44): bounded-under-load,
   # ack-starvation backoff steps, never-received sentinel, max clamp.
   add_udp_bridge_gtest(test_resend_budget test/test_resend_budget.cpp)
@@ -151,6 +158,17 @@ if(BUILD_TESTING)
   # floor/ceiling clamps, stale-feedback fallback, sentinel,
   # effective-cap metering, setRateLimit clamp semantics.
   add_udp_bridge_gtest(test_admission_control test/test_admission_control.cpp)
+  add_udp_bridge_gtest(test_admission_field_replay test/test_admission_field_replay.cpp)
+  # test_message_atomicity (issue #52) exercises the message-level
+  # admission granularity restored by the batch overload's aggregate
+  # check-AND-reserve: whole-message drop, exactly-once accounting,
+  # is_overhead parity, real-threads joint over-admission, and
+  # reservation release on the exit paths a fragment can be DRIVEN
+  # through here. ECONNREFUSED is not among them — the test file records
+  # that it is unreachable on an unconnected UDP socket and is covered by
+  # inference from the shared release helper, not by execution (#52,
+  # review round 3: this line used to claim every exit path).
+  add_udp_bridge_gtest(test_message_atomicity test/test_message_atomicity.cpp)
   # test_publish_queue (issue #10) exercises the bounded publish-worker
   # queue in isolation via an injected sink — no UDPBridge / node needed.
   add_udp_bridge_gtest(test_publish_queue test/test_publish_queue.cpp)

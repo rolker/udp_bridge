@@ -4,6 +4,8 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <algorithm>
+#include <iterator>
+#include <limits>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -14,6 +16,33 @@ namespace udp_bridge
 {
 
 using namespace udp_bridge_interfaces::msg;
+
+namespace
+{
+
+/// Release `bytes` from a reservation counter, CLAMPED at zero.
+///
+/// `reserved_bytes_in_flight_` is unsigned, and an over-release wraps it
+/// to a near-4 GB value. can_send adds it to the window sum, so the
+/// connection then refuses everything, permanently, with no way back
+/// short of a node restart — the same operator-visible failure as a
+/// wedged clock window: "the link stopped" on a link that is fine.
+///
+/// Every release in this file is argued to be exact (each fragment
+/// releases precisely what it was handed; the batch guard releases only
+/// what was never handed out). The clamp is not a substitute for that
+/// argument — it is what keeps a mistake in it from being unrecoverable.
+/// Round 2 clamped `BatchReservationGuard::unreserved`, which is the
+/// counter whose wrap is HARMLESS; this clamps the one whose wrap wedges
+/// the connection (#52, review round 3).
+///
+/// The caller must hold `sent_packet_statistics_mutex_`.
+void releaseReservedBytes(uint32_t& reservation, uint32_t bytes)
+{
+  reservation -= std::min(reservation, bytes);
+}
+
+}  // namespace
 
 Connection::Connection(std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
   id_(truncate_connection_id(id)), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
@@ -127,22 +156,43 @@ float Connection::admissionFloorBytesPerSecond() const
   return admission_floor_bytes_per_second_;
 }
 
-void Connection::setLinkHeadroomFraction(float fraction)
+void Connection::setAdmissionRefractoryPeriodSeconds(double seconds)
 {
-  // Clamped below 1.0: a headroom of exactly 1.0 would target zero
-  // throughput on every congested sample and the connection could
-  // never carry data again.
-  if(std::isnan(fraction))
-    fraction = kDefaultLinkHeadroomFraction;
-  fraction = std::max(0.0f, std::min(0.99f, fraction));
+  // NaN and negative values fall back to the default (the contract in
+  // connection.h). 0 is accepted and means "no gate": every sample is
+  // acted on, which is the pre-#52 behaviour. It is reachable on purpose
+  // — an operator reproducing the 2026-08-25 collapse needs it — but it
+  // is not a safe default, so a garbage value must not land there.
+  if(std::isnan(seconds) || seconds < 0.0)
+    seconds = kDefaultAdmissionRefractoryPeriodSeconds;
+  // Clamp the top end too. +Inf (and any large finite typo) used to be
+  // accepted verbatim: one congested sample then froze the controller
+  // for the life of the node — no decrease, no recovery, nothing logged.
+  // This is the only admission setter that lacked an upper clamp. See
+  // kMaximumAdmissionRefractoryPeriodSeconds for why the bound is where
+  // it is; clamping (rather than falling back to the default) keeps an
+  // operator's intent to slow the loop down while keeping it alive.
+  seconds = std::min(seconds, kMaximumAdmissionRefractoryPeriodSeconds);
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  link_headroom_fraction_ = fraction;
+  admission_refractory_period_seconds_ = seconds;
+  // Reset the in-force window and any accumulated growth. Without this a
+  // reconfiguration made while a grown window is open would leave the
+  // controller frozen under the OLD value it was just told to abandon.
+  admission_refractory_current_seconds_ = seconds;
+  admission_decrease_outstanding_ = false;
+  last_admission_decrease_time_ = 0.0;
 }
 
-float Connection::linkHeadroomFraction() const
+double Connection::admissionRefractoryPeriodSeconds() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  return link_headroom_fraction_;
+  return admission_refractory_period_seconds_;
+}
+
+double Connection::currentAdmissionRefractoryWindowSeconds() const
+{
+  std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  return admission_refractory_current_seconds_;
 }
 
 float Connection::goodputBytesPerSecond() const
@@ -154,7 +204,26 @@ float Connection::goodputBytesPerSecond() const
 uint32_t Connection::effectiveRateLimit() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  return static_cast<uint32_t>(effective_rate_limit_);
+  // Clamped before the cast (#52, review round 3). `effective_rate_limit_`
+  // is a float seeded from setRateLimit, which is reached from a peer's
+  // CONNECT (`return_maximum_bytes_per_second`) and from add_remote — so
+  // its magnitude is not entirely under this node's control. A value near
+  // UINT32_MAX rounds UP to 4294967296.0f in float, and converting that
+  // to uint32_t is undefined: on x86-64 it yields 0, and the connection
+  // then admits NOTHING. That is the same operator-visible failure as a
+  // wedged clock window, reached from a corrupt or version-skewed peer
+  // report rather than from a clock step. This is corruption /
+  // version-skew robustness, not a security claim — the transport is
+  // trusted by design (#43, #53).
+  // 4294967040 = 0xFFFFFF00, the largest float below 2^32 (a float has
+  // 24 bits of mantissa, so UINT32_MAX itself is not representable and
+  // rounds up past the range).
+  constexpr float kLargestFloatBelow2Pow32 = 4294967040.0f;
+  const float clamped =
+    std::isfinite(effective_rate_limit_)
+      ? std::clamp(effective_rate_limit_, 0.0f, kLargestFloatBelow2Pow32)
+      : 0.0f;
+  return static_cast<uint32_t>(clamped);
 }
 
 void Connection::updateAdmissionControl(float remote_received_bps,
@@ -167,12 +236,20 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // constraint is created (send() likewise acquires them one at a
   // time). Keep it that way: nesting any of them would introduce an
   // ordering requirement that nothing else in Connection has.
-  udp_bridge_interfaces::msg::DataRates sent;
+  // Measure OUR send rate over the same window the remote used to
+  // produce the figure it is echoing back (issue #52). Previously this
+  // read PacketSendStatistics::get(), a variable-span 1-10 s filter,
+  // and compared it against the remote's 5 s box filter: 16.1% of the
+  // 2026-08-25 field samples reported the remote receiving MORE than we
+  // sent, which is physically impossible if both described the same
+  // interval and identifies filter skew — not loss — as what the ratio
+  // was actually measuring during a transient.
+  float sent_bps;
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
-    sent = sent_packet_statistics_.get();
+    sent_bps = sent_packet_statistics_.success_rate_in_window(
+      now, kAdmissionSendRateWindowSeconds);
   }
-  const float sent_bps = sent.success_bytes_per_second;
   const double receive_time = last_receive_time();  // own mutex inside
 
   // Stale-feedback fallback: nothing received on THIS connection for a
@@ -217,20 +294,21 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // remote_duplicate_bps, or a duplicate rate exceeding received (the
   // remote cannot have duplicated more than it received — a smoothing-
   // window skew, or a hostile report), makes goodput = received −
-  // duplicate untrustworthy: it collapses to 0, and left in the headroom
-  // target below that slams the cap to the floor on a single sample —
-  // the very pathology the received-channel guard prevents, re-entered
-  // through the duplicate channel. Mark it unusable so it falls back to
-  // the plain halving instead (#52).
+  // duplicate untrustworthy: it collapses to 0. That is still worth
+  // rejecting after the headroom clamp's removal — a zero goodput reads
+  // as total loss to the congestion comparison, and the published
+  // goodput figure steers the resend budget. Mark it unusable so the
+  // sample falls back to the plain halving instead (#52).
   //
   // Negative rates on EITHER channel are nonsensical (a rate cannot be
   // below zero) and reach us over an unauthenticated transport (#53).
   // They pass the finite and duplicate>received checks — e.g. received
   // = −100, duplicate = −200 gives duplicate > received == false — yet a
   // negative received is below any congestion threshold, so the sample
-  // would be treated as congested with a headroom target of 0 and slam
-  // the cap to the floor in one sample. Reject negatives here so they
-  // fall back to the plain halving instead (#52).
+  // reads as congestion on evidence that is not evidence, and publishes
+  // a negative goodput the resend budget then reasons from. Reject
+  // negatives here so they fall back to the plain halving instead
+  // (#52).
   const bool feedback_unusable =
     feedback_stale || !std::isfinite(remote_received_bps) ||
     !std::isfinite(remote_duplicate_bps) ||
@@ -258,7 +336,61 @@ void Connection::updateAdmissionControl(float remote_received_bps,
       : 0.0f;
 
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
+  // Store goodput BEFORE the refractory gate below. The gate freezes the
+  // controller's DECISION, not its perception: goodput is a measurement
+  // the resend budget also consumes, and withholding it would starve an
+  // unrelated loop of fresh data for the length of the window.
   goodput_bytes_per_second_ = goodput;
+
+  // REFRACTORY GATE (issue #52). One decision per congestion epoch.
+  //
+  // The freeze is unconditional on sample type: inside the window a
+  // CLEAN sample gets no additive recovery either. Recovering mid-window
+  // would re-open the loop from the other side — recover, re-cross the
+  // threshold on the next differently-filtered sample, halve again —
+  // and it changes the outcome of both committed field-replay
+  // regression tests.
+  //
+  // A backwards clock step (elapsed < 0) expires the window rather than
+  // freezing the controller until the clock catches up.
+  //
+  // KNOWN LIMIT of this design, stated rather than hidden (#52, review
+  // round 2). The gate reduces the RATE of decisions; it does not
+  // improve the EVIDENCE behind any one of them. Each decision is still
+  // made from a single sample, and the ~4 samples suppressed inside a
+  // grown window are discarded, not folded in. Near the floor, where the
+  // received/sent ratio is mostly noise, that means recovery depends on
+  // which sample happens to land first after the window expires. The
+  // principled fix is to decide on an aggregate of the window's samples
+  // (a median, or a matched byte counter — RCA option B), which needs
+  // new wire fields; see doc/admission_control_design.md.
+  //
+  // "Is a decrease outstanding" is its own boolean and NOT
+  // `last_admission_decrease_time_ > 0.0`. 0.0 is a legal clock reading,
+  // and a decrease recorded there read as "no decrease outstanding",
+  // leaving the gate silently inert and halving the cap on every sample
+  // — precisely the cascade this branch exists to stop (#52, review
+  // round 1).
+  //
+  // Reaching it takes more than a clock that merely READS zero: a
+  // congested sample needs send history inside the window ending at
+  // 0.0, and `Statistics::add` (statistics.h) drops records stamped
+  // exactly 0 — so `use_sim_time` before the first `/clock` has nothing
+  // to be congested about. What reaches it is history stamped BEFORE
+  // the origin: a clock whose zero is not its start, which is what a
+  // reset or an offset replay produces. (A backwards clock step no
+  // longer leaves pre-step history usable — since round 3 the
+  // statistics windows are bounded at both ends and `Statistics::add`
+  // evicts records stamped past the window — so the pre-origin
+  // timestamps are the reachable route, not the only conceivable one.)
+  // `AdmissionControl.RefractoryGateHoldsAtClockZero` drives that path
+  // and was verified to fail against the sentinel form.
+  if(admission_decrease_outstanding_)
+  {
+    const double elapsed = now.seconds() - last_admission_decrease_time_;
+    if(elapsed >= 0.0 && elapsed < admission_refractory_current_seconds_)
+      return;
+  }
 
   // The floor is absolute (#52) but can never exceed the configured
   // cap: an operator who sets a floor above a connection's own limit
@@ -268,25 +400,55 @@ void Connection::updateAdmissionControl(float remote_received_bps,
 
   if(congested)
   {
-    float decreased = effective_rate_limit_ * kAdmissionDecreaseFactor;
-    // Headroom target: aim at a fraction of what the link is actually
-    // delivering, so a co-tenant (SSH, operator management traffic)
-    // keeps a share. Applied ONLY here. Measured goodput is bounded
-    // above by offered load, so it is a lower bound on capacity, never
-    // an estimate of it — clamping to it on the clean branch too would
-    // ratchet a healthy, lightly-loaded link down to nothing.
+    // Grow the window if this episode never resolved — the recorded
+    // onset reads congested on the raw ratio for its full ~14 s, because
+    // each decrease shrinks our own send rate and so widens the very
+    // filter skew that triggered the detector. A fixed window still
+    // permits a third and fourth halving inside one such episode.
     //
-    // Unusable feedback (stale, a non-finite report, or a duplicate rate
-    // above received) carries no trustworthy goodput reading, so it falls
-    // back to the multiplicative decrease alone rather than targeting a
-    // number we did not measure (such a report yields goodput 0, which
-    // would otherwise slam the cap to the floor on a single bad sample).
-    if(!feedback_unusable)
-      decreased = std::min(decreased, (1.0f - link_headroom_fraction_) * goodput);
-    effective_rate_limit_ = std::max(floor, decreased);
+    // The grown window is bounded TWICE, and both bounds are load-bearing
+    // (#52, review round 2). The multiple bounds it relative to the
+    // configured base; kMaximumAdmissionRefractoryPeriodSeconds bounds it
+    // absolutely. Without the second bound a connection configured at the
+    // 60 s maximum base freezes for 120 s on its second decrease — twice
+    // the ceiling whose own rationale (resend_constants.h) says a window
+    // that long leaves the controller unable to answer a link change in
+    // any operator-observable timescale. The setter's clamp is on the
+    // BASE only; growth happens after it, so it has to be re-applied here.
+    if(admission_decrease_outstanding_)
+      admission_refractory_current_seconds_ =
+        std::min({admission_refractory_current_seconds_ * kAdmissionRefractoryGrowthFactor,
+                  admission_refractory_period_seconds_ * kAdmissionRefractoryMaximumMultiple,
+                  kMaximumAdmissionRefractoryPeriodSeconds});
+    else
+      admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
+    admission_decrease_outstanding_ = true;
+    last_admission_decrease_time_ = now.seconds();
+
+    // Purely multiplicative decrease from the controller's own last
+    // known-good state. The (1 - link_headroom_fraction) * goodput
+    // clamp that used to bound this was removed on 2026-08-25: goodput
+    // is depressed by the throttling the clamp was computing, so it fed
+    // back on itself. On the recorded onset the clamp's FIRST step alone
+    // landed at 0.8 x (254615 - 51715) = 162320 — already below the
+    // regression bound — and no refractory tuning rescued it. Nor is
+    // goodput a capacity estimate when the gate is not limiting: the
+    // code comment above says it is bounded by OFFERED load, and the
+    // field day's operating point was ~495 kB/s offered against a
+    // 1500000 cap, making the clamp a 3.8x cut carrying no capacity
+    // information at all.
+    effective_rate_limit_ =
+      std::max(floor, effective_rate_limit_ * kAdmissionDecreaseFactor);
   }
   else
   {
+    // The episode resolved: clear the outstanding decrease and give back
+    // the accumulated exponential growth, so the NEXT episode starts
+    // from the base window rather than inheriting this one's ceiling.
+    admission_decrease_outstanding_ = false;
+    last_admission_decrease_time_ = 0.0;
+    admission_refractory_current_seconds_ = admission_refractory_period_seconds_;
+
     // Additive recovery relative to where the controller currently is,
     // with an absolute minimum so escaping the floor is not
     // asymptotically slow. Cap-relative steps were the #52 defect: on a
@@ -445,9 +607,15 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     return SendResult::failed;
   }
 
+  // Sum the actual byte vectors, which is exactly what each fragment
+  // will release via sendPacket(..., bytes_pre_reserved=true) below.
+  // p.packet_size is equal to it by construction (wrapped_packet.cpp),
+  // but the reservation accounting must not depend on a header field
+  // agreeing with the buffer it describes — summing the buffers makes
+  // the reserve and the releases provably the same quantity.
   uint32_t total_size = 0;
   for(const auto& p: packets)
-    total_size += p.packet_size;
+    total_size += static_cast<uint32_t>(p.packet.size());
 
   uint32_t rate_limit;
   {
@@ -457,21 +625,93 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     rate_limit = static_cast<uint32_t>(effective_rate_limit_);
   }
 
-  // Aggregate pre-check is a fast-path optimization: if the batch as a
-  // whole won't fit in the per-second budget (including bytes already
-  // reserved by concurrent in-flight sends), drop all packets at once
-  // rather than partial-send-then-drop. The single lock acquisition
-  // below covers ONLY the over-budget path — check + per-packet
-  // drop-records happen under one lock so concurrent forwarding
-  // callbacks (the republish_group_ is Reentrant) can't double-account
-  // drops against an inconsistent capacity snapshot. On the success
-  // path the lock is released without reserving any bytes here, so two
-  // concurrent callbacks can both observe capacity at this layer and
-  // both proceed into the per-packet send() below; this is intentional.
-  // The per-packet inner send() is the sole atomic enforcement point —
-  // it uses a reserve-then-record pattern (see Q2 in
-  // .agent/work-plans/issue-15/progress.md) so concurrent senders see
-  // each other's in-flight bytes via reserved_bytes_in_flight_.
+  // AGGREGATE CHECK-AND-RESERVE — the message is admitted or dropped as
+  // one unit (issue #52).
+  //
+  // This used to be a check ONLY: on the success path the lock was
+  // released without reserving anything, deliberately, so two concurrent
+  // callbacks (republish_group_ is Reentrant) could both pass here and
+  // both fall through to the per-packet loop, where each packet made its
+  // own independent can_send call. That made the per-packet send the
+  // sole enforcement point — and with it, the drop granularity. If the
+  // budget ran out partway through a multi-fragment message, the later
+  // fragments were dropped individually while the earlier ones had
+  // already gone out. Those bytes can never be reassembled into a
+  // deliverable message, so on an already-degraded link they were pure
+  // waste: the receiver holds an incomplete set until the defragmenter
+  // times it out. Message-level granularity is what `cce4401` had before
+  // the 2026-05-18 concurrency fix (`1489cfb`/`0c8b75f`) replaced it
+  // with per-packet checks.
+  //
+  // Reserving total_size here closes that TOCTOU window: the first
+  // batch's reservation is visible to the second batch's can_send, so
+  // two concurrent messages can no longer jointly over-admit.
+  //
+  // CONCURRENCY DISCIPLINE IS UNCHANGED, and must stay that way. This is
+  // still two bookkeeping operations under ONE brief acquisition of
+  // sent_packet_statistics_mutex_; the blocking-capable sendto poll loop
+  // for each fragment still runs with NO lock held (see sendPacket
+  // below). Holding this mutex across the I/O would stall
+  // UDPBridge::sendBridgeInfo — which calls data_sent_rate while holding
+  // remote_nodes_mutex_ — and through it the socket-drain path: the #10
+  // wedge the callback-group split exists to prevent.
+  //
+  // BOUNDING THE RESERVATION'S LIFETIME (#52 review round 1). The
+  // reservation is taken here and released fragment-by-fragment inside
+  // the loop below, so it is held for as long as that loop takes — up to
+  // ~200 ms per fragment under kernel back-pressure (the sendto poll
+  // budget), and reserved_bytes_in_flight_ has no time dimension of its
+  // own: it is a level, not a windowed rate. While it is held, a
+  // concurrent send on this connection — INCLUDING the overhead tier,
+  // which shares this budget — sees the reserved bytes in can_send and
+  // may be refused.
+  //
+  // So a large or slow message can, in principle, cause our OUTBOUND
+  // BridgeInfo and resend requests to be dropped for the duration of its
+  // loop. Two loops are harmed by that, and neither is this connection's
+  // own congestion detector:
+  //
+  //   - the REMOTE's admission controller, which is fed by our BridgeInfo
+  //     and by our echo of what we received. Starve it and it decides on
+  //     stale evidence, or on none.
+  //   - our own resend path, whose re-requests do not go out.
+  //
+  // What it does NOT do is set our own `feedback_stale`. That flag is
+  // driven by `last_receive_time` — INBOUND traffic from the remote —
+  // which a reservation held on our send side does not touch. (An
+  // earlier version of this comment had that causal chain backwards.)
+  // Nor does the large message itself read as an idle link: its own
+  // fragments are succeeding, so `sent_bps > 0` throughout.
+  //
+  // This is NOT a deadlock: the reservation is released unconditionally
+  // on every exit path (see the batch guard below), and the hold is
+  // bounded by the sendto poll budget. But it is bounded by nothing
+  // ELSE, and the harm lands on a loop we cannot see from here. If the
+  // overhead tier is ever observed starving in the field, the fix is a
+  // separate reservation ledger for it rather than a longer refractory
+  // period.
+  //
+  // is_overhead traffic (BridgeInfo, resend requests, topic lists)
+  // reaches this same overload from the same single call site
+  // (udp_bridge.cpp), and gets the same atomic treatment ON PURPOSE.
+  // Overhead messages are one packet in the overwhelming majority of
+  // cases, so for them "atomic" and "per-packet" coincide; where a topic
+  // list does fragment, half a topic list is no more useful than half a
+  // video frame. The failure path already dropped them atomically before
+  // this change — it is the success path that is now consistent with it.
+  //
+  // DIAGNOSTIC CONSEQUENCE (#52, review round 2). A message refused
+  // below has already consumed its packet numbers (assigned at the
+  // caller, udp_bridge.cpp), but nothing is stored in sent_packets_ — so
+  // the receiver sees the gap, requests resends that can never be
+  // served, and eventually gives up. `resend_giveup_count`, which an
+  // operator reads as "the link lost packets", therefore climbs on every
+  // DELIBERATE admission drop. The per-packet shed this replaced left
+  // fragments recoverable, so the conflation is new. The atomic drop is
+  // still right — a fragment of a message that can never be reassembled
+  // is bytes spent on a degraded link buying nothing — but the counter
+  // has to be read alongside the admission cap now, which is why it is
+  // called out in README.md.
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     if(!sent_packet_statistics_.can_send(total_size, reserved_bytes_in_flight_, rate_limit, now))
@@ -490,7 +730,38 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
       }
       return SendResult::dropped;
     }
+    reserved_bytes_in_flight_ += total_size;
   }
+
+  // Guard for the portion of the reservation not yet handed to a
+  // fragment. Ownership of each fragment's bytes transfers to sendPacket
+  // BEFORE the call (unreserved -= p.packet_size), because sendPacket
+  // releases exactly data.size() on every one of its exit paths,
+  // including the throw path. Decrementing after the call instead would
+  // double-release on a throw. Whatever is left when this guard unwinds
+  // belongs to fragments that were never attempted.
+  //
+  // The accounting rests on packet.packet.size() == p.packet_size, which
+  // holds by construction: WrappedPacket's copy constructor
+  // (wrapped_packet.cpp) copies both the byte vector and packet_size and
+  // rewrites only the fixed-size header fields in place. So the
+  // per-fragment releases sum to exactly total_size regardless of which
+  // exit path each fragment takes.
+  struct BatchReservationGuard
+  {
+    std::mutex& mutex;
+    uint32_t& reservation;
+    uint32_t unreserved;
+    ~BatchReservationGuard()
+    {
+      if(unreserved > 0)
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        releaseReservedBytes(reservation, unreserved);
+      }
+    }
+  };
+  BatchReservationGuard batch_guard{sent_packet_statistics_mutex_, reserved_bytes_in_flight_, total_size};
 
   SendResult ret = SendResult::success;
   for(const auto& p: packets)
@@ -503,7 +774,20 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
     PacketSendCategory category = PacketSendCategory::message;
     if(is_overhead)
       category = PacketSendCategory::overhead;
-    auto send_ret = send(packet.packet, socket, category, now);
+    // Clamped, not just decremented. `unreserved` is unsigned, and the
+    // invariant that the per-fragment sizes sum to exactly total_size is
+    // argued for above (WrappedPacket's copy constructor preserves
+    // packet_size) rather than checked. If it ever stopped holding, the
+    // subtraction would WRAP, the guard would then "release" a
+    // near-4 GB quantity out of reserved_bytes_in_flight_, and that
+    // counter — also unsigned — would wrap in turn and wedge the
+    // connection permanently: can_send would refuse everything, with no
+    // way back short of a restart. A clamp costs one comparison (#52,
+    // review round 2).
+    const uint32_t fragment_bytes = static_cast<uint32_t>(packet.packet.size());
+    batch_guard.unreserved -=
+      std::min(batch_guard.unreserved, fragment_bytes);
+    auto send_ret = sendPacket(packet.packet, socket, category, now, true);
     if(send_ret.send_result != SendResult::success)
       ret = send_ret.send_result;
   }
@@ -512,6 +796,11 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
 
 
 PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, PacketSendCategory category, rclcpp::Time now)
+{
+  return sendPacket(data, socket, category, now, false);
+}
+
+PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int socket, PacketSendCategory category, rclcpp::Time now, bool bytes_pre_reserved)
 {
   PacketSizeData ret;
   ret.timestamp = now;
@@ -537,8 +826,15 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   }
   if(no_address)
   {
+    // A concurrent setHostAndPort() -> resolveHost() can clear addresses_
+    // between the batch overload's own pre-check and this fragment, so a
+    // pre-reserved caller can genuinely land here mid-message. Release
+    // its bytes under the same lock as the record (issue #52, F6).
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
+    if(bytes_pre_reserved)
+      releaseReservedBytes(reserved_bytes_in_flight_,
+                           static_cast<uint32_t>(data.size()));
     return ret;
   }
 
@@ -568,16 +864,21 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   // The ReservationGuard RAII helper handles throw-paths: if the sendto
   // loop throws (Timeout, partial-send, etc.), the destructor releases
   // the reservation so rate-limit accounting stays consistent for the
-  // next can_send call. No record is added in this case — and there is
-  // no caller in the workspace that catches ConnectionException, so the
-  // throw propagates up through UDPBridge::callback to the executor and
-  // the node terminates. That behavior predates the reservation pattern
-  // and isn't changed by it; the value of the guard here is purely
-  // keeping reserved_bytes_in_flight_ correct before the process dies,
-  // so a sibling Connection on the same node doesn't observe a phantom
-  // reservation in its own pre-shutdown logging window. Catching at the
-  // call site to keep the bridge alive across transient socket errors
-  // would be a separate follow-up.
+  // next can_send call. No record is added in this case.
+  //
+  // The guard is LOAD-BEARING, not cosmetic. `callIsolated`
+  // (include/udp_bridge/send_isolation.h) catches ConnectionException
+  // explicitly, and it wraps the batch send path, so a throw here does
+  // NOT terminate the node — it is reported and the bridge carries on.
+  // (An earlier version of this comment claimed nothing in the workspace
+  // caught it and the process was about to die anyway; that was false,
+  // and it invited relaxing the guard.) The Timeout throw is a recurrent
+  // survivable path: a poll budget exhausted under back-pressure raises
+  // it, the connection stays alive, and the next send calls can_send
+  // again. A leaked reservation would therefore ACCUMULATE across such
+  // events until reserved_bytes_in_flight_ exceeds the rate limit and
+  // can_send refuses everything — a permanently wedged connection, with
+  // no way back short of a restart.
   struct ReservationGuard
   {
     std::mutex& mutex;
@@ -589,11 +890,18 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
       if(armed)
       {
         std::lock_guard<std::mutex> lock(mutex);
-        reservation -= bytes;
+        releaseReservedBytes(reservation, bytes);
       }
     }
   };
 
+  // Step 1 of the pattern, skipped when the caller already reserved these
+  // bytes as part of a message-atomic aggregate reservation (issue #52).
+  // Re-checking here would defeat the whole point — the fragment would be
+  // metered a second time against a budget its own message already holds
+  // — and re-reserving would double-count. Steps 2-4 below are identical
+  // either way, which is what keeps the release exact on every exit.
+  if(!bytes_pre_reserved)
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     if(!sent_packet_statistics_.can_send(data.size(), reserved_bytes_in_flight_, rate_limit, ret.timestamp))
@@ -614,7 +922,8 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
-    reserved_bytes_in_flight_ -= data.size();
+    releaseReservedBytes(reserved_bytes_in_flight_,
+                         static_cast<uint32_t>(data.size()));
     reservation_guard.armed = false;
   };
 
@@ -678,9 +987,23 @@ PacketSizeData Connection::send(const std::vector<uint8_t> &data, int socket, Pa
 std::pair<double, double> Connection::data_receive_rate(double time)
 {
   std::lock_guard<std::mutex> lock(receive_history_mutex_);
-  double five_secs_ago = time - 5;
-  while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < five_secs_ago)
+  const double window_start = time - kReceiveRateWindowSeconds;
+  while(!data_size_received_history_.empty() && data_size_received_history_.begin()->first < window_start)
     data_size_received_history_.erase(data_size_received_history_.begin());
+
+  // Bounded at the TOP end too (#52, review round 3). The map is sorted
+  // by receive time, so records written before a backwards clock step —
+  // a looping bag replay, a sim reset, an NTP correction — sort to the
+  // BACK and the begin()-erase loop above can never reach them. They
+  // would then be summed into every rate this function reports, on top
+  // of a dt floored at 1 s, inflating the remote's apparent receive rate
+  // for as long as the replay takes to catch back up. That rate is one
+  // side of the admission controller's congestion comparison, so a stale
+  // future record reads as the remote receiving more than we sent — the
+  // same class of measurement fault this branch exists to remove.
+  while(!data_size_received_history_.empty() &&
+        std::prev(data_size_received_history_.end())->first > time)
+    data_size_received_history_.erase(std::prev(data_size_received_history_.end()));
 
   double dt = 1.0;
   if(!data_size_received_history_.empty())
@@ -886,6 +1209,12 @@ std::size_t Connection::resend_call_count_for_test() const
 {
   std::lock_guard<std::mutex> lock(sent_packets_mutex_);
   return resend_call_count_for_test_;
+}
+
+uint32_t Connection::reserved_bytes_in_flight_for_test() const
+{
+  std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
+  return reserved_bytes_in_flight_;
 }
 #endif  // UDP_BRIDGE_BUILD_TESTING
 

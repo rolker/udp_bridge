@@ -58,7 +58,15 @@ class UDPBridge: public rclcpp_lifecycle::LifecycleNode
 public:
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-  UDPBridge(const std::string &node_name = "udp_bridge");
+  /// @param node_name the ROS 2 node name.
+  /// @param options node options. Parameter overrides supplied here reach
+  ///        `on_configure` exactly as a params YAML file or a `-p`
+  ///        command-line override does, which is what lets a test drive
+  ///        the real configuration entry point instead of pre-declaring
+  ///        parameters in shapes a config file cannot produce (#52).
+  ///        `enable_logger_service` is forced on regardless.
+  UDPBridge(const std::string &node_name = "udp_bridge",
+            const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
 
   CallbackReturn on_configure(const rclcpp_lifecycle::State &);
@@ -75,6 +83,23 @@ public:
   /// The decode(std::vector<uint8_t> const &message, const SourceInfo& source_info) is
   /// called when a packet is received.
   void spin_once();
+
+  /// Test accessor: how many RETIRED-parameter tripwires fired during
+  /// the last on_configure (#52).
+  ///
+  /// Nothing in this package captures log content, and the tripwires'
+  /// whole job is to emit a WARN for a key that changes no behaviour —
+  /// so without this counter the only observable outcome of a retired
+  /// key is the one it must NOT have (a failed transition), and the
+  /// tripwire has no regression guard at all. That is not hypothetical:
+  /// the `link_headroom_fraction` tripwire covered its own shipped
+  /// default value only by a float-to-double widening accident, and no
+  /// test would have failed if a tidy-up had silenced it (#52, review
+  /// round 3).
+  size_t retiredParameterWarningCountForTest() const
+  {
+    return retired_parameter_warning_count_;
+  }
 
 private:
   /// Sets the node name as seen by other udp_bridge nodes.
@@ -308,6 +333,77 @@ private:
     if(!has_parameter(name))
       declare_parameter(name, default_value);
   }
+
+  /// Declare a double-valued parameter, accepting an INTEGER override
+  /// (issue #52).
+  ///
+  /// YAML has no way to say "this integer is a double", and ROS 2 types
+  /// a parameter override from the literal, so
+  /// `admission_refractory_period_seconds: 5` arrives as an INTEGER
+  /// override for a DOUBLE-defaulted parameter. Under static parameter
+  /// typing that combination throws
+  /// `InvalidParameterTypeException` **inside `declare_parameter`** —
+  /// before any read of the value happens. The throw lands in
+  /// `on_configure`, which has no try/catch, and `rclcpp_lifecycle`
+  /// SWALLOWS an exception thrown out of a transition callback: the node
+  /// is left silently unconfigured, with nothing in the log naming the
+  /// parameter. That trap is documented on three operator surfaces, so
+  /// the guard has to sit at the DECLARATION, which is where the field
+  /// path actually fails. (Round 3 of #52: an earlier guard sat at the
+  /// read site, one call too late, and the test certifying it worked
+  /// pre-declared the key as an INTEGER — a state no params file can
+  /// produce.)
+  ///
+  /// The coercion reads the override directly and declares the coerced
+  /// double with `ignore_override = true`; the parameter stays
+  /// statically typed as a DOUBLE, so every later read — including
+  /// `set_parameter` from a running system — keeps its type checking.
+  /// Only INTEGER is coerced. Any other wrong type is still refused by
+  /// `declare_parameter`, because there is no defensible reading of (say)
+  /// a string as a rate.
+  void declareDoubleIfMissing(const std::string& name, double default_value)
+  {
+    if(has_parameter(name))
+      return;
+    const auto& overrides =
+      get_node_parameters_interface()->get_parameter_overrides();
+    const auto override_entry = overrides.find(name);
+    if(override_entry != overrides.end() &&
+       override_entry->second.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER)
+    {
+      declare_parameter(
+        name,
+        rclcpp::ParameterValue(static_cast<double>(override_entry->second.get<int64_t>())),
+        rcl_interfaces::msg::ParameterDescriptor(),
+        true);  // ignore_override: the override is the value we just coerced
+      return;
+    }
+    declare_parameter(name, default_value);
+  }
+
+  /// Read a double-valued parameter, tolerating an INTEGER value
+  /// (issue #52).
+  ///
+  /// `declareDoubleIfMissing` coerces the parameter-override path, which
+  /// is how a params file reaches the node. This covers the remaining
+  /// routes to an INTEGER-typed value: a parameter that was already
+  /// declared before `on_configure` ran (a composed node, a test) and so
+  /// was typed by whoever declared it. `as_double()` would throw
+  /// `ParameterTypeException` there, in the same swallow-the-exception
+  /// position.
+  double getDoubleParameter(const std::string& name)
+  {
+    const auto parameter = get_parameter(name);
+    if(parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER)
+      return static_cast<double>(parameter.as_int());
+    return parameter.as_double();
+  }
+
+  /// Count of RETIRED-parameter tripwire WARNs emitted by the last
+  /// on_configure. Reset at the top of on_configure so a
+  /// cleanup->configure cycle reports that cycle's count. Written only
+  /// on the configure path; read only by tests (#52).
+  size_t retired_parameter_warning_count_ = 0;
 
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();
