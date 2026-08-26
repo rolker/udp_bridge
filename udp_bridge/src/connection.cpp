@@ -590,6 +590,28 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
   // remote_nodes_mutex_ — and through it the socket-drain path: the #10
   // wedge the callback-group split exists to prevent.
   //
+  // BOUNDING THE RESERVATION'S LIFETIME (#52 review round 1). The
+  // reservation is taken here and released fragment-by-fragment inside
+  // the loop below, so it is held for as long as that loop takes — up to
+  // ~200 ms per fragment under kernel back-pressure (the sendto poll
+  // budget), and reserved_bytes_in_flight_ has no time dimension of its
+  // own: it is a level, not a windowed rate. While it is held, a
+  // concurrent send on this connection — INCLUDING the overhead tier,
+  // which shares this budget — sees the reserved bytes in can_send and
+  // may be refused.
+  //
+  // So a large or slow message can, in principle, cause BridgeInfo to be
+  // dropped for the duration of its loop; a long enough blackout sets
+  // feedback_stale in updateAdmissionControl, which is congestion, which
+  // costs a decrease. This is NOT a deadlock: the reservation is
+  // released unconditionally on every exit path (see the batch guard
+  // below), and if every packet in the window is dropped the sent rate
+  // reads 0, which cannot be congested — the controller's idle-link rule
+  // is the escape. But the escape is a consequence, not a design, and
+  // nothing bounds the hold time except the poll budget. If the overhead
+  // tier is ever observed starving in the field, the fix is a separate
+  // reservation ledger for it rather than a longer refractory period.
+  //
   // is_overhead traffic (BridgeInfo, resend requests, topic lists)
   // reaches this same overload from the same single call site
   // (udp_bridge.cpp), and gets the same atomic treatment ON PURPOSE.

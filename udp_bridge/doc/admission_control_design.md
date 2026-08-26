@@ -103,6 +103,26 @@ static cap:
 
 ## Interactions
 
+- **The message-level reservation shares its budget with the overhead
+  tier, and is held for the length of the fragment loop** (#52). A
+  message reserves its whole byte count before its first fragment goes
+  out and releases fragment by fragment, so under kernel back-pressure
+  (up to ~200 ms per fragment of `sendto` polling) the reservation is
+  held for that whole time. `reserved_bytes_in_flight_` is a level, not a
+  windowed rate — it has no time dimension. A concurrent BridgeInfo send
+  sees those reserved bytes in `can_send` and can be refused; a long
+  enough blackout sets `feedback_stale`, which is congestion, which costs
+  a decrease.
+
+  This is bounded, not a deadlock: the reservation is released on every
+  exit path, and a window in which everything was dropped reads
+  `sent_bps == 0`, which cannot be congested. But that escape is a
+  consequence of the idle-link rule rather than a designed one, and
+  nothing bounds the hold time except the send-poll budget. If overhead
+  starvation is ever observed in the field, the fix is a separate
+  reservation ledger for the overhead tier — not a longer refractory
+  period, which would only delay the reaction to it.
+
 - **Resend budget (#44) bases on measured goodput** (changed by #52): the
   budget is `resend_budget_fraction × goodput`. It used to be a fraction
   of the effective cap, which inherited every scaling error in that cap —
