@@ -842,3 +842,118 @@ here.
       behaviour explicitly.
 - [ ] Amend the plan inline per plan-task's "During implementation" rules;
       this entry stays as the historical record.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-08-25 22:49 -04:00
+**By**: Claude Code Agent (Claude Sonnet)
+
+**REVISION** in response to the `## Plan Review` entry above
+(verdict: changes-requested, empirical model-based review).
+
+**Plan**: `.agent/work-plans/issue-52/plan.md` at `99787b0`
+**Branch**: feature/issue-52 at `99787b0`
+**Phases**: single
+
+### How each review finding was addressed
+
+1. **[HIGH] Drop the A2 goodput clamp (F1).** Done. A2 now drops the
+   `(1 - headroom) x goodput` clamp entirely; the decrease branch is
+   purely multiplicative from `effective_rate_limit_`
+   (`max(floor, effective_rate_limit_ * kAdmissionDecreaseFactor)`),
+   matching RCA option C's first half. Carried forward the reviewer's
+   table into the plan verbatim as the justification. Flagged the
+   consequence the reviewer didn't ask me to resolve but that follows
+   directly: `link_headroom_fraction_` loses its only call site, and
+   the plan now requires implementation to either give it a new basis
+   or confirm (via the bench re-run) it's redundant and flag it for
+   removal — not leave it silently inert while still documented.
+
+2. **[HIGH] Two-sided convergence counter-test (F2).** Done. Added a new
+   `SustainedRealLossMustConverge` test requirement to
+   `test_admission_field_replay.cpp` (Approach A3 / Tests (A)) — a
+   sustained (not transient) capacity drop that the cap must converge
+   toward within a bounded time. Made explicit that this is the test
+   that fails EWMA alpha=0.2 and bounds how large A1's refractory
+   backoff cap is allowed to grow.
+
+3. **[MED] Evaluate the purely-local detector (F7).** Done. Added an
+   explicit "Evaluate-and-reject" subsection under A3 describing the
+   RCA's own local resend-ratio computation
+   (`sent_packet_statistics_`-only, no wire change), its real
+   weaknesses (RTT lag, confounds with resend amplification, blind
+   when the return path is dead), and states plainly the operator's
+   2026-08-25 decision not to widen scope to adopt it this cycle —
+   recommend a follow-up issue evaluating it against A3's fix, using
+   post-deployment field data. Also fixed the option-B deferral's
+   stated reason while in this section (F7's secondary point): the
+   real constraint is the wire-schema gap, not that the committed
+   tests' signature is "fixed."
+
+4. **[MED] Fix the C "two call sites" error (F5) + per-exit spec (F6).**
+   Done. C step 2 now states the batch overload has exactly one
+   production caller (`udp_bridge.cpp:2140`), used for both regular and
+   `is_overhead` traffic, and flags that the aggregate reservation
+   therefore also changes admission for BridgeInfo/resend
+   requests/topic lists — added as an explicit test-covered decision
+   (Tests (C)), not an assumption. Added a per-exit-path reservation
+   release spec (success / `ECONNREFUSED` / `no_address` /
+   `ConnectionException`) with the `packet.packet.size() ==
+   p.packet_size` accounting invariant stated explicitly, plus a new
+   test bullet exercising all four paths.
+
+5. **[MED] Complete the doc sweep (F4).** Done. Added
+   `udp_bridge/README.md:211-212` (prose parameter reference) and
+   `udp_bridge/CMakeLists.txt` (test registration, pattern at line 154)
+   to both the Doc/config sweep prose and the Files to Change table;
+   corrected `.agents/README.md`'s path to the repo root (it is not
+   under `udp_bridge/`); corrected the `example_params.yaml` typed-literal
+   precedent line number (109, not 61).
+
+6. **[MED] Issue #52's acceptance criteria + bench suite (F3).** Done.
+   Added a new `### Verification` subsection in Approach naming both of
+   issue #52's own acceptance criteria (resend-amplification invariant
+   with no `F_resend_multiplier` loosening; the co-tenant invariant,
+   already committed and non-xfail), the exact bench-suite invocation,
+   a required before/after table, and the refractory-vs-10s-phase-hold
+   tension the reviewer flagged — with an explicit instruction to
+   resolve it by running the bench harness, not by inspection.
+
+7. **Refractory constants framing (F8, "suggestion" but included).**
+   Done. A3's "time constant closer to sent_bps's own smoothing" framing
+   is replaced: `sent_bps` is a variable-span 1-10s box filter, so no
+   EWMA alpha "matches" it — that indefiniteness is named as part of why
+   F2's tuning loop was unbounded. The adopted fix instead compares the
+   sender-side rate over the *same* 5s window
+   `Connection::data_receive_rate` already uses
+   (`PacketSendStatistics::bytes_in_window`), i.e. compares like
+   windows rather than introducing a third, unmatched filter.
+
+### Also addressed (reviewer "suggestion" findings, folded in for
+completeness rather than left implicit)
+
+- **F9** (A1 clean-sample ambiguity during refractory): resolved
+  explicitly — the freeze is unconditional on sample type (congested or
+  clean), stated inline in A1 with the rationale that this is the
+  reading the F1 table's PASS results were validated against.
+- **F10** (configure-time-only knob vs. #76): added an explicit
+  relationship note in A1 — consistent with existing convention, not a
+  blocker, but named so it isn't rediscovered as a surprise once #76
+  lands.
+
+### Open questions
+- [ ] Exact refractory base/growth/cap — now gated on the two-sided
+      oracle (F2's counter-test) and the bench harness's 10 s phase
+      holds, not the two field-replay tests alone.
+- [ ] `link_headroom_fraction`'s new basis vs. confirmed redundancy —
+      must be resolved against the bench-run cotenant invariant before
+      the PR is done, not before plan approval.
+- [ ] `is_overhead` traffic's aggregate-reservation treatment in C —
+      resolve with test coverage during implementation.
+- [ ] Where to add C's concurrency/TOCTOU test (new file vs. extend
+      `test_connection_rate_limit.cpp`) — no strong preference.
+- [ ] Fixed vs. per-connection-configurable refractory growth/cap —
+      confirm once tuned values are known.
+- [ ] Follow-up issue timing for RCA option B + the evaluated-and-rejected
+      local resend-ratio detector — recommend after this PR lands.
+- [ ] #71 / #45 revisit timing — after A lands.
