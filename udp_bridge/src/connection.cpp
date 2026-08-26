@@ -306,12 +306,20 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // freezing the controller until the clock catches up.
   //
   // "Is a decrease outstanding" is its own boolean and NOT
-  // `last_admission_decrease_time_ > 0.0`. Under `use_sim_time` before
-  // the first `/clock`, or a bag replayed from t=0, a real recorded
-  // decrease has timestamp 0.0 — which the old sentinel read as "no
-  // decrease outstanding", leaving the gate silently inert and halving
-  // the cap on every sample. That is precisely the cascade this branch
-  // exists to stop (#52, review round 1).
+  // `last_admission_decrease_time_ > 0.0`. 0.0 is a legal clock reading,
+  // and a decrease recorded there read as "no decrease outstanding",
+  // leaving the gate silently inert and halving the cap on every sample
+  // — precisely the cascade this branch exists to stop (#52, review
+  // round 1).
+  //
+  // Reaching it takes more than a clock that merely READS zero: a
+  // congested sample needs send history, and `Statistics::add`
+  // (statistics.h) drops records stamped exactly 0, so `use_sim_time`
+  // before the first `/clock` has nothing to be congested about. What
+  // reaches it is a BACKWARDS clock step — a looping bag replay, a sim
+  // reset — where history recorded before the step is still in the
+  // deque. `AdmissionControl.RefractoryGateHoldsAtClockZero` drives that
+  // path and was verified to fail against the sentinel form.
   if(admission_decrease_outstanding_)
   {
     const double elapsed = now.seconds() - last_admission_decrease_time_;
