@@ -48,8 +48,11 @@ static cap:
   comparing two differently-shaped filters is not a delivery
   measurement. See "The 2026-08-25 collapse" below.
 - **Decrease**: when reported delivery < (1 − `kAdmissionLossThreshold`,
-  i.e. 90%) of sent, or when this connection's own feedback is stale
-  (nothing received for `kAckStarvationThreshold`), the effective cap
+  i.e. 90%) of sent, when this connection's own feedback is stale
+  (nothing received for `kAckStarvationThreshold`), or when the report is
+  **unusable** — a non-finite received or duplicate rate, a negative one
+  (#53), or a duplicate rate exceeding the received rate — the effective
+  cap
   takes one `kAdmissionDecreaseFactor` (0.5) multiplicative step from
   **its own current value**, floored at
   `admission_floor_bytes_per_second` (default 8192) — the floor keeps
@@ -68,8 +71,22 @@ static cap:
   either**. The window grows by `kAdmissionRefractoryGrowthFactor` (2×)
   on each successive decrease within an *unresolved* episode, capped at
   `kAdmissionRefractoryMaximumMultiple` (2×) the configured base, and
-  resets to the base on the first clean sample — which is what "the
-  episode resolved" means.
+  resets to the base on the first clean sample the controller was free to
+  act on — which is what "the episode resolved" means. A clean sample
+  arriving *inside* an open window does not resolve the episode: the gate
+  returns before the clean branch, so the sample is not evidence either
+  way. It describes traffic sent at the old cap.
+
+  The configured base is clamped to
+  `kMaximumAdmissionRefractoryPeriodSeconds` (60 s) as well as to 0
+  below, so no configuration — `+Inf` included — can freeze the
+  controller permanently.
+
+  "A decrease is outstanding" is carried by its own boolean, not by a
+  non-zero last-decrease timestamp: 0.0 is a legal clock reading (a
+  looping bag replay or a sim reset produces one), and reading it as
+  "no decrease" leaves the gate inert exactly where the cascade would
+  restart.
 - **Increase**: on clean feedback, recover by
   `kAdmissionAdditiveStepFraction` (0.1) of the **current effective cap**,
   with an absolute minimum of

@@ -91,7 +91,12 @@ public:
   /// period grown by kAdmissionRefractoryGrowthFactor for each
   /// successive decrease within an unresolved congestion episode, capped
   /// at base x kAdmissionRefractoryMaximumMultiple, and reset to the base
-  /// by the first clean sample. Exposed for tests and diagnostics.
+  /// by the first clean sample the controller was free to act on.
+  ///
+  /// Exposed for TESTS. It has no diagnostic consumer yet: nothing
+  /// publishes it, so a frozen controller and a healthy flat cap look
+  /// identical in RemoteConnection.msg. Surfacing the in-force window is
+  /// a candidate for #76, which is already reasoning about the schema.
   double currentAdmissionRefractoryWindowSeconds() const;
 
   /// Most recent goodput estimate for this connection, bytes/second:

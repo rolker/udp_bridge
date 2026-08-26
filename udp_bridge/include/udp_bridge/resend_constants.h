@@ -210,8 +210,19 @@ inline constexpr double kDefaultAdmissionRefractoryPeriodSeconds = 5.0;
 inline constexpr double kMaximumAdmissionRefractoryPeriodSeconds = 60.0;
 
 // Growth factor applied to the refractory window on each successive
-// decrease within an UNRESOLVED congestion episode (no clean sample
-// seen since the last decrease). Mirrors the exponential backoff the
+// decrease within an UNRESOLVED congestion episode.
+//
+// "Unresolved" means no clean sample has been ACTED ON since the last
+// decrease. A clean sample arriving while the window is still open does
+// NOT resolve the episode: the gate returns before the clean branch, so
+// the flag stays set and the next decrease still grows the window. That
+// is deliberate and follows from the same argument as the freeze itself
+// — a sample taken inside the window describes traffic sent at the OLD
+// cap, so it is no more trustworthy as evidence the episode ended than
+// it would be as grounds for recovering. Only a clean sample the
+// controller was free to act on clears it.
+//
+// Mirrors the exponential backoff the
 // resend re-request path already uses (kResendBackoffBase /
 // kResendBackoffCap) rather than inventing a second idiom. The recorded
 // onset stays "congested" on the raw ratio for its full ~14 s — the
