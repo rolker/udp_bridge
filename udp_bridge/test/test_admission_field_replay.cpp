@@ -160,25 +160,20 @@ protected:
     return conn;
   }
 
-  // Establish a sent rate of approximately bytes_per_second at time t.
-  // The statistics window is 1 s, so packet count is the rate in kB.
-  void send_at_rate(udp_bridge::Connection& conn, rclcpp::Time t, float bytes_per_second)
-  {
-    const int packets = std::max(0, static_cast<int>(bytes_per_second) / kPacketSize);
-    std::vector<uint8_t> data(kPacketSize, 0xCD);
-    for(int i = 0; i < packets; ++i)
-      conn.send(data, send_sock_.get(), udp_bridge::PacketSendCategory::message, t);
-  }
-
   // Offer `bytes_per_second` spread evenly across the interval ENDING at
   // t, rather than as one instantaneous burst.
   //
-  // send_at_rate above stamps a whole second's worth of bytes at a single
-  // instant, which is adequate for the two replays above — they feed the
-  // detector recorded or analytically-derived rates and only need SOME
-  // send history to exist. It is not adequate here: this test asserts
-  // where the controller CONVERGES, so the rate the detector measures has
-  // to be the rate the test believes it is offering. Bunched at one
+  // (A `send_at_rate` helper that stamped a whole second's worth of bytes
+  // at a single instant lived here until #52 review round 3, when its
+  // last caller moved to this one and it was removed rather than left as
+  // dead code. Its bias is described below because it is what this
+  // helper exists to avoid.)
+  //
+  // Bunching a second of traffic at one instant is adequate when a test
+  // only needs SOME send history to exist. It is not adequate when a
+  // test asserts where the controller CONVERGES, because the rate the
+  // detector measures has to be the rate the test believes it is
+  // offering. Bunched at one
   // timestamp, a 1.975 s cadence carrying 1 s of bytes reads ~25% low
   // over the 5 s measurement window, which would move the convergence
   // band for reasons that have nothing to do with the control law.
@@ -278,8 +273,8 @@ TEST_F(AdmissionFieldReplay, HandoverBlipMustNotCostTwoMinutesOfVideo)
     const float cap = static_cast<float>(conn->effectiveRateLimit());
     const float admitted = std::min(kOfferedBps, cap);
     // Spread over the feedback interval, not bunched at one instant.
-    // send_at_rate stamps a whole second of bytes at a single timestamp,
-    // which reads ~24% LOW over the detector's 5 s window — and here the
+    // A whole second of bytes stamped at a single timestamp reads ~24%
+    // LOW over the detector's 5 s window — and here the
     // bias runs toward FEWER decreases, weakening EXPECT_LE(decreases, 1)
     // below, which is the assertion that actually pins the gate (#52,
     // review round 2). Same correction FieldOnsetMustNotCascadeToFloor

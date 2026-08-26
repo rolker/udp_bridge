@@ -148,8 +148,12 @@ public:
   /// we sent. Use this, not get(), for anything that is compared against
   /// a figure measured by the other end.
   ///
-  /// The window is `(time - window_seconds, time]` — bounded at BOTH
-  /// ends. Samples stamped AFTER `time` are excluded, so a backwards
+  /// The window is `[time - window_seconds, time]` — bounded at BOTH
+  /// ends, and CLOSED at both: `entry.timestamp < window_start` keeps
+  /// the equal case, and `WindowMatchedSendRateSurvivesABurst` depends
+  /// on that (its 90 kB is stamped at exactly `t1 - 5`). Documented as
+  /// half-open until round 3 of #52, where the doc and the test
+  /// disagreed about which end was open. Samples stamped AFTER `time` are excluded, so a backwards
   /// clock step (looping bag replay, sim reset) reports no send history
   /// rather than the deque's whole 10 s divided by the 1 s dt floor
   /// (#52, review round 2).

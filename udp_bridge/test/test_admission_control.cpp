@@ -403,8 +403,18 @@ TEST_F(AdmissionControl, FloorNeverExceedsConfiguredLimit)
   conn->setRateLimit(small_limit);
   send_traffic(*conn, t0, 80);
   conn->update_last_receive_time(t0.seconds(), 100, false);
+  // Spaced past the refractory window, like every other multi-decision
+  // test here (#52, review round 3). Ten samples at ONE timestamp
+  // produce exactly one decision under the gate, so the loop this
+  // replaces was decorative and its "repeatedly" framing was false.
+  auto t = t0;
   for(int i = 0; i < 10; ++i)
-    conn->updateAdmissionControl(0.0f, 0.0f, t0);
+  {
+    conn->update_last_receive_time(t.seconds(), 100, false);
+    send_traffic(*conn, t, 80);
+    conn->updateAdmissionControl(0.0f, 0.0f, t);
+    t = past_refractory(t);
+  }
 
   EXPECT_EQ(conn->effectiveRateLimit(), small_limit)
     << "A floor above the connection's own limit must yield the limit — "
@@ -1142,6 +1152,27 @@ TEST_F(AdmissionControl, SendPathRecoversAfterABackwardsClockStep)
     << "The connection admitted nothing after a backwards clock step. "
        "This is the operator-visible failure: the link reports healthy "
        "and carries no data (#52).";
+}
+
+// A rate limit at the top of the uint32_t range must not read back as
+// ZERO (#52, review round 3). setRateLimit is reached from a peer's
+// CONNECT (`return_maximum_bytes_per_second`) and from add_remote, so
+// the magnitude is not entirely under this node's control; a float
+// cannot represent UINT32_MAX and rounds it UP to 4294967296.0f, and
+// converting that back to uint32_t is undefined — on x86-64 it yields 0
+// and the connection admits nothing. Corruption / version-skew
+// robustness on a transport that is trusted by design (#43, #53), not a
+// security claim.
+TEST_F(AdmissionControl, ExtremeRateLimitDoesNotReadBackAsZero)
+{
+  auto conn = make_connection();
+  conn->setRateLimit(std::numeric_limits<uint32_t>::max());
+  EXPECT_GT(conn->effectiveRateLimit(), 0u)
+    << "A cap at the top of the uint32_t range read back as 0, which "
+       "makes the connection admit nothing — the metered cap must never "
+       "be MORE restrictive than a smaller configured one.";
+  EXPECT_GT(conn->effectiveRateLimit(), kRateLimit)
+    << "and it must still be the large cap it was set to.";
 }
 
 TEST_F(AdmissionControl, RefractoryPeriodSetterContract)

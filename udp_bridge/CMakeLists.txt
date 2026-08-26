@@ -163,7 +163,11 @@ if(BUILD_TESTING)
   # admission granularity restored by the batch overload's aggregate
   # check-AND-reserve: whole-message drop, exactly-once accounting,
   # is_overhead parity, real-threads joint over-admission, and
-  # reservation release on every exit path a fragment can take.
+  # reservation release on the exit paths a fragment can be DRIVEN
+  # through here. ECONNREFUSED is not among them — the test file records
+  # that it is unreachable on an unconnected UDP socket and is covered by
+  # inference from the shared release helper, not by execution (#52,
+  # review round 3: this line used to claim every exit path).
   add_udp_bridge_gtest(test_message_atomicity test/test_message_atomicity.cpp)
   # test_publish_queue (issue #10) exercises the bounded publish-worker
   # queue in isolation via an injected sink — no UDPBridge / node needed.

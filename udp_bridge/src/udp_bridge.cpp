@@ -92,8 +92,31 @@ namespace
 // admission off for the life of the node, silently.
 //
 // Throttled rather than one-shot: a flapping CONNECT re-adopts on every
-// reconnect, and one line per flap is noise, but a WARN that fires only
-// once would hide a SECOND connection entering the same state.
+// reconnect, and one line per flap is noise.
+//
+// KNOWN LIMIT of the throttle (#52, review round 3).
+// RCLCPP_WARN_STREAM_THROTTLE keeps its suppression state per CALL SITE,
+// not per connection, so a second connection entering the inert state
+// within 60 s of the first IS suppressed — and because this is
+// event-driven (a CONNECT decode, an add_remote call) rather than
+// periodic, the suppressed line is never re-emitted. An earlier version
+// of this comment claimed the throttle was chosen so that would not
+// happen; it does not achieve that. Per-connection state would fix it
+// and is not worth a map keyed by remote+connection here: the
+// configure-time WARN covers the configured case unthrottled, and the
+// inert state is now also visible on the per-connection diagnostic
+// (`admission_floor_bytes_per_sec` against
+// `effective_rate_limit_bytes_per_sec`), which is per connection by
+// construction.
+//
+// LOCKING: this is the first caller to take a Connection mutex while a
+// UDPBridge mutex is held (remote_nodes_mutex_ / pending_connections_
+// _mutex_ at the call sites; it takes Connection::config_mutex_ twice).
+// That is safe — Connection never reaches back up to UDPBridge, so no
+// cycle exists — but connection.h and updateAdmissionControl's locking
+// preamble both record that Connection's own mutexes are never nested,
+// and this nests a Connection mutex under a foreign one. Stated so the
+// invariant stays auditable (#52, review round 3).
 void warnIfAdmissionInert(const rclcpp::Logger& logger, rclcpp::Clock& clock,
                           const std::string& remote_name,
                           const std::string& connection_id,
@@ -721,6 +744,24 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       std::string admission_refractory_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_refractory_period_seconds";
       declareDoubleIfMissing(admission_refractory_param, static_cast<double>(kDefaultAdmissionRefractoryPeriodSeconds));
       double admission_refractory = getDoubleParameter(admission_refractory_param);
+      // 0 DISABLES the refractory gate, restoring exactly the behaviour
+      // that produced the 2026-08-25 collapse — one marginal delivery
+      // sample became seven halvings in 12 s, 35 times in 9.5 hours. It
+      // is supported deliberately (an operator may need to reproduce
+      // that), but it is a capability-limiting configuration in the same
+      // class as an inert admission floor and a retired parameter, both
+      // of which WARN. Accepting it silently is the "set it, nothing
+      // says anything" shape this branch exists to remove (#52, review
+      // round 3).
+      if(admission_refractory == 0.0)
+        RCLCPP_WARN_STREAM(get_logger(),
+          "Connection '" << remote_name << "/" << connection_name
+          << "': admission_refractory_period_seconds is 0, which DISABLES "
+          "the refractory gate. Every congestion sample is then acted on "
+          "individually — the pre-#52 behaviour that turned one marginal "
+          "delivery sample into seven cap halvings in 12 s on 2026-08-25. "
+          "Set it only to reproduce that; the default is "
+          << kDefaultAdmissionRefractoryPeriodSeconds << " s.");
 
       remote_info.connections.push_back(connection);
       remote_node->update(remote_info);

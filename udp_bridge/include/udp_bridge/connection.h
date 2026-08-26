@@ -85,14 +85,23 @@ public:
 
   /// The refractory window currently in force, in seconds — the base
   /// period grown by kAdmissionRefractoryGrowthFactor for each
-  /// successive decrease within an unresolved congestion episode, capped
-  /// at base x kAdmissionRefractoryMaximumMultiple, and reset to the base
-  /// by the first clean sample the controller was free to act on.
+  /// successive decrease within an unresolved congestion episode, and
+  /// reset to the base by the first clean sample the controller was free
+  /// to act on.
   ///
-  /// Exposed for TESTS. It has no diagnostic consumer yet: nothing
-  /// publishes it, so a frozen controller and a healthy flat cap look
-  /// identical in RemoteConnection.msg. Surfacing the in-force window is
-  /// a candidate for #75, which is already reasoning about the schema.
+  /// The grown value is bounded by BOTH `base x
+  /// kAdmissionRefractoryMaximumMultiple` and
+  /// kMaximumAdmissionRefractoryPeriodSeconds (60 s). The second bound
+  /// is the one that matters at a max-configured base, where the
+  /// multiple alone would allow a 120 s freeze — longer than the ceiling
+  /// the base clamp enforces (#52, review round 2).
+  ///
+  /// Published as `admission_refractory_window_s` on the per-connection
+  /// diagnostic (#52, review round 3), so a frozen controller and a
+  /// healthy flat cap no longer look identical to an operator. It is
+  /// still absent from RemoteConnection.msg, where a field costs a
+  /// type-hash break and a coordinated redeploy — that remains a
+  /// candidate for #75.
   double currentAdmissionRefractoryWindowSeconds() const;
 
   /// Most recent goodput estimate for this connection, bytes/second:
@@ -351,10 +360,20 @@ private:
   ///
   /// This is a separate flag rather than `last_admission_decrease_time_
   /// > 0.0` on purpose (#52, review round 1): 0.0 is a legal clock
-  /// value. Under `use_sim_time` before the first `/clock`, or a bag
-  /// replayed from t=0, the sentinel form read a real decrease as "no
-  /// decrease outstanding" and left the gate inert for exactly the
-  /// samples that matter. Guarded by config_mutex_.
+  /// value, and the sentinel form read a decrease recorded there as "no
+  /// decrease outstanding", leaving the gate inert for exactly the
+  /// samples that matter.
+  ///
+  /// Reaching a congested sample AT 0.0 takes more than a clock that
+  /// reads zero — it needs send history inside the window ending at
+  /// 0.0, and `Statistics::add` drops records stamped exactly 0. The
+  /// reachable route is history stamped BEFORE the origin (a clock
+  /// whose zero is not its start: a sim reset, an offset replay), which
+  /// is what `RefractoryGateHoldsAtClockZero` constructs. The loose
+  /// form of this statement — "under `use_sim_time` before the first
+  /// `/clock`, or a bag replayed from t=0" — is what round 2 rejected
+  /// in the sibling comment in connection.cpp; it is corrected here in
+  /// round 3. Guarded by config_mutex_.
   bool admission_decrease_outstanding_ = false;
 
   /// Time (seconds, from the clock updateAdmissionControl is called

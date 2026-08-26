@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -15,6 +16,33 @@ namespace udp_bridge
 {
 
 using namespace udp_bridge_interfaces::msg;
+
+namespace
+{
+
+/// Release `bytes` from a reservation counter, CLAMPED at zero.
+///
+/// `reserved_bytes_in_flight_` is unsigned, and an over-release wraps it
+/// to a near-4 GB value. can_send adds it to the window sum, so the
+/// connection then refuses everything, permanently, with no way back
+/// short of a node restart — the same operator-visible failure as a
+/// wedged clock window: "the link stopped" on a link that is fine.
+///
+/// Every release in this file is argued to be exact (each fragment
+/// releases precisely what it was handed; the batch guard releases only
+/// what was never handed out). The clamp is not a substitute for that
+/// argument — it is what keeps a mistake in it from being unrecoverable.
+/// Round 2 clamped `BatchReservationGuard::unreserved`, which is the
+/// counter whose wrap is HARMLESS; this clamps the one whose wrap wedges
+/// the connection (#52, review round 3).
+///
+/// The caller must hold `sent_packet_statistics_mutex_`.
+void releaseReservedBytes(uint32_t& reservation, uint32_t bytes)
+{
+  reservation -= std::min(reservation, bytes);
+}
+
+}  // namespace
 
 Connection::Connection(std::string id, std::string const &host, uint16_t port, std::string return_host, uint16_t return_port):
   id_(truncate_connection_id(id)), host_(host), port_(port), return_host_(return_host), return_port_(return_port)
@@ -176,7 +204,26 @@ float Connection::goodputBytesPerSecond() const
 uint32_t Connection::effectiveRateLimit() const
 {
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
-  return static_cast<uint32_t>(effective_rate_limit_);
+  // Clamped before the cast (#52, review round 3). `effective_rate_limit_`
+  // is a float seeded from setRateLimit, which is reached from a peer's
+  // CONNECT (`return_maximum_bytes_per_second`) and from add_remote — so
+  // its magnitude is not entirely under this node's control. A value near
+  // UINT32_MAX rounds UP to 4294967296.0f in float, and converting that
+  // to uint32_t is undefined: on x86-64 it yields 0, and the connection
+  // then admits NOTHING. That is the same operator-visible failure as a
+  // wedged clock window, reached from a corrupt or version-skewed peer
+  // report rather than from a clock step. This is corruption /
+  // version-skew robustness, not a security claim — the transport is
+  // trusted by design (#43, #53).
+  // 4294967040 = 0xFFFFFF00, the largest float below 2^32 (a float has
+  // 24 bits of mantissa, so UINT32_MAX itself is not representable and
+  // rounds up past the range).
+  constexpr float kLargestFloatBelow2Pow32 = 4294967040.0f;
+  const float clamped =
+    std::isfinite(effective_rate_limit_)
+      ? std::clamp(effective_rate_limit_, 0.0f, kLargestFloatBelow2Pow32)
+      : 0.0f;
+  return static_cast<uint32_t>(clamped);
 }
 
 void Connection::updateAdmissionControl(float remote_received_bps,
@@ -326,13 +373,18 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // round 1).
   //
   // Reaching it takes more than a clock that merely READS zero: a
-  // congested sample needs send history, and `Statistics::add`
-  // (statistics.h) drops records stamped exactly 0, so `use_sim_time`
-  // before the first `/clock` has nothing to be congested about. What
-  // reaches it is a BACKWARDS clock step — a looping bag replay, a sim
-  // reset — where history recorded before the step is still in the
-  // deque. `AdmissionControl.RefractoryGateHoldsAtClockZero` drives that
-  // path and was verified to fail against the sentinel form.
+  // congested sample needs send history inside the window ending at
+  // 0.0, and `Statistics::add` (statistics.h) drops records stamped
+  // exactly 0 — so `use_sim_time` before the first `/clock` has nothing
+  // to be congested about. What reaches it is history stamped BEFORE
+  // the origin: a clock whose zero is not its start, which is what a
+  // reset or an offset replay produces. (A backwards clock step no
+  // longer leaves pre-step history usable — since round 3 the
+  // statistics windows are bounded at both ends and `Statistics::add`
+  // evicts records stamped past the window — so the pre-origin
+  // timestamps are the reachable route, not the only conceivable one.)
+  // `AdmissionControl.RefractoryGateHoldsAtClockZero` drives that path
+  // and was verified to fail against the sentinel form.
   if(admission_decrease_outstanding_)
   {
     const double elapsed = now.seconds() - last_admission_decrease_time_;
@@ -705,7 +757,7 @@ SendResult Connection::send(const std::vector<WrappedPacket>& packets, int socke
       if(unreserved > 0)
       {
         std::lock_guard<std::mutex> lock(mutex);
-        reservation -= unreserved;
+        releaseReservedBytes(reservation, unreserved);
       }
     }
   };
@@ -781,7 +833,8 @@ PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int sock
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
     if(bytes_pre_reserved)
-      reserved_bytes_in_flight_ -= static_cast<uint32_t>(data.size());
+      releaseReservedBytes(reserved_bytes_in_flight_,
+                           static_cast<uint32_t>(data.size()));
     return ret;
   }
 
@@ -837,7 +890,7 @@ PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int sock
       if(armed)
       {
         std::lock_guard<std::mutex> lock(mutex);
-        reservation -= bytes;
+        releaseReservedBytes(reservation, bytes);
       }
     }
   };
@@ -869,7 +922,8 @@ PacketSizeData Connection::sendPacket(const std::vector<uint8_t> &data, int sock
   {
     std::lock_guard<std::mutex> lock(sent_packet_statistics_mutex_);
     sent_packet_statistics_.add(ret);
-    reserved_bytes_in_flight_ -= data.size();
+    releaseReservedBytes(reserved_bytes_in_flight_,
+                         static_cast<uint32_t>(data.size()));
     reservation_guard.armed = false;
   };
 
