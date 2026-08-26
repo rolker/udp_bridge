@@ -678,17 +678,23 @@ def _transient_latency_ceiling_s(link_bps: float | None) -> float:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        'rolker/udp_bridge#52 first pass fixed the dominant cause but left a '
-        'residual. Rescaling the AIMD step/floor and the resend budget off '
-        'measured goodput cut resend traffic 24-29x -- lossy 13.94 -> 0.59 '
-        'kB/s, critical 26.36 -> 0.90 kB/s -- and the worst phase now passes '
-        'with margin (critical resend/msg 3.108 -> 0.144 against a 0.200 '
-        'ceiling). Two low-loss phases remain just over: fringe 0.018 vs '
-        '0.010, lossy 0.077 vs 0.060. Duplicates are ~34% of the remaining '
-        'resend traffic at lossy, which points at spurious re-requests '
+        'rolker/udp_bridge#52 fixed the dominant cause but left a residual. '
+        'Rescaling the AIMD step/floor and the resend budget off measured '
+        'goodput cut resend traffic 24-29x (lossy 13.94 -> 0.59 kB/s, '
+        'critical 26.36 -> 0.90 kB/s). WHICH phase is over the ceiling is '
+        'not stable across runs: three runs of one build (2026-08-26, #52 '
+        'review round 1) gave lossy 0.013 / 0.018 / 0.070 against a 0.060 '
+        'ceiling and critical 0.284 / 0.474 / 0.112 against 0.200 -- a 4-5x '
+        'run-to-run spread on this metric, far wider than any single pair of '
+        'runs suggests. Read single-run values from this invariant as '
+        'indicative only; anything quoted to three decimals from one run is '
+        'over-precise. What IS stable is that at least one phase violates '
+        'every run, so the marker holds. Duplicates were ~34% of the '
+        'remaining resend traffic at lossy, pointing at spurious re-requests '
         '(debounce/reorder interaction) rather than the cap-scaling defect '
         '#52 documents. strict=True so this turns into a failure the moment '
-        'the residual is closed -- do NOT loosen F_resend_multiplier.'
+        'the residual is closed -- do NOT loosen F_resend_multiplier, and do '
+        'not conclude anything from fewer than three runs (#54).'
     ),
 )
 def test_invariant_resend_amplification(artifacts):

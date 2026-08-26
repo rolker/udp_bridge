@@ -799,6 +799,40 @@ Constants table addition:
 |---|---|---|
 | `kMaximumAdmissionRefractoryPeriodSeconds` | 60.0 s | above: the controller could not answer a link change inside any operator-observable timescale — BridgeInfo arrives ~2 s, `SustainedRealLossMustConverge` bounds convergence at 40 s, and a 30 s base was measured (review round 1) to converge only at 92.8 s. It is a ceiling on garbage, not a recommendation |
 
+### The `lossy` resend/msg movement — n=3 (2026-08-26)
+
+The Implementation entry reported `lossy` resend/msg moving 0.077 ->
+0.141 and offered harness variance as a possible explanation. Review
+round 1 rejected that: the variance it had seen demonstrated was ~7%
+(co-tenant delivery 0.904 vs 0.840), an order of magnitude below an 83%
+move, and holding the cap higher on a lossy link is a plausible
+mechanism.
+
+Three full `range_degradation` runs of one build settle it — and the
+answer is neither. The ~7% figure was measured on a *different* metric.
+On the resend/msg ratio itself:
+
+| phase | run 1 | run 2 | run 3 | ceiling | spread |
+|---|---|---|---|---|---|
+| `fringe` | 0.0053 | 0.0061 | 0.0092 | 0.010 | 1.7x |
+| `lossy` | 0.0131 | 0.0184 | 0.0705 | 0.060 | 5.4x |
+| `critical` | 0.2838 | 0.4735 | 0.1115 | 0.200 | 4.2x |
+
+The 0.077 -> 0.141 move is well inside a 5.4x run-to-run spread, so it
+cannot be attributed to a mechanism — and by the same token nothing here
+rules a mechanism out. The load-bearing conclusion is about the
+measurement, not the control law: **single-run values from this invariant
+do not support the three-decimal precision they were quoted at**, in
+either the Implementation entry or the `xfail` reason string. Both now
+say so.
+
+What *is* stable across all three runs is that at least one phase
+violates its ceiling, so the strict `xfail` held every time — no XPASS
+risk was observed, and `F_resend_multiplier` was not touched. Which phase
+violates is not stable: `critical` was over in two runs of three, though
+the single run recorded in the Implementation entry had it passing with
+margin.
+
 ### Not done / follow-ups
 
 - Whether `link_headroom_fraction` gets a new basis or is removed
@@ -808,7 +842,9 @@ Constants table addition:
   wire fields and a coordinated redeploy) and the evaluated-but-rejected
   purely-local resend-ratio detector: one follow-up issue, to be filed
   after this lands so it can cite what A3 left unresolved.
-- The `lossy` resend/msg movement above, under #54.
+- The `lossy` resend/msg movement above: **settled by measurement**, see
+  "The `lossy` resend/msg movement — n=3" below. What remains for #54 is
+  the residual itself, not the movement.
 - #71 and #45 revisit; a durable design record (project-repo ADR) for
   this control loop, now on its third root-cause pass.
 
