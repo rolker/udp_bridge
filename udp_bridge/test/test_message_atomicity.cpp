@@ -314,7 +314,15 @@ TEST_F(MessageAtomicity, ConcurrentMessagesAreAllOrNothing)
   // +1 because can_send's comparison is strict.
   const uint32_t rate_limit = message_size * kMessagesThatFit + 1;
 
+  // Below this many completed rounds the exposure is too small for the
+  // race to be caught reliably, so a green result would not mean the
+  // reservation ledger is intact — it would mean the test did not run.
+  // That is a REPORTED failure, naming the environment, rather than a
+  // silent skip.
+  constexpr int kMinimumCompletedRounds = 10;
+
   int total_successes = 0;
+  int skipped_rounds = 0;
   for(int round = 0; round < kRounds; ++round)
   {
     // Fixed timestamp per round so the per-second accounting window is
@@ -366,15 +374,23 @@ TEST_F(MessageAtomicity, ConcurrentMessagesAreAllOrNothing)
     // makes this test red for a reason its own message disclaims — and
     // worse, a throwing round used to fall through to the
     // `sent % message_size` assertion below, which would then
-    // misattribute the environment to the atomicity logic. Skip the
-    // round instead.
+    // misattribute the environment to the atomicity logic.
+    //
+    // `continue`, NOT GTEST_SKIP (#52, review round 3). GTEST_SKIP
+    // returns from the TEST FUNCTION, not from the round: one ENOBUFS in
+    // round 0 abandoned all 25 rounds AND the closing
+    // total_successes > 0 check, and the run reported green. This is the
+    // only test in the package that discriminates against a regression
+    // of the aggregate check-AND-reserve to a check-only pre-check, and
+    // the probability of that one throw rises exactly as the machine
+    // gets busier — i.e. as the race it exists to catch gets more
+    // catchable. A test that can quietly stop testing is worse than no
+    // test. Skipped rounds are counted and the shortfall is asserted
+    // after the loop.
     if(send_throws.load() != 0)
     {
-      GTEST_SKIP() << "Round " << round << ": " << send_throws.load()
-        << " concurrent send(s) threw (send-poll budget exhausted under "
-           "load). That is not the property under test, and a round where "
-           "sends threw did not exercise the contention this test exists "
-           "to measure.";
+      ++skipped_rounds;
+      continue;
     }
 
     const auto rates = conn->data_sent_rate(t, udp_bridge::PacketSendCategory::message);
@@ -399,6 +415,16 @@ TEST_F(MessageAtomicity, ConcurrentMessagesAreAllOrNothing)
     ASSERT_EQ(conn->reserved_bytes_in_flight_for_test(), 0u)
       << "Round " << round << ": a reservation outlived its senders.";
   }
+
+  const int completed_rounds = kRounds - skipped_rounds;
+  ASSERT_GE(completed_rounds, kMinimumCompletedRounds)
+    << "Only " << completed_rounds << " of " << kRounds << " rounds ran; "
+    << skipped_rounds << " were abandoned because a concurrent send threw "
+       "(send-poll budget exhausted on ENOBUFS against an undrained "
+       "loopback socket). That is an environmental condition, not a defect "
+       "in the reservation ledger — but with this little exposure the race "
+       "this test exists to catch would not be caught, so a pass would be "
+       "meaningless. Re-run on a less loaded machine (#52).";
 
   EXPECT_GT(total_successes, 0)
     << "Capacity must actually be used — an over-conservative reservation "
