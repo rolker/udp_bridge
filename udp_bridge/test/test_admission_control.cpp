@@ -965,13 +965,26 @@ TEST_F(AdmissionControl, RefractoryGateHoldsAtClockZero)
   // never applies, and every following congested sample halves again —
   // the pre-#52 cascade, silently reintroduced.
   //
-  // Reaching t=0 with a non-empty send history takes a BACKWARDS clock
-  // step (Statistics::add drops records timestamped exactly 0, so a
-  // freshly-started sim clock has no send history to be congested
-  // about). A looping bag replay and a sim reset both do exactly that:
-  // traffic recorded at t=2, then the clock restarts at 0.
+  // Reaching t=0 with a non-empty send history needs history stamped at
+  // or before 0, and Statistics::add drops records timestamped exactly
+  // 0 — so the traffic here is stamped BEFORE the origin.
+  //
+  // This test used to stamp the traffic at t=2 and then evaluate at t=0,
+  // relying on success_rate_in_window summing those now-future samples.
+  // That was a bug in the window, not a scenario: it is fixed (the
+  // window is bounded above as well as below, #52 round 2), and a
+  // backwards clock step now correctly reports NO send history until the
+  // window refills. Keeping the old setup would have left this test
+  // green for the wrong reason.
+  //
+  // What the test pins is unchanged and is the durable property: the
+  // gate must not encode "a decrease is outstanding" as
+  // `last_admission_decrease_time_ > 0.0`, because 0.0 is a clock
+  // reading. Constructing a decrease recorded at exactly 0.0 is what the
+  // pre-origin timestamps are for.
   auto conn = make_connection();
-  const rclcpp::Time before_reset(2, 0, RCL_ROS_TIME);
+  const rclcpp::Time before_reset(
+    -2 * static_cast<int64_t>(1000000000), RCL_ROS_TIME);
   send_traffic(*conn, before_reset, 80);
 
   const rclcpp::Time t0(0, 0, RCL_ROS_TIME);

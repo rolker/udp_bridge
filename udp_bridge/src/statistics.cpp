@@ -184,23 +184,52 @@ float PacketSendStatistics::success_rate_in_window(rclcpp::Time time, double win
   // skip-prefix scan would be incorrect. Bounded to ~10 s of records.
   const auto window_start = time - rclcpp::Duration::from_seconds(window_seconds);
   uint64_t total = 0;
+  bool have_earliest = false;
   rclcpp::Time earliest;
   for(const auto& entry : data_)
   {
-    if(entry.timestamp < window_start)
+    // Bounded at BOTH ends. Bounding only below let a backwards clock
+    // step — a looping bag replay, a sim reset — sum up to the deque's
+    // full 10 s of now-future-stamped successes and divide them by the
+    // 1 s dt floor, inflating the reported rate roughly tenfold and
+    // reading every following sample as congested on a link that never
+    // degraded (#52, review round 2). A sample stamped after `time` is
+    // not evidence about the window ending at `time`.
+    if(entry.timestamp < window_start || entry.timestamp > time)
       continue;
     if(entry.send_result != SendResult::success)
       continue;
     total += entry.size;
-    if(earliest.nanoseconds() == 0 || entry.timestamp < earliest)
+    // `have_earliest` rather than `earliest.nanoseconds() == 0`: a
+    // timestamp of 0 is a legal clock reading, not a sentinel. It is the
+    // same conflation the refractory gate had removed in round 1, and
+    // relying on Statistics::add dropping zero-stamped records would
+    // make this correct only by an incidental property of another class.
+    if(!have_earliest || entry.timestamp < earliest)
+    {
       earliest = entry.timestamp;
+      have_earliest = true;
+    }
   }
   if(total == 0)
     return 0.0f;
   // dt floor of 1 s mirrors data_receive_rate: a window holding only a
   // few hundred milliseconds of samples must not report a rate spike.
+  //
+  // The span is measured from the oldest SUCCESSFUL sample in the
+  // window, whereas data_receive_rate measures from the oldest sample of
+  // any kind. When successes cluster late in the window — the throttled
+  // regime, where early attempts fail and later ones land — this reports
+  // a shorter span and so a higher rate than the receive-side filter
+  // would for the same traffic, biasing the comparison toward reading
+  // congestion. Left as-is deliberately: the alternative (measuring from
+  // the oldest attempt, successful or not) makes the divisor depend on
+  // failures the remote never saw, and the residual skew is bounded by
+  // the window and is in the conservative direction — it can only make
+  // the controller back off sooner, never later. Documented rather than
+  // silently differing (#52, review round 2).
   double dt = 1.0;
-  if(earliest.nanoseconds() != 0)
+  if(have_earliest)
     dt = std::max(dt, (time - earliest).seconds());
   return static_cast<float>(static_cast<double>(total) / dt);
 }
