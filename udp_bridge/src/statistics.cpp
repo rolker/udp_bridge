@@ -44,7 +44,7 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
   };
 
   std::map<std::pair<std::string, std::string>, Totals> totals_by_connection;
-  
+
   for(auto data_point: data_)
     for(auto remote_send_result: data_point.send_results)
       for(auto connection_send_result: remote_send_result.second)
@@ -100,7 +100,7 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
     ret.push_back(ts);
 
   }
-  
+
   return ret;
 }
 

@@ -10,10 +10,10 @@
 namespace udp_bridge
 {
 
-enum struct SendResult 
+enum struct SendResult
 {
   success,
-  failed, 
+  failed,
   dropped, ///< dropped due to rate limit
 };
 
