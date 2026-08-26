@@ -957,3 +957,143 @@ completeness rather than left implicit)
 - [ ] Follow-up issue timing for RCA option B + the evaluated-and-rejected
       local resend-ratio detector — recommend after this PR lands.
 - [ ] #71 / #45 revisit timing — after A lands.
+## Implementation
+**Status**: complete
+**When**: 2026-08-25 23:25 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Plan**: `.agent/work-plans/issue-52/plan.md` at `99787b0`, synced to `e08f591`
+**Branch**: `feature/issue-52` at `cb1dd2f` (5 commits, unpushed)
+**Scope**: directions A and C. B (priority classes) stayed out, per the operator-approved split to #19.
+
+### What shipped
+
+`0503f95` — **A, stop the AIMD collapse.**
+- **Refractory period.** After a decrease the controller freezes for
+  `admission_refractory_period_seconds` (new per-connection double
+  parameter, default 5.0), unconditionally on sample type — a clean
+  sample inside the window gets no recovery either, because recovering
+  mid-window re-opens the loop from the other side. The window doubles
+  per further decrease within an unresolved episode, capped at 2x the
+  base, and resets on the first clean sample. New state under
+  `config_mutex_`; a backwards clock step expires the window rather than
+  freezing forever.
+- **Clamp dropped.** The congested branch is now
+  `max(floor, effective_rate_limit_ * 0.5)` with no goodput term.
+- **Window-matched detector.** New
+  `PacketSendStatistics::success_rate_in_window(time, window_seconds)`
+  measures our send rate over the receiver's own 5 s window instead of
+  `get()`'s variable 1-10 s span.
+
+`03a3971` — **C, message-level granularity.** The batch overload's
+aggregate `can_send` became a check-**and**-reserve under the same brief
+lock; each fragment's share is handed to the inner send before the call
+(now `sendPacket(..., bytes_pre_reserved)`), which releases exactly
+`data.size()` on every exit including `no_address` and the throw path; a
+batch-level RAII guard holds the portion for fragments never attempted.
+The per-fragment `sendto` poll loop still runs lock-free — the #10 wedge
+property is unchanged, and `ConcurrentSendsStayUnderLimit` still passes.
+
+`1cfc52d` — doc sweep. `e08f591` — plan sync. `cb1dd2f` — lint fixup.
+
+### Constants, and what bound each
+
+| constant | value | bound by |
+|---|---|---|
+| `kDefaultAdmissionRefractoryPeriodSeconds` | 5.0 s | the receive-rate window both ends measure over — the shortest interval after which both filters describe traffic sent at the new cap |
+| `kAdmissionRefractoryGrowthFactor` | 2.0 | the recorded onset needs one growth step; without it a third halving lands exactly at the test bound |
+| `kAdmissionRefractoryMaximumMultiple` | 2.0 (10 s) | above: the bench's 10 s phase holds and the statistics deque's 10 s retention; below: `SustainedRealLossMustConverge`'s 40 s deadline |
+| `kAdmissionSendRateWindowSeconds` | 5.0 s | not tuned — it is `data_receive_rate`'s window |
+
+### Test counts
+
+**271 tests, 0 errors, 0 failures, 14 skipped** (bench, opt-in). Branch
+start was 257 with the 2 gate failures. Full suite, not a filtered run.
+
+Gate results, matching `review-plan`'s model prediction exactly rather
+than retuned into green:
+
+| test | bound | pre-fix | after |
+|---|---|---|---|
+| `FieldOnsetMustNotCascadeToFloor` | `lowest` > 187500 | 8192 | **375000** |
+| `HandoverBlip...` | delivered > 0.90 | 0.398 | **1.000** |
+| `HandoverBlip...` | final cap > 750000 | 633091 | **1500000** |
+
+Both new tests were verified to **fail against the defect they pin**,
+not just pass against the fix:
+- `SustainedRealLossMustConverge` fails on a deliberately deafened
+  controller (`congested = false`) while both committed gate tests stay
+  green — which is exactly the F2 hazard the reviewer demonstrated with
+  EWMA α=0.2.
+- `MessageAtomicity.ConcurrentMessagesAreAllOrNothing` fails on round 0
+  against the pre-fix check-only aggregate. **An unbarriered 8-thread
+  version passed against the pre-fix code** — it proved nothing. It
+  needed a start barrier, 40-fragment messages and 25 rounds.
+
+Bench: `UDP_BRIDGE_BENCH_SCENARIOS=1` full range-degradation scenario,
+`10 passed, 2 xfailed`, no failures and no XPASS. Per-window and
+per-phase tables are in the plan's Implementation Notes.
+
+### Open resolutions closed by measurement
+
+- **`link_headroom_fraction` (A2).** `test_invariant_cotenant_management_flow_survives`
+  — issue #52's own acceptance criterion, and the parameter's operational
+  claim — **passes** with the clamp removed. Resolved as the plan's
+  outcome (b): the parameter is retained but **inert**, still declared,
+  clamped and reported so existing configs keep working, with nothing in
+  the control law reading it. Documented in five places and pinned by
+  `HeadroomFractionDoesNotAffectDecreaseTarget` so re-attaching it has to
+  be deliberate. Removal is a follow-up for post-deployment data.
+- **Resend amplification (criterion 1).**
+  `test_invariant_resend_amplification` still xfails (strict, no XPASS),
+  so the marker stays and `F_resend_multiplier` was not touched.
+- **`is_overhead` (F5).** Same atomic treatment, no separate path, with
+  its own test.
+
+### Deviations from the plan
+
+1. `bytes_in_window` could not be reused for A3 (fixed 1 s window, single
+   category) — added `success_rate_in_window` alongside it.
+2. **Existing unit tests pinning the removed clamp had to be rewritten,
+   not extended.** `DecreaseTargetsHeadroomOfGoodput` and
+   `HeadroomFractionAffectsDecreaseTarget` asserted precisely what A2
+   removes; `DuplicatesExcludedFromGoodput` moved its assertion to the
+   goodput quantity (still live as the resend budget's basis); two more
+   drove their loops by feeding N samples at ONE timestamp, which the
+   refractory gate collapses to one decision. The plan listed the file
+   but not that its contents were partly invalidated.
+3. The single-threaded whole-message-drop test is **not** a regression
+   discriminator (see above). Kept as a contract test, with the finding
+   recorded rather than left implying coverage it does not provide.
+4. `ECONNREFUSED` release is not unit-testable on an unconnected UDP
+   socket — stated in the test file and the plan instead of leaving a
+   silent gap in F6's four-path list.
+5. Doc files beyond the plan's sweep: `test/bench/README.md` and the
+   cotenant invariant's docstring both asserted `link_headroom_fraction`
+   is the mechanism that invariant checks, which the clamp removal made
+   false. Also a note in `doc/resend_budget_design.md` that goodput is
+   still ITS basis, and that the refractory freeze deliberately does not
+   withhold the measurement.
+
+### Worth a reviewer's eye
+
+- **`lossy` resend/msg moved the wrong way**, 0.077 → 0.141, while
+  `fringe` (0.018 → 0.011) and `critical` (0.144 → 0.118) improved. Not
+  a gate result — the invariant's verdict is unchanged — and run-to-run
+  variance on this harness is material (two runs of the *same* build gave
+  `critical#3` co-tenant delivery of 0.904 and 0.840). Reported rather
+  than buried; worth repeated runs under #54.
+- The refractory knob is **configure-time only**, like every other
+  admission parameter — the exact property RCA item D names as what
+  blocked live mitigation on 2026-08-25. Noted in the code, the docs and
+  the plan; #76 is the fix.
+
+### Not done
+
+- Nothing from the plan's A/C scope is outstanding.
+- No `git push` (host performs pushes). No PR opened.
+- Follow-up issues not filed (plan recommends filing after this lands):
+  RCA option B's wire-schema detector plus the evaluated-and-rejected
+  local resend-ratio detector; `link_headroom_fraction` removal-or-rebasis;
+  the `lossy` resend movement; #71 / #45 revisit; a project-repo ADR for
+  this control loop, now on its third root-cause pass.
