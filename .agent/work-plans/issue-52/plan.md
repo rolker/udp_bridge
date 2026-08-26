@@ -818,9 +818,14 @@ On the resend/msg ratio itself:
 | `lossy` | 0.0131 | 0.0184 | 0.0705 | 0.060 | 5.4x |
 | `critical` | 0.2838 | 0.4735 | 0.1115 | 0.200 | 4.2x |
 
-The 0.077 -> 0.141 move is well inside a 5.4x run-to-run spread, so it
-cannot be attributed to a mechanism — and by the same token nothing here
-rules a mechanism out. The load-bearing conclusion is about the
+Three tries reproduced NEITHER endpoint of the 0.077 -> 0.141 move: both
+sit outside the observed range [0.0131, 0.0705]. So the move cannot be
+attributed to a mechanism — a value this metric does not reproduce in
+three attempts is not evidence of a change in the control law — and by
+the same token nothing here rules a mechanism out. (An earlier wording,
+"well inside a 5.4x spread", conflated the magnitude of the spread with
+containment in it; neither endpoint is contained in it. What the data
+shows is stronger than that sentence, not weaker.) The load-bearing conclusion is about the
 measurement, not the control law: **single-run values from this invariant
 do not support the three-decimal precision they were quoted at**, in
 either the Implementation entry or the `xfail` reason string. Both now
