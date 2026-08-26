@@ -271,7 +271,8 @@ inline constexpr double kAdmissionSendRateWindowSeconds = 5.0;
 // 0.8 x (254615 - 51715) = 162320 — below the regression bound — before
 // any second decrease existed for the refractory gate to suppress, and
 // no refractory value rescued it. The parameter is retained (removing it
-// would break existing configs that set it) and still reported, but the
+// would break existing configs that set it): it is declared, clamped and
+// readable via `ros2 param get`, but it appears in no message and the
 // control law no longer reads it. See doc/admission_control_design.md,
 // "link_headroom_fraction after the clamp removal", for the measurement
 // that settled this and the follow-up it is tracked under.

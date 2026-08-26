@@ -108,10 +108,23 @@
             # above capacity on a degraded link.
             admission_floor_bytes_per_second: 8192.0
 
-            # Fraction of measured goodput deliberately left unused, so a
-            # co-tenant on the same path (an SSH session, operator management
-            # traffic) is not starved (issue #52). This, not the absolute
-            # rate limit, is what keeps a degraded link usable by others.
+            # CURRENTLY INERT (issue #52, 2026-08-25). Nothing in the
+            # control law reads this. Setting it changes NOTHING about how
+            # this connection behaves; it is accepted, clamped to
+            # [0.0, 0.99] and readable via `ros2 param get` only so that
+            # existing configs keep loading.
+            #
+            # It was the fraction of measured goodput deliberately left
+            # unused so a co-tenant on the same path (an SSH session,
+            # operator management traffic) would not be starved. Its only
+            # call site was the `(1 - headroom) x goodput` clamp on the
+            # congested backoff, removed because goodput is depressed by
+            # the very throttling the clamp was computing — a positive
+            # feedback loop. The co-tenant guarantee is now carried by the
+            # refractory-gated multiplicative decrease, verified against
+            # the bench's management-flow invariant. See
+            # doc/admission_control_design.md, "link_headroom_fraction
+            # after the clamp removal".
             link_headroom_fraction: 0.2
 
             # Minimum interval between admission-control decisions, in

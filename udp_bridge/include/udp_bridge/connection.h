@@ -58,9 +58,15 @@ public:
 
   /// Set the fraction [0, 1) of measured goodput deliberately left
   /// unused for co-tenant traffic (issue #52). Values outside the range
-  /// are clamped; NaN falls back to the default. See
-  /// kDefaultLinkHeadroomFraction for why a headroom target and not
-  /// only an absolute ceiling.
+  /// are clamped; NaN falls back to the default.
+  ///
+  /// CURRENTLY INERT: the `(1 - fraction) x goodput` clamp on the
+  /// congested backoff was its only call site and was removed on
+  /// 2026-08-25, so setting this changes NOTHING about how the
+  /// connection behaves. It is accepted, clamped and readable only so
+  /// existing configs keep loading. See kDefaultLinkHeadroomFraction and
+  /// doc/admission_control_design.md, "link_headroom_fraction after the
+  /// clamp removal".
   void setLinkHeadroomFraction(float fraction);
   float linkHeadroomFraction() const;
 
@@ -92,8 +98,10 @@ public:
   /// the remote's reported received rate minus its reported duplicate
   /// rate, from the last updateAdmissionControl() sample. 0.0 before
   /// any sample. This is the only quantity in the connection that
-  /// describes the physical link, so it is what the admission floor's
-  /// congested branch and the resend budget are measured against.
+  /// describes the physical link. Since the 2026-08-25 clamp removal the
+  /// admission decrease no longer reads it — the congested branch is a
+  /// plain halving of the current cap — so its remaining consumer is the
+  /// resend budget (doc/resend_budget_design.md).
   float goodputBytesPerSecond() const;
 
   /// The AIMD-adjusted admission cap in bytes/second — what send()
@@ -338,8 +346,10 @@ private:
   /// Fraction of measured goodput left unused for co-tenant traffic
   /// (issue #52). Guarded by config_mutex_.
   ///
-  /// Retained as configuration and still reported, but READ BY NOTHING
-  /// in the control law since the 2026-08-25 clamp removal — see
+  /// Retained as configuration — declared, clamped and readable via
+  /// `ros2 param get`, so existing configs keep loading — but it appears
+  /// in no message and is READ BY NOTHING in the control law since the
+  /// 2026-08-25 clamp removal. See
   /// updateAdmissionControl above and kDefaultLinkHeadroomFraction.
   float link_headroom_fraction_ = kDefaultLinkHeadroomFraction;
 
