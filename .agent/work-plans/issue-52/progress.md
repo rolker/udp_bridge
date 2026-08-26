@@ -560,3 +560,285 @@ method, not final numbers.
 - [ ] Should the refractory growth/cap be per-connection-configurable too, or fixed constants like `kResendBackoffBase`?
 - [ ] Revisit #71 and #45 after A lands — RCA states they should reduce/close in severity.
 - [ ] File the RCA-option-B (sequence-gap/matched-byte-counter detector) follow-up issue now or after this PR lands and its effect is measured?
+
+## Plan Review
+**Status**: complete
+**When**: 2026-08-25 22:35 -04:00
+**By**: Claude Code Agent (Claude Opus) — independent fresh-context dispatch (not the plan author; the workspace's shared `$AGENT_NAME` makes the skill's name-match heuristic unusable here)
+
+**Plan**: `.agent/work-plans/issue-52/plan.md` at `26f39b8`
+**PR**: PR-less (`--issue` mode, `feature/issue-52`)
+**Verdict**: changes-requested
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | 11 files, one control loop + one send path. B correctly excluded per the operator-approved split; C's root cause verified accurate against `cce4401` and the `connection.cpp:466-474` comment. |
+| Issue alignment | Concern | The plan never mentions issue #52's own two acceptance criteria or the opt-in bench suite that measured the prior cycle (F3). |
+| File targeting | Needs work | Misses `README.md` (the prose parameter reference) and `CMakeLists.txt`; `.agents/README.md` path is wrong (F4). |
+| Consequences | Needs work | Overhead traffic also flows through the batch overload (F5); reservation release paths unspecified (F6); new knob is configure-time-only (F10). |
+| Documentation & instruction impact | Needs work | Section present and non-silent — good — but the stale-doc list omits `README.md:211-212`, which states the very decrease-target rule A2 changes. |
+| Principle alignment | Concern | "Test what breaks": the acceptance gate is one-sided and A3 can pass it by making the controller deaf (F2). "A change includes its consequences": bench re-run unscoped (F3). |
+| ADR compliance | Good | 0002 / 0008 / 0013 correctly identified and satisfied. |
+| ROS conventions | Good | Parameter follows the existing `declareIfMissing` / per-connection pattern; see F10 on configure-time-only. |
+
+### Method note
+
+Findings F1 and F2 are empirical, not analytical. I built the branch and ran
+the committed gate tests (both fail as documented: `lowest = 8192`;
+`delivered_fraction = 0.39777`; final cap `633091`). I then built a Python
+model of the control law plus `PacketSendStatistics` (10 s box filter,
+1 s `can_send` window) and validated it by reproducing those three numbers
+exactly, then ran the plan's proposed A1/A2/A3 through both replays. Script:
+scratchpad `sim.py` (session-local, not committed); every number below is
+reproducible from the plan text plus `test_admission_field_replay.cpp`.
+
+### Findings
+- [ ] (must-fix) A2 as specified cannot pass either gate test at ANY refractory tuning — the clamp, not the constants, is the binding constraint — `plan.md` A2 / Open Questions
+- [ ] (must-fix) The acceptance gate is one-sided: A3's EWMA passes it at alpha=0.2 by never detecting congestion at all; needs a converge-under-genuine-loss counter-test — `plan.md` A3 / Tests (A)
+- [ ] (must-fix) Issue #52's own acceptance criteria and the opt-in `UDP_BRIDGE_BENCH_SCENARIOS=1` bench suite are absent from the plan's verification — a refractory directly opposes the convergence those invariants need — `plan.md` Approach / Estimated Scope
+- [ ] (must-fix) Doc sweep misses `README.md:211-212`; `CMakeLists.txt` missing from Files to Change; `.agents/README.md` is at the repo root, not under `udp_bridge/` — `plan.md` Doc/config sweep + Files to Change
+- [ ] (must-fix) C's "two call sites" premise is wrong: overhead (BridgeInfo, resend requests) uses the SAME batch overload, so atomic reservation changes the feedback channel too — `plan.md` C step 2
+- [ ] (suggestion) C needs a per-return-path spec for reservation release (success / ECONNREFUSED / `no_address` / throw) — `plan.md` C steps 2-3
+- [ ] (suggestion) The stated reason for deferring RCA option B (committed tests pin the signature) is not a real constraint; the wire-schema reason is, and a purely local resend-ratio detector is never evaluated — `plan.md` A3
+- [ ] (suggestion) A3's "time constant closer to sent_bps's smoothing" is unachievable as stated (variable-span box filter vs EWMA); matching the sender's window to the receiver's 5 s window is the direct fix — `plan.md` A3
+- [ ] (suggestion) A1 is ambiguous about whether a CLEAN sample still increases during the refractory window; the answer changes both gate outcomes — `plan.md` A1
+- [ ] (suggestion) `admission_refractory_period_seconds` is configure-time-only — the exact property RCA item D says blocked live mitigation, and which #76 addresses — `plan.md` Files to Change
+
+### F1 — A2 keeps the `0.8 x goodput` clamp exactly where it does the damage (must-fix)
+
+The plan defers the refractory constants to an implementation-time
+build-test-tune loop, on the premise that the constants are the free
+parameter. They are not. Simulated against the committed replay:
+
+| variant | `FieldOnsetMustNotCascadeToFloor` (`lowest`, needs > 187500) | `HandoverBlip...` (delivered, needs > 0.90) |
+|---|---|---|
+| current code (model-validated) | 8192 FAIL | 0.398 FAIL |
+| plan A1+A2, refractory base 2 intervals | 81160 FAIL | 0.880 FAIL |
+| plan A1+A2, refractory base 3 intervals | 162320 FAIL | 0.880 FAIL |
+| refractory base 2, clamp DROPPED | 375000 PASS | 1.000 PASS |
+| refractory base 3, clamp DROPPED | 750000 PASS | 1.000 PASS |
+
+The mechanism: A2 gates the clamp on `dropped_bytes_per_second == 0`
+("we were not self-limiting"). The FIRST congested sample of an episode is
+by construction a non-self-limiting interval, so the clamp is in force
+exactly there. On the replay that single first step lands at
+`0.8 x (254615 - 51715) = 162320` — already below the test's
+`kFieldRateLimit / 8 = 187500` bound before any second decrease exists to
+suppress. No refractory value can rescue it. The same step in the handover
+test targets `0.8 x 198000 = 158400` against a 495 kB/s offered load,
+holding delivered at 0.880.
+
+A2's gate is also arguably inverted. Goodput is bounded above by OFFERED
+load — the code comment at `connection.cpp:277-281` says so. When the gate
+is not limiting (`dropped == 0`), goodput measures offered load, not
+capacity: the day's operating point was ~495 kB/s offered against a
+1500000 cap, so `0.8 x goodput` is a 3.8x cut carrying no capacity
+information. When the gate IS limiting, goodput tracks the cap and the
+clamp is mild. A2 applies the clamp in precisely the case where it is least
+informative.
+
+RCA option C's first half — "Drop the `0.8 x goodput` clamp ... Keep the
+decrease multiplicative from the *current cap*, which is the controller's
+own known state rather than a measurement it contaminated" — passes both
+tests with margin and is simpler than what the plan proposes. If the
+headroom target is kept in some form (it is the mechanism behind the
+co-tenant invariant), it needs a basis other than post-gate goodput, and
+that needs to be designed in the plan rather than tuned in the loop.
+
+Two secondary notes on A2 as written: `sent_packet_statistics_.get()` is a
+0-10 s span filter, so `dropped_bytes_per_second > 0` is sticky for up to
+10 s — not "this interval" as the plan says; and it aggregates ALL
+categories, so a resend-budget drop also disables the clamp. Whatever
+survives from A2 should state the window and the category explicitly, and
+compare `> 0.0f` rather than `== 0` on a float rate.
+
+### F2 — the gate is one-sided; A3 can pass it by going deaf (must-fix)
+
+Both committed tests assert only that the cap does NOT fall. Nothing asserts
+it still falls when it genuinely should. Running the plan's A3 EWMA through
+the replay:
+
+| EWMA alpha (A1+A2+A3, base 2) | onset `lowest` | handover delivered |
+|---|---|---|
+| 0.5 | 40368 FAIL | 1.000 PASS |
+| 0.3 | 17152 FAIL | 1.000 PASS |
+| 0.2 | **1500000 PASS — cap never moved at all** | 1.000 PASS |
+
+At alpha 0.3-0.5 smoothing makes the onset WORSE (detection is delayed until
+goodput has collapsed, and the clamp then targets 0.8 x a tiny number —
+another instance of F1). At alpha 0.2 the controller simply never registers
+congestion, and both tests go green on a controller that has stopped
+working. A build-test-tune loop whose only oracle is these two tests can
+converge there.
+
+Required before implementation: a counter-test pinning the other side —
+under a genuine sustained capacity drop the cap must converge to within
+some band of real capacity inside a bounded time. That bound is also the
+number that decides whether the refractory backoff cap is safe: seven
+halvings at an exponentially growing refractory is minutes, and issue #52's
+`over_horizon` phase needs convergence in seconds.
+
+### F3 — issue-alignment: the issue's own acceptance criteria are absent (must-fix)
+
+Issue #52's body states two acceptance criteria: (1) the resend-amplification
+invariant passes on its own terms with no loosening of `F_resend_multiplier`,
+and (2) the co-tenant management-flow invariant survives every phase —
+"**This invariant should pass before the cap is relaxed on anything that
+goes to sea.**" The prior cycle measured itself with
+`UDP_BRIDGE_BENCH_SCENARIOS=1 ... test_bench_range_degradation` and recorded
+a per-phase before/after table.
+
+This plan's only named oracle is the two field-replay unit tests. It mentions
+the bench solely as a doc file to sync "if the invariant count or basis
+changes". But a refractory period directly opposes convergence inside the
+harness's 10 s phase holds, which is what
+`test_invariant_cotenant_management_flow_survives` and
+`test_invariant_recovery_completeness` depend on — and
+`test_invariant_resend_amplification` is `xfail(strict=True)`, so an
+unexpected improvement flips it to XPASS and fails the suite too (the
+warning at `test_range_degradation.py:669-678` is explicit that raising
+`F_resend_multiplier` to keep it xfailing is not acceptable). Scope the
+bench run as a verification step with a before/after table.
+
+### F4 — doc/file targeting gaps (must-fix, mechanical)
+
+- `README.md:211-212` documents `admission_floor_bytes_per_second` and
+  `link_headroom_fraction` in prose, including "Applied as the target of a
+  congested backoff" — which A2 makes conditional — and it is where a new
+  `admission_refractory_period_seconds` belongs. Absent from the sweep.
+- `CMakeLists.txt` is absent from Files to Change; a new
+  `test_message_atomicity.cpp` needs an `add_udp_bridge_gtest(...)` line
+  (pattern at `CMakeLists.txt:154`).
+- `.agents/README.md` lives at the REPO ROOT, not `udp_bridge/.agents/README.md`
+  as the table has it.
+- Minor: the `example_params.yaml` typed-literal precedent is at line 109,
+  not 61. Substance is right — keep it.
+- `doc/relay_design.md` and `doc/conceptual_overview.md` reference admission
+  control only generically; no change expected. Fine to leave off.
+
+### F5 — C: overhead traffic uses the same batch overload (must-fix)
+
+The plan distinguishes "message-batch vs. everything else — overhead pings,
+individual resends, which keep using the existing per-packet
+check-and-reserve path unchanged". That is not the code. The batch overload
+has exactly one production caller, `udp_bridge.cpp:2140`, reached with
+`is_overhead` both false AND true; the single-packet overload's only other
+production caller is `resend_packets` (`connection.cpp:845`). So an
+aggregate check-and-reserve in the batch overload changes admission for
+BridgeInfo, resend requests and topic lists as well — the feedback channel
+`updateAdmissionControl` consumes, and whose disappearance `feedback_stale`
+reads as congestion. Probably harmless (overhead messages are usually one
+packet, and the failure path already drops them atomically today), but it
+must be a decision with test coverage, not a mis-description.
+
+### F6 — C: reservation release needs a per-path spec (suggestion)
+
+Otherwise the C design is sound and does preserve the `1489cfb`/`0c8b75f`
+discipline: the aggregate check-and-reserve is two bookkeeping operations
+under one `sent_packet_statistics_mutex_` acquisition, and the per-fragment
+`sendto` poll loop still runs lock-free, so the #10 wedge path
+(`sendBridgeInfo` -> `data_sent_rate` -> socket drain) is not
+re-established. To make it implementable without ambiguity, enumerate who
+releases on each inner-send exit: success, `ECONNREFUSED`, `no_address`
+(a concurrent `setHostAndPort()` can clear `addresses_` mid-loop, after the
+batch's own pre-check passed), and the `ConnectionException` throws. Also
+state the invariant the accounting rests on rather than "that packet's
+share": `packet.packet.size() == p.packet_size` by construction
+(`wrapped_packet.cpp:12`), so releasing `p.packet_size` per fragment sums
+exactly to `total_size`.
+
+The proposed real-threads TOCTOU test is the right shape and has local
+precedent — `test_connection_rate_limit.cpp` already drives `std::thread`.
+The open question about file placement is not worth blocking on; a new
+`test_message_atomicity.cpp` is fine.
+
+### F7 — the option-B deferral rests on the wrong reason (suggestion)
+
+"`updateAdmissionControl`'s signature is fixed by the already-committed
+regression tests" is not a design constraint. The tests call a public C++
+method, they are three commits old, unmerged and changeable, and nothing
+about them touches a wire schema. Recording a test as a constraint on the
+design leaves a false obstacle for whoever picks up the follow-up.
+
+The substantive reason is real and sufficient on its own: a per-connection
+loss fraction over a matched interval needs counters that do not exist on
+the wire — `RemoteConnection.msg` carries only `float32` rates, and
+`BridgeInfo.next_packet_number` is node-level, not per-connection — so it
+is a type-hash bump and a coordinated redeploy, exactly as documented for
+`effective_rate_limit`. State that and drop the signature argument.
+
+Also worth an explicit evaluate-and-reject rather than silence: the RCA
+computed its own 1.11% trigger from the SENDER's own statistics —
+`resend on wire 5171 / total on wire 467577`. Both terms come from
+`sent_packet_statistics_` over the same window with the same filter, which
+removes the skew defect outright, and `data_sent_rate(now,
+PacketSendCategory::resend)` already exposes it. No wire change, no
+signature change. It has its own weaknesses (roughly one RTT of lag,
+confounding with resend amplification, blind when the return path is dead —
+which is what `feedback_stale` covers), so it may well lose on the merits;
+but it belongs in the plan's option space, which currently reads as
+"EWMA or a wire change".
+
+### F8 — A3's smoothing target is not well-defined (suggestion)
+
+`sent_bps` comes from a variable-span box filter (1-10 s depending on deque
+occupancy, `statistics.cpp:115-155`); `remote_received_bps` comes from a 5 s
+box filter (`Connection::data_receive_rate`). An EWMA on the received side
+is a third filter, and no alpha "matches" a variable-span box filter — the
+plan's "a time constant closer to what produces `sent_bps`'s own smoothing"
+cannot be made precise, which is part of why F2's tuning is unbounded. The
+direct alternative is to compare like with like: compute the sender-side
+rate over the same 5 s window the receiver uses.
+`PacketSendStatistics::bytes_in_window` is already exactly this shape (the
+resend budget uses it for the same reason — the smoothed `get()` rate lags
+in precisely the transient that matters).
+
+### F9 — A1 wording (suggestion)
+
+"While the refractory window is active ... a congested sample is **not acted
+on** — no decrease, and no additive recovery either" reads as freezing the
+controller, but its subject is a congested sample. Whether a CLEAN sample
+increases the cap during the window materially changes both gate outcomes
+and interacts with the "reset to base on the first clean sample" rule.
+State it.
+
+### F10 — configure-time-only parameter (suggestion)
+
+RCA item D: raising the floor "is also the one lever that would have
+mitigated the problem live — and it could not be applied, because connection
+parameters are configure-time only (which is exactly what PR #76 fixes)".
+The plan adds `admission_refractory_period_seconds` as configure-time-only,
+"matching existing admission params". That is consistent, but it makes the
+new tuning knob the next one an operator cannot reach at sea. Note the
+relationship to #76 explicitly, or say why configure-time is acceptable
+here.
+
+### What the plan gets right
+
+- C's root cause is verified accurate against `cce4401` and the deliberate
+  no-reserve comment at `connection.cpp:466-474`, and the fix preserves the
+  lock-hold-time discipline it must.
+- Scope excludes B cleanly, per the recorded operator decision.
+- Consequences and Documentation & Instruction Impact sections are present,
+  specific and non-silent — the `8192.0` typed-literal trap and the
+  reserve-then-record preservation are both carried forward from the prior
+  cycle's review rounds rather than rediscovered.
+- Deferring RCA option B is the right call; only the stated reason is wrong.
+
+### Recommended actions before implementation
+- [ ] Resolve F1: drop the post-gate goodput clamp from the decrease branch
+      (RCA option C as written), or give the headroom target a basis that is
+      not contaminated by our own gate — and re-derive the refractory
+      constants after that decision, not before.
+- [ ] Resolve F2: add a converge-under-genuine-sustained-loss counter-test
+      before tuning A3, so the tuning loop has a two-sided oracle.
+- [ ] Resolve F3: scope the opt-in bench suite re-run (both issue acceptance
+      criteria) into the plan's verification, with a before/after table.
+- [ ] Fix F4's file list: add `README.md` and `CMakeLists.txt`; correct the
+      `.agents/README.md` path.
+- [ ] Correct F5's call-site description and decide the `is_overhead`
+      behaviour explicitly.
+- [ ] Amend the plan inline per plan-task's "During implementation" rules;
+      this entry stays as the historical record.
