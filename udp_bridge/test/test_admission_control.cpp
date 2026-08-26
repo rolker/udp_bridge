@@ -246,8 +246,9 @@ TEST_F(AdmissionControl, DecreaseIsPurelyMultiplicativeFromCurrentCap)
 // setter and Connection state were REMOVED in #52 — there is no longer
 // an API to pin. The decrease's independence from goodput is covered by
 // DecreaseIsPurelyMultiplicativeFromCurrentCap above; what remains of
-// the parameter is a node-level declared tripwire, covered by
-// RetiredHeadroomParameterStillConfigures in test_node_name_limits.cpp.
+// the parameter is a node-level configure-time tripwire, covered by the
+// RetiredParameters.LinkHeadroomFraction* tests in
+// test_node_name_limits.cpp.
 
 TEST_F(AdmissionControl, DuplicatesExcludedFromGoodput)
 {
@@ -464,9 +465,7 @@ TEST_F(AdmissionControl, FeedbackStaleBackoff)
             static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
     << "Stale feedback (nothing received for kAckStarvationThreshold) "
        "must count as congestion regardless of the reported delivery, and "
-       "must fall back to a plain multiplicative decrease — the headroom "
-       "target needs a goodput reading, which is exactly what stale means "
-       "we do not have (#52).";
+       "must apply the plain multiplicative decrease (#52).";
 }
 
 TEST_F(AdmissionControl, NanFeedbackTreatedAsCongestion)
@@ -499,10 +498,11 @@ TEST_F(AdmissionControl, NanDuplicateFeedbackTreatedAsCongestion)
   conn->update_last_receive_time(t0.seconds(), 100, false);
 
   // received reads clean (== sent), but the DUPLICATE channel is NaN.
-  // goodput = received − NaN collapses to 0; if that slipped through as a
-  // usable sample the headroom target would slam the cap to the floor on
-  // this one report. The duplicate channel must be validated like received:
-  // count it as congestion and apply the plain halving (#52).
+  // goodput = received − NaN collapses to 0. The duplicate channel must
+  // be validated like received: a collapsed goodput reads as total loss
+  // to the congestion comparison and is published to the resend budget
+  // as a capacity figure. Count it as congestion and apply the plain
+  // halving (#52).
   conn->updateAdmissionControl(80000.0f,
                                std::numeric_limits<float>::quiet_NaN(), t0);
 
@@ -523,15 +523,22 @@ TEST_F(AdmissionControl, DuplicateExceedingReceivedTreatedAsCongestion)
   // A duplicate rate above received is impossible physically (you cannot
   // duplicate more than you received) — a smoothing-window skew, or a
   // hostile report. goodput = received − duplicate goes negative and
-  // clamps to 0; treated as a usable sample the headroom target would
-  // slam the cap to the floor. It is unusable feedback: plain halving.
-  conn->updateAdmissionControl(40000.0f, 60000.0f, t0);
+  // clamps to 0, which is not a measurement of anything. It is unusable
+  // feedback: plain halving.
+  //
+  // The RECEIVED figure here reads CLEAN against ~80 kB/s sent (#52,
+  // review round 3). It used to be 40000, which is below
+  // 0.9 x sent all by itself — so the sample was congested whether or
+  // not the duplicate>received guard existed, and deleting the guard
+  // left this test green. Only a clean-looking received rate puts the
+  // guard on the critical path.
+  conn->updateAdmissionControl(100000.0f, 200000.0f, t0);
 
   EXPECT_EQ(conn->effectiveRateLimit(),
             static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
     << "A duplicate rate exceeding received must count as congestion and "
-       "apply the multiplicative decrease, not slam the cap to the floor "
-       "(#52).";
+       "apply the multiplicative decrease, even when the received figure "
+       "on its own reads clean — the pair is the tell (#52).";
 }
 
 TEST_F(AdmissionControl, NegativeDuplicateDoesNotInflateGoodput)
@@ -565,11 +572,16 @@ TEST_F(AdmissionControl, NegativeRatesTreatedAsCongestion)
   // A negative received/duplicate pair is nonsensical (a rate cannot be
   // below zero) and reaches us over an unauthenticated transport (#53). It
   // slips past the finite and duplicate>received guards — with received =
-  // −100, duplicate = −200 the check duplicate > received is FALSE — yet a
-  // negative received is below any congestion threshold, so without the
-  // negative guard the sample would be treated as usable-and-congested with
-  // a headroom target of 0 and slam the cap to the floor in one report.
-  // Reject negatives as unusable feedback: plain halving, not a floor slam.
+  // −100, duplicate = −200 the check duplicate > received is FALSE.
+  //
+  // CONTRACT TEST, deliberately labelled (#52, review round 3). This
+  // pair cannot be made to discriminate: a negative received rate is
+  // below any congestion threshold, so the sample halves the cap whether
+  // or not the negative guard exists. What it pins is the OUTCOME an
+  // operator depends on — a plain halving, never a floor slam — for an
+  // input the wire can actually carry. The guard itself is put on the
+  // critical path by the negative-DUPLICATE case below, where the
+  // received figure reads clean.
   conn->updateAdmissionControl(-100.0f, -200.0f, t0);
 
   EXPECT_EQ(conn->effectiveRateLimit(),
@@ -577,6 +589,30 @@ TEST_F(AdmissionControl, NegativeRatesTreatedAsCongestion)
     << "A negative received/duplicate pair must count as unusable feedback "
        "and apply the multiplicative decrease, not slam the cap to the floor "
        "(#52).";
+}
+
+// The discriminating half of the negative-rate guard: a received rate
+// that reads CLEAN against what we sent, paired with a negative
+// duplicate rate. Without the `remote_duplicate_bps < 0.0f` clause the
+// sample is usable and clean, so the controller RECOVERS on a report no
+// honest peer can produce. With it, the pair is unusable feedback and
+// the cap halves.
+TEST_F(AdmissionControl, NegativeDuplicateWithCleanReceivedIsStillUnusable)
+{
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  auto conn = make_connection();
+  send_traffic(*conn, t0, 80);                     // ~80 kB/s sent
+  conn->update_last_receive_time(t0.seconds(), 100, false);
+
+  conn->updateAdmissionControl(100000.0f, -50000.0f, t0);
+
+  EXPECT_EQ(conn->effectiveRateLimit(),
+            static_cast<uint32_t>(kRateLimit * udp_bridge::kAdmissionDecreaseFactor))
+    << "A negative duplicate rate must make the whole sample unusable "
+       "even when the received figure reads clean — otherwise a peer "
+       "reporting a negative duplicate rate drives RECOVERY on evidence "
+       "that is not evidence (#52, #53).";
 }
 
 TEST_F(AdmissionControl, NeverReceivedSentinel)
@@ -601,12 +637,12 @@ TEST_F(AdmissionControl, EffectiveLimitAffectsCanSend)
   auto conn = make_connection();
   // Real congestion path (the idle guard means stale feedback alone,
   // with nothing sent, is deliberately NOT congestion): seed 10 kB of
-  // sent traffic, then take the stale-feedback branch. Stale is used
-  // here rather than a low delivery report because it is the one
-  // congested path that does NOT apply the headroom target (there is no
-  // trustworthy goodput reading when feedback is stale), so it yields a
-  // plain halving and keeps this test's arithmetic about can_send
-  // rather than about the target calculation.
+  // sent traffic, then take the stale-feedback branch. (Every congested
+  // path now applies the same plain multiplicative decrease — the
+  // headroom-target clamp that used to make them differ was removed in
+  // #52 — so this choice is no longer load-bearing. Left as it is
+  // because a stale-feedback decrease puts the least arithmetic between
+  // the setup and the can_send assertion this test is about.)
   send_traffic(*conn, t0);                       // 10 kB @ t0
   conn->update_last_receive_time(
     t0.seconds() - 2.0 * udp_bridge::kAckStarvationThreshold.count(), 100, false);

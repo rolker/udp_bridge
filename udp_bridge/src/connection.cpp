@@ -247,20 +247,21 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // remote_duplicate_bps, or a duplicate rate exceeding received (the
   // remote cannot have duplicated more than it received — a smoothing-
   // window skew, or a hostile report), makes goodput = received −
-  // duplicate untrustworthy: it collapses to 0, and left in the headroom
-  // target below that slams the cap to the floor on a single sample —
-  // the very pathology the received-channel guard prevents, re-entered
-  // through the duplicate channel. Mark it unusable so it falls back to
-  // the plain halving instead (#52).
+  // duplicate untrustworthy: it collapses to 0. That is still worth
+  // rejecting after the headroom clamp's removal — a zero goodput reads
+  // as total loss to the congestion comparison, and the published
+  // goodput figure steers the resend budget. Mark it unusable so the
+  // sample falls back to the plain halving instead (#52).
   //
   // Negative rates on EITHER channel are nonsensical (a rate cannot be
   // below zero) and reach us over an unauthenticated transport (#53).
   // They pass the finite and duplicate>received checks — e.g. received
   // = −100, duplicate = −200 gives duplicate > received == false — yet a
   // negative received is below any congestion threshold, so the sample
-  // would be treated as congested with a headroom target of 0 and slam
-  // the cap to the floor in one sample. Reject negatives here so they
-  // fall back to the plain halving instead (#52).
+  // reads as congestion on evidence that is not evidence, and publishes
+  // a negative goodput the resend budget then reasons from. Reject
+  // negatives here so they fall back to the plain halving instead
+  // (#52).
   const bool feedback_unusable =
     feedback_stale || !std::isfinite(remote_received_bps) ||
     !std::isfinite(remote_duplicate_bps) ||

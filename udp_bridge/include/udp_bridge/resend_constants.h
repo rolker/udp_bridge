@@ -279,44 +279,45 @@ static_assert(
   "two differ, the ratio measures filter skew rather than loss, which is "
   "what turned a 1% link into 35 cap collapses on 2026-08-25.");
 
-// Default fraction of measured goodput deliberately left unused, so a
-// co-tenant on the same path (an SSH session, the operator's own
-// management traffic) is not starved by the bridge.
+// RETIRED: `link_headroom_fraction` and its default constant (issue #52,
+// 2026-08-25). Recorded here because the mechanism it provided is gone
+// and nothing replaced it — a reader reaching for a headroom knob should
+// find out why there is not one, not find a live-sounding rationale.
 //
-// This is the property that actually prevents the lockout
-// `maximum_bytes_per_second` was originally added for. A ceiling in
-// absolute bytes binds only while the link is healthy: the same bench
-// run had a 4 MB/s cap and still saw the bridge take 61% of a 62.5 kB/s
-// path (100% in individual samples), because a degraded link is a
-// saturated link. A headroom target scales with whatever the link is
-// actually delivering, so it holds in exactly the case the ceiling
-// abandons.
+// What it DID: it named a fraction of measured goodput to leave unused,
+// so a co-tenant on the same path (an SSH session, the operator's own
+// management traffic) was not starved by the bridge. That was a
+// STRUCTURAL property: it reserved a share of measured throughput
+// whether or not the bridge itself was losing, which an absolute
+// ceiling never does. A ceiling in bytes binds only while the link is
+// healthy — one bench run had a 4 MB/s cap and still saw the bridge take
+// 61% of a 62.5 kB/s path (100% in individual samples), because a
+// degraded link is a saturated link.
 //
-// RETIRED (issue #52, 2026-08-25). Its only call site was the congested
-// branch's `min(cap x 0.5, (1 - headroom) x goodput)` clamp, which that
-// pass removed: measured goodput is depressed by the very throttling the
-// formula was computing, so the clamp was a positive feedback loop. On
-// the recorded onset its first step alone landed at
-// 0.8 x (254615 - 51715) = 162320 — below the regression bound — before
-// any second decrease existed for the refractory gate to suppress, and
-// no refractory value rescued it.
+// Why it WENT: its only call site was the congested branch's
+// `min(cap x 0.5, (1 - headroom) x goodput)` clamp, and measured goodput
+// is depressed by the very throttling the formula was computing, so the
+// clamp was a positive feedback loop. On the recorded 2026-08-25 onset
+// its first step alone landed at 0.8 x (254615 - 51715) = 162320 — below
+// the regression bound — before any second decrease existed for the
+// refractory gate to suppress, and no refractory value rescued it. It
+// was measurably harmful and cannot return in that form.
 //
-// This constant now has exactly one job: it is the DECLARED DEFAULT of
-// the retired `link_headroom_fraction` parameter, which the node keeps
-// declaring purely as a tripwire. Nothing stores it, no Connection
-// carries it, and the control law does not read it.
+// What protects a co-tenant NOW: the refractory-gated multiplicative
+// decrease, and only insofar as the bridge SHARES the loss — it fires
+// when `remote_received < 0.9 x sent`, i.e. when the bridge's own
+// delivery degrades. On a saturated path where the bridge wins the queue
+// and the co-tenant is the one starved, the bridge reads clean and never
+// backs off. No headroom mechanism remains; a replacement basis is
+// argued on issue #61.
 //
-// Why declare a parameter nothing uses: rclcpp surfaces a YAML override
-// only for a DECLARED parameter (this node does not set
-// automatically_declare_parameters_from_overrides), so UNdeclaring it
-// would make a stale key in an existing config silently ignored — set
-// it, nothing happens, no diagnostic. That is the same "announced and
-// then ignored" shape this branch exists to remove, and it is the same
-// reason the retired `remotes.<label>.name` key stays declared. Declared
-// + a WARN on any non-default value is what an operator can act on. See
+// The parameter itself is detected on PRESENCE from the node's parameter
+// overrides and WARNed about (`UDPBridge::on_configure`) — there is no
+// declared default to compare against, deliberately: a value comparison
+// against `static_cast<double>(0.2f)` matched YAML `0.2` only by a
+// float-to-double widening accident. See
 // doc/admission_control_design.md, "link_headroom_fraction after the
 // clamp removal".
-inline constexpr float kDefaultLinkHeadroomFraction = 0.2f;
 
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant

@@ -122,6 +122,8 @@ UDPBridge::UDPBridge(const std::string &node_name, const rclcpp::NodeOptions &op
 
 UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State & state)
 {
+  // Per-cycle, so a cleanup->configure reports this cycle's tripwires.
+  retired_parameter_warning_count_ = 0;
   // start with the ROS2 node name
   std::string name = get_name();
   auto last_slash = name.rfind('/');
@@ -662,15 +664,33 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // 2026-08-25, and nothing stores it any more — no Connection
       // state, no message field, no control-law read.
       //
-      // It stays DECLARED as a tripwire, following the same reasoning as
-      // the retired `remotes.<label>.name` key above: rclcpp surfaces a
-      // YAML override only for a declared parameter, so UNdeclaring this
-      // would make a stale key in an existing config silently ignored —
-      // set it, nothing happens, no diagnostic. Silence is precisely the
-      // shape that let the 2026-08-25 operator draw a false conclusion
-      // about a tunable, and it is what this whole branch exists to
-      // remove. Deleting the parameter "would not break any config" is
-      // true and is the problem, not the justification.
+      // Detected on PRESENCE, from the parameter overrides directly.
+      // Two reasons, both learned the hard way in review round 3:
+      //
+      // 1. The precedent this follows — the retired
+      //    `remotes.<label>.name` key above — rejects on presence, not
+      //    on whether the value would have changed anything, and
+      //    `RetiredRemoteNameMatchingItsLabelStillFailsToConfigure`
+      //    pins exactly that. A value comparison here diverged from the
+      //    precedent it cited.
+      // 2. A value comparison against the default was correct only by
+      //    ACCIDENT. `static_cast<double>(0.2f)` is
+      //    0.20000000298023223877 and YAML `0.2` is
+      //    0.20000000000000001110, so the shipped default — the single
+      //    most likely stale value in a real config — warned only
+      //    because the constant happened to be a `float`. Making
+      //    `kDefaultLinkHeadroomFraction` a `double`, a plausible
+      //    tidy-up, would have silenced the tripwire on that value with
+      //    no test failing. That is the same "correct by an incidental
+      //    property of another declaration" pattern round 2 removed
+      //    from the refractory gate.
+      //
+      // Presence also removes the reason to declare the parameter at
+      // all: `get_parameter_overrides()` carries a config file's key
+      // whether or not it is declared, so the earlier "declare it or
+      // rclcpp hides the override" rationale was simply wrong. Not
+      // declaring it is better — a retired parameter must not show up
+      // in `ros2 param list` looking live.
       //
       // WARN rather than FAIL, which is where this differs from
       // `remotes.<label>.name`: that key, left stale, actively
@@ -680,20 +700,23 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // — so refusing to configure would ground a boat over a dead
       // config key. The operator gets one loud line per offending
       // connection instead.
-      std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
-      declareDoubleIfMissing(link_headroom_fraction_param, static_cast<double>(kDefaultLinkHeadroomFraction));
-      const double link_headroom_fraction = getDoubleParameter(link_headroom_fraction_param);
-      if(link_headroom_fraction != static_cast<double>(kDefaultLinkHeadroomFraction))
+      const std::string link_headroom_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".link_headroom_fraction";
+      const auto& parameter_overrides =
+        get_node_parameters_interface()->get_parameter_overrides();
+      if(parameter_overrides.count(link_headroom_fraction_param) > 0)
+      {
+        ++retired_parameter_warning_count_;
         RCLCPP_WARN_STREAM(get_logger(),
           "Connection '" << remote_name << "/" << connection_name
-          << "': link_headroom_fraction is set to " << link_headroom_fraction
-          << ", but the parameter is RETIRED and does nothing (#52). The "
-          "`(1 - headroom) x goodput` clamp it controlled was removed on "
-          "2026-08-25 because goodput is depressed by the very throttling "
-          "the clamp was computing. Co-tenant traffic on this path is now "
-          "protected by the refractory-gated multiplicative decrease "
-          "instead. Remove the key from your config; it is still declared "
-          "only so a stale one is visible rather than silently ignored.");
+          << "': link_headroom_fraction is set, but the parameter is "
+          "RETIRED and does nothing (#52). The `(1 - headroom) x goodput` "
+          "clamp it controlled was removed on 2026-08-25 because goodput "
+          "is depressed by the very throttling the clamp was computing. "
+          "Co-tenant traffic on this path is now protected by the "
+          "refractory-gated multiplicative decrease instead — no headroom "
+          "mechanism remains. Remove the key from your config; setting it "
+          "to any value, including the old default, changes nothing.");
+      }
 
       std::string admission_refractory_param = "remotes." + remote_name + ".connections." + connection_name + ".admission_refractory_period_seconds";
       declareDoubleIfMissing(admission_refractory_param, static_cast<double>(kDefaultAdmissionRefractoryPeriodSeconds));

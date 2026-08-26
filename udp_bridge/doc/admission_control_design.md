@@ -276,11 +276,6 @@ admission parameter a `ParameterDescriptor` (a `description`, and
 `read_only: true` once the configure-time contract is settled), which was
 deferred out of #52 for exactly that reason.
 
-(#76 is the PULL REQUEST on that issue, not the issue. Five references in
-this change pointed at it; `/issues/76` only resolves by redirect, and
-once #76 merges an operator following the link lands on merged work while
-the question stays open on #75.)
-
 ## `link_headroom_fraction` after the clamp removal (issue #52)
 
 The decrease used to target
@@ -316,33 +311,41 @@ So the parameter is **retired**, and all of its behaviour is removed:
 `link_headroom_fraction_` member are gone, no message carries it, and
 nothing in the control law reads it.
 
-**Why it is still declared.** Not because deleting it would break
-anything — it would not, and an earlier version of this document said
-otherwise. `udp_bridge.cpp` records the actual behaviour: rclcpp surfaces
-a YAML override only for a **declared** parameter (this node does not set
-`automatically_declare_parameters_from_overrides`), so an override for an
-*undeclared* parameter is **silently ignored**, not an error. That
-silence is the hazard. A stale key left in an old config — or typed from
-memory — would be accepted, do nothing, and say nothing, which is exactly
-the "set it, nothing happens, draw a false conclusion" shape that made
-the 2026-08-25 incident hard to reason about and that this whole branch
-exists to remove.
+**Why the key is still detected.** Not because deleting the parameter
+would break anything — it would not, and an earlier version of this
+document said otherwise. The hazard is silence: a stale key left in an
+old config, or typed from memory, would be accepted, do nothing, and say
+nothing, which is exactly the "set it, nothing happens, draw a false
+conclusion" shape that made the 2026-08-25 incident hard to reason about
+and that this whole branch exists to remove.
 
-So the parameter stays **declared with no behaviour**, and `on_configure`
-logs a **WARN naming the connection** whenever it is set to a non-default
-value, saying that it does nothing and what carries the guarantee now.
-This follows the repo's own precedent for the retired
-`remotes.<label>.name` key, which is likewise kept declared purely so a
-stale key is visible. It differs from that precedent in one respect: a
+So the parameter is **not declared at all** — a retired key must not
+appear in `ros2 param list` looking live — and `on_configure` instead
+looks it up by **presence** in the node's parameter overrides, which
+`rclcpp` carries whether or not a parameter has been declared. Setting it
+to **any** value, including the old `0.2` default, logs a **WARN naming
+the connection**, saying that it does nothing and what carries the
+guarantee now.
+
+Presence, not value, for two reasons (both found in review round 3 of
+#52). First, it restores the shape of the precedent this follows: the
+retired `remotes.<label>.name` key is rejected on presence, not on
+whether the value would have changed anything, and a test pins exactly
+that. Second, the value comparison was correct only by accident —
+`static_cast<double>(0.2f)` is 0.20000000298023223877 against YAML
+`0.2` at 0.20000000000000001110, so the shipped default (the likeliest
+stale value in a real config) warned only because the constant happened
+to be a `float`; widening it to a `double` would have silenced the
+tripwire with no test failing.
+
+It differs from the `remotes.<label>.name` precedent in one respect: a
 stale `remotes.<label>.name` actively **misroutes** traffic (the #51 echo
 bug), so it fails the transition; a stale headroom value misroutes
 nothing, so refusing to configure would ground a boat over a dead config
 key. WARN, and come up.
-`RetiredParameters.LinkHeadroomFractionStillConfigures`
-(`test/test_node_name_limits.cpp`) pins that distinction.
 
 **Follow-up:** decide whether a headroom-like target gets a *new* basis
-(one that is not post-gate goodput), and whether the declared tripwire is
+(one that is not post-gate goodput), and whether the configure-time tripwire is
 eventually dropped once field configs are known not to carry the key —
 after post-deployment field data exists. Tracked on
 [#61](https://github.com/rolker/udp_bridge/issues/61), which is already
@@ -366,11 +369,23 @@ Hence `link_headroom_fraction`, which used to make the controller target
 a fraction of what the link is *measured* to deliver, so a co-tenant — an
 SSH session, the operator's own management traffic — keeps a share on a
 62.5 kB/s path as well as on a 30 Mbit one. **That clamp was removed on
-2026-08-25 and the parameter retired to a declared tripwire** (see the
-section above); what now provides the co-tenant
-guarantee is the refractory-gated multiplicative decrease itself, and
-the bench's management-flow survivability invariant in `test/bench/` —
-the thing that actually asserts the property — passes on it.
+2026-08-25 and the parameter retired to a configure-time tripwire** (see
+the section above).
+
+What replaced it is weaker than a headroom target, and worth stating
+precisely. The clamp had a **structural** property: it reserved a share
+of measured throughput whether or not the bridge itself was losing. A
+multiplicative decrease fires only when `remote_received < 0.9 × sent` —
+that is, only when the bridge's OWN delivery degrades. On a saturated
+path where the bridge wins the queue and the co-tenant is the one
+starved, the bridge reads clean and never backs off. **No headroom
+mechanism remains.** The bench's management-flow survivability invariant
+in `test/bench/` — the thing that actually asserts the property — passes
+on the recorded trajectory, in which the bridge is losing too; that is a
+measurement of one trajectory, not a guarantee in general. The accurate
+statement is that the co-tenant is protected insofar as the bridge shares
+the loss. A replacement basis is argued on
+[#61](https://github.com/rolker/udp_bridge/issues/61).
 
 The rate limit is **not** obsolete. It remains a hard ceiling and the
 cost control on metered cell links. What it is no longer asked to be is

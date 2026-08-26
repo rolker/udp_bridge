@@ -380,25 +380,92 @@ TEST(NodeNameLimits, AddRemoteServiceRefusesOurOwnName)
 }
 
 // `link_headroom_fraction` is RETIRED (#52): the `(1 - headroom) x
-// goodput` clamp it fed was removed on 2026-08-25, and nothing stores it
-// any more. It is still DECLARED, purely so a stale key in an existing
-// config is visible — rclcpp surfaces a YAML override only for a
-// declared parameter, so undeclaring it would make the key silently
-// ignored, which is the "set it, nothing happens" shape #52 exists to
-// remove.
+// goodput` clamp it fed was removed on 2026-08-25, and nothing stores
+// it any more. It is no longer DECLARED either — a retired key must not
+// show up in `ros2 param list` looking live — and is instead detected by
+// PRESENCE in the node's parameter overrides, which rclcpp carries
+// whether or not a parameter has been declared.
 //
 // Unlike the retired `remotes.<label>.name`, a stale value here must NOT
 // fail the transition. That key misroutes traffic when stale (the #51
 // echo bug); this one misroutes nothing, so refusing to configure would
 // ground a boat over a dead config key. One WARN, and the node comes up.
+//
+// The WARN is asserted through a counter rather than by reading a log,
+// because nothing in this package captures log content — and without it
+// the ONLY observable outcome of a retired key would be the one it must
+// not have. That gap is what let the previous value-comparison form
+// cover its own shipped default only by a float-to-double widening
+// accident (see the round-3 tests below).
 TEST(RetiredParameters, LinkHeadroomFractionStillConfigures)
 {
   Bridge bridge("retired_headroom");
   bridge.name("hub").remote("peer", "").connection("peer", "c0");
   bridge.connectionParameter("peer", "c0", "link_headroom_fraction", 0.5);
-  EXPECT_EQ(bridge.configure(), kInactive)
+  ASSERT_EQ(bridge.configure(), kInactive)
     << "a config still setting the retired link_headroom_fraction must "
        "WARN and come up, not fail the transition";
+  EXPECT_EQ(bridge.node()->retiredParameterWarningCountForTest(), 1u)
+    << "the retired key must produce exactly one WARN naming the "
+       "connection";
+}
+
+// The value that actually matters, and the one the previous
+// implementation covered only by accident. The tripwire compared against
+// `static_cast<double>(kDefaultLinkHeadroomFraction)` —
+// 0.20000000298023223877, because the constant was a `float` — while
+// YAML `0.2` is 0.20000000000000001110. They happened to be unequal, so
+// the WARN fired; making the constant a `double`, a plausible tidy-up,
+// would have silenced the tripwire on the SINGLE most likely stale value
+// in a real config, with no test failing. Detection is now on presence,
+// and this pins it.
+TEST(RetiredParameters, LinkHeadroomFractionAtTheOldDefaultStillWarns)
+{
+  Bridge bridge("retired_headroom_default_value");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "link_headroom_fraction", 0.2);
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_EQ(bridge.node()->retiredParameterWarningCountForTest(), 1u)
+    << "the retired key's own former DEFAULT value is the likeliest one "
+       "to be left in a stale config, so it must warn like any other "
+       "(#52) — a value comparison against the default would not";
+}
+
+// An integer literal for the retired key is still a stale key. It used
+// to reach declare_parameter as an INTEGER override for a double-typed
+// parameter and fail the whole transition.
+TEST(RetiredParameters, LinkHeadroomFractionAsAnIntegerLiteralStillWarns)
+{
+  Bridge bridge("retired_headroom_integer");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "link_headroom_fraction", 1);
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_EQ(bridge.node()->retiredParameterWarningCountForTest(), 1u);
+}
+
+// The counterpart, and the reason the tripwire is a real assertion: an
+// absent key is the normal case and must be silent.
+TEST(RetiredParameters, AbsentLinkHeadroomFractionDoesNotWarn)
+{
+  Bridge bridge("absent_headroom");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_EQ(bridge.node()->retiredParameterWarningCountForTest(), 0u)
+    << "a config that does not carry the retired key must produce no "
+       "WARN, or the tripwire is noise an operator learns to ignore";
+}
+
+// One loud line per offending connection, not one per node: a hub with
+// several stale connections must show which ones.
+TEST(RetiredParameters, LinkHeadroomFractionWarnsOncePerConnection)
+{
+  Bridge bridge("retired_headroom_two_connections");
+  bridge.name("hub").remote("peer", "")
+        .connection("peer", "c0").connection("peer", "c1");
+  bridge.connectionParameter("peer", "c0", "link_headroom_fraction", 0.2);
+  bridge.connectionParameter("peer", "c1", "link_headroom_fraction", 0.5);
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_EQ(bridge.node()->retiredParameterWarningCountForTest(), 2u);
 }
 
 // The double-literal trap, guarded at the DECLARATION (#52).

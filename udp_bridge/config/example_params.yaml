@@ -118,20 +118,26 @@
             # call site was the `(1 - headroom) x goodput` clamp on the
             # congested backoff, removed because goodput is depressed by
             # the very throttling the clamp was computing — a positive
-            # feedback loop. The co-tenant guarantee is now carried by the
-            # refractory-gated multiplicative decrease, verified against
-            # the bench's management-flow invariant. See
-            # doc/admission_control_design.md, "link_headroom_fraction
-            # after the clamp removal".
+            # feedback loop. See doc/admission_control_design.md,
+            # "link_headroom_fraction after the clamp removal".
+            #
+            # NO HEADROOM MECHANISM REMAINS. The refractory-gated
+            # multiplicative decrease protects a co-tenant only insofar as
+            # the bridge SHARES the loss: it fires when the bridge's own
+            # delivery degrades, so on a saturated path where the bridge
+            # wins the queue and the co-tenant is the one starved, the
+            # bridge reads clean and never backs off. A replacement basis
+            # is argued on issue #61.
             #
             # ALL BEHAVIOUR IS GONE: no Connection stores it, no message
-            # carries it, nothing in the control law reads it. It is still
-            # DECLARED so a stale key is VISIBLE — rclcpp surfaces a YAML
-            # override only for a declared parameter, so undeclaring it
-            # would make this key silently ignored, which is the same
-            # "set it, nothing happens" shape #52 exists to remove.
-            # Setting it to anything but 0.2 logs a WARN at on_configure
-            # naming the connection; the node still comes up.
+            # carries it, nothing in the control law reads it, and it is
+            # no longer declared as a parameter — a retired key must not
+            # show up in `ros2 param list` looking live. Setting it to ANY
+            # value, INCLUDING the old 0.2 default, logs a WARN at
+            # on_configure naming the connection; the node still comes up.
+            # The key is detected by PRESENCE in the node's parameter
+            # overrides, which rclcpp carries whether or not a parameter
+            # is declared.
             #link_headroom_fraction: 0.2
 
             # Minimum interval between admission-control decisions, in

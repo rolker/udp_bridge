@@ -84,6 +84,23 @@ public:
   /// called when a packet is received.
   void spin_once();
 
+  /// Test accessor: how many RETIRED-parameter tripwires fired during
+  /// the last on_configure (#52).
+  ///
+  /// Nothing in this package captures log content, and the tripwires'
+  /// whole job is to emit a WARN for a key that changes no behaviour —
+  /// so without this counter the only observable outcome of a retired
+  /// key is the one it must NOT have (a failed transition), and the
+  /// tripwire has no regression guard at all. That is not hypothetical:
+  /// the `link_headroom_fraction` tripwire covered its own shipped
+  /// default value only by a float-to-double widening accident, and no
+  /// test would have failed if a tidy-up had silenced it (#52, review
+  /// round 3).
+  size_t retiredParameterWarningCountForTest() const
+  {
+    return retired_parameter_warning_count_;
+  }
+
 private:
   /// Sets the node name as seen by other udp_bridge nodes.
   ///
@@ -381,6 +398,12 @@ private:
       return static_cast<double>(parameter.as_int());
     return parameter.as_double();
   }
+
+  /// Count of RETIRED-parameter tripwire WARNs emitted by the last
+  /// on_configure. Reset at the top of on_configure so a
+  /// cleanup->configure cycle reports that cycle's count. Written only
+  /// on the configure path; read only by tests (#52).
+  size_t retired_parameter_warning_count_ = 0;
 
   /// Timer callback where info on available topics are periodically reported
   void bridgeInfoCallback();

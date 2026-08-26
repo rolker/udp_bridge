@@ -61,10 +61,10 @@ public:
   // backoff was their only call site and was removed on 2026-08-25;
   // keeping a setter that stored a value nothing read left the
   // connection able to be "configured" into no change at all. The
-  // PARAMETER is still declared at the node — see
-  // kDefaultLinkHeadroomFraction and doc/admission_control_design.md,
-  // "link_headroom_fraction after the clamp removal" — but it reaches no
-  // Connection state.
+  // PARAMETER survives only as a configure-time tripwire that WARNs on
+  // presence — see the RETIRED block in resend_constants.h and
+  // doc/admission_control_design.md, "link_headroom_fraction after the
+  // clamp removal" — and it reaches no Connection state.
 
   /// Set the minimum interval, in seconds, between admission-control
   /// decisions (issue #52). While the refractory window is open the
