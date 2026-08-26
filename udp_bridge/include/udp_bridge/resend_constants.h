@@ -189,6 +189,26 @@ inline constexpr float kDefaultAdmissionFloorBytesPerSecond = 8192.0f;
 // reacting to our own previous decrease.
 inline constexpr double kDefaultAdmissionRefractoryPeriodSeconds = 5.0;
 
+// Upper bound on the configurable refractory base period, seconds
+// (issue #52 review round 1).
+//
+// Every other admission setter clamps both ends; this one guarded only
+// NaN and negatives, so `+Inf` — or any large finite typo — was accepted
+// verbatim. One congested sample then opened a window that never
+// expires: no decrease, no recovery, and no log line, for the life of
+// the node. A control loop that can be switched off by a config typo is
+// worse than one tuned badly.
+//
+// 60 s is the ceiling, not a recommendation. Above it the controller
+// cannot answer a link change inside any operator-observable timescale:
+// BridgeInfo arrives about every 2 s, `SustainedRealLossMustConverge`
+// requires convergence within 40 s, and a base of 30 s was measured
+// (review round 1, deliberately deafened controller) to converge only at
+// 92.8 s. Out-of-range values clamp to this bound rather than falling
+// back to the default, so an operator asking for a long window still
+// gets the longest one that leaves the loop alive.
+inline constexpr double kMaximumAdmissionRefractoryPeriodSeconds = 60.0;
+
 // Growth factor applied to the refractory window on each successive
 // decrease within an UNRESOLVED congestion episode (no clean sample
 // seen since the last decrease). Mirrors the exponential backoff the

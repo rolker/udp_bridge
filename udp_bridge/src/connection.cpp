@@ -154,6 +154,14 @@ void Connection::setAdmissionRefractoryPeriodSeconds(double seconds)
   // is not a safe default, so a garbage value must not land there.
   if(std::isnan(seconds) || seconds < 0.0)
     seconds = kDefaultAdmissionRefractoryPeriodSeconds;
+  // Clamp the top end too. +Inf (and any large finite typo) used to be
+  // accepted verbatim: one congested sample then froze the controller
+  // for the life of the node — no decrease, no recovery, nothing logged.
+  // This is the only admission setter that lacked an upper clamp. See
+  // kMaximumAdmissionRefractoryPeriodSeconds for why the bound is where
+  // it is; clamping (rather than falling back to the default) keeps an
+  // operator's intent to slow the loop down while keeping it alive.
+  seconds = std::min(seconds, kMaximumAdmissionRefractoryPeriodSeconds);
   std::lock_guard<std::recursive_mutex> lock(config_mutex_);
   admission_refractory_period_seconds_ = seconds;
   // Reset the in-force window and any accumulated growth. Without this a

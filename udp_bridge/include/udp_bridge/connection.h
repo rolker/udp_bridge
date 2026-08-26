@@ -68,10 +68,12 @@ public:
   /// decisions (issue #52). While the refractory window is open the
   /// controller freezes: no decrease AND no additive recovery, whatever
   /// the arriving sample says. Negative values and NaN fall back to
-  /// kDefaultAdmissionRefractoryPeriodSeconds; 0 disables the gate
-  /// (every sample is acted on — the pre-#52 behaviour that produced
-  /// the 2026-08-25 collapse, available only because an operator may
-  /// need to reproduce it).
+  /// kDefaultAdmissionRefractoryPeriodSeconds; values above
+  /// kMaximumAdmissionRefractoryPeriodSeconds (including +Inf) clamp
+  /// DOWN to it, so no configuration can freeze the controller
+  /// permanently; 0 disables the gate (every sample is acted on — the
+  /// pre-#52 behaviour that produced the 2026-08-25 collapse, available
+  /// only because an operator may need to reproduce it).
   ///
   /// Setting this also resets the currently-open window and any
   /// accumulated exponential growth, so a reconfiguration cannot leave

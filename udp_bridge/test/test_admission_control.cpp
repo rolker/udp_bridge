@@ -26,7 +26,11 @@
 //   RefractoryPeriodSetterContract — the one-decision-per-epoch gate
 //                                 that stopped the 2026-08-25 cascade,
 //                                 including that a CLEAN sample inside
-//                                 the window gets no recovery either
+//                                 the window gets no recovery either,
+//                                 and that the configured period is
+//                                 clamped at BOTH ends so no value
+//                                 (+Inf included) can freeze the
+//                                 controller for the life of the node
 //                                 (#52).
 //   WindowMatchedSendRateSurvivesABurst — the congestion detector
 //                                 measures our send rate over the same
@@ -908,6 +912,44 @@ TEST_F(AdmissionControl, RefractoryPeriodSetterContract)
                                   udp_bridge::kAdmissionDecreaseFactor))
     << "With the gate disabled, two congested samples must apply two "
        "decreases — the pre-#52 behaviour, available deliberately.";
+
+  // The TOP end is clamped too. +Inf — or a large finite typo — used to
+  // be accepted verbatim, and one congested sample then froze the
+  // controller for the life of the node: no decrease, no recovery, and
+  // nothing logged. Clamping (not falling back to the default) keeps an
+  // operator's intent to slow the loop down while keeping it alive.
+  conn->setAdmissionRefractoryPeriodSeconds(
+    std::numeric_limits<double>::infinity());
+  EXPECT_EQ(conn->admissionRefractoryPeriodSeconds(),
+            udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds);
+  EXPECT_EQ(conn->currentAdmissionRefractoryWindowSeconds(),
+            udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds);
+  conn->setAdmissionRefractoryPeriodSeconds(
+    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds * 1000.0);
+  EXPECT_EQ(conn->admissionRefractoryPeriodSeconds(),
+            udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds);
+
+  // And the clamped window really does expire: the freeze is bounded in
+  // time, not just in the stored number.
+  auto frozen = make_connection();
+  frozen->setAdmissionRefractoryPeriodSeconds(
+    std::numeric_limits<double>::infinity());
+  const auto t1 = t0 + rclcpp::Duration::from_seconds(1.0);
+  send_traffic(*frozen, t1, 80);
+  frozen->update_last_receive_time(t1.seconds(), 100, false);
+  frozen->updateAdmissionControl(20000.0f, 0.0f, t1);
+  const uint32_t after_freeze = frozen->effectiveRateLimit();
+  ASSERT_LT(after_freeze, kRateLimit);
+
+  const auto t2 = t1 + rclcpp::Duration::from_seconds(
+    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds *
+      udp_bridge::kAdmissionRefractoryMaximumMultiple + 1.0);
+  send_traffic(*frozen, t2, 80);
+  frozen->update_last_receive_time(t2.seconds(), 100, false);
+  frozen->updateAdmissionControl(80000.0f, 0.0f, t2);         // clean
+  EXPECT_GT(frozen->effectiveRateLimit(), after_freeze)
+    << "An +Inf refractory period must not outlive the clamp: the "
+       "controller has to recover once the clamped window elapses.";
 }
 
 TEST_F(AdmissionControl, WindowMatchedSendRateSurvivesABurst)
