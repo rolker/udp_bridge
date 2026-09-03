@@ -428,6 +428,95 @@ TEST(RuntimeTunables, UnrelatedParameterUntouched)
                   static_cast<float>(kConfiguredFloor));
 }
 
+// ---------------------------------------------------------------------
+// The configure path's own range checking for the connection cap.
+// ---------------------------------------------------------------------
+
+namespace
+{
+
+// A bridge whose connection parameters arrive as NodeOptions OVERRIDES,
+// so on_configure performs the declaration and the read itself — the
+// entry point a params YAML file actually uses.
+std::shared_ptr<udp_bridge::UDPBridge> bridgeWithConnectionOverride(
+  const std::string& node_name, const std::string& key,
+  const rclcpp::ParameterValue& value)
+{
+  const std::string base =
+    "remotes." + kRemote + ".connections." + kConnection + ".";
+  std::vector<rclcpp::Parameter> overrides{
+    rclcpp::Parameter("port", 0),
+    rclcpp::Parameter("name", std::string("test_bridge")),
+    rclcpp::Parameter("remotes_list", std::vector<std::string>{kRemote}),
+    rclcpp::Parameter("remotes." + kRemote + ".connections_list",
+                      std::vector<std::string>{kConnection}),
+    rclcpp::Parameter(base + "host", std::string("127.0.0.1")),
+    rclcpp::Parameter(base + "port", 45999),
+    rclcpp::Parameter(base + key, value),
+  };
+  return std::make_shared<udp_bridge::UDPBridge>(
+    node_name, rclcpp::NodeOptions().parameter_overrides(overrides));
+}
+
+}  // namespace
+
+// ROS 2 integer parameters are int64 and the connection's rate limit is a
+// uint32. Read straight into an `int`, a config asking for 3 GB/s went
+// NEGATIVE, the `> 0` guard then skipped the assignment entirely, and the
+// link silently fell back to Connection's 50000 B/s built-in default —
+// three orders of magnitude below what was configured, with nothing in
+// the log. The per-topic cap 120 lines away already clamped and warned.
+TEST(ConnectionRateLimitConfig, AboveIntRangeRateLimitIsCarriedNotDiscarded)
+{
+  // 3 GB/s fits a uint32 comfortably; it does NOT fit an `int`. This is
+  // the exact value the defect turned negative.
+  auto node = bridgeWithConnectionOverride(
+    "connection_cap_above_int", "maximum_bytes_per_second",
+    rclcpp::ParameterValue(int64_t{3000000000}));
+  ASSERT_EQ(node->configure().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+  auto connection = node->connectionForTest(kRemote, kConnection);
+  ASSERT_TRUE(connection != nullptr);
+  EXPECT_EQ(connection->rateLimit(), 3000000000u)
+    << "the configured limit must reach the Connection, not be discarded "
+       "by a `> 0` guard a narrowing cast has already falsified";
+}
+
+TEST(ConnectionRateLimitConfig, OverRangeRateLimitIsClampedNotWrapped)
+{
+  // Past uint32 this time: clamp, with a WARN, as the per-topic cap does.
+  constexpr int64_t kOverRange =
+    static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1000;
+  auto node = bridgeWithConnectionOverride(
+    "connection_cap_over_range", "maximum_bytes_per_second",
+    rclcpp::ParameterValue(kOverRange));
+  ASSERT_EQ(node->configure().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+  auto connection = node->connectionForTest(kRemote, kConnection);
+  ASSERT_TRUE(connection != nullptr);
+  EXPECT_EQ(connection->rateLimit(), std::numeric_limits<uint32_t>::max())
+    << "clamped to the largest representable limit, never wrapped";
+}
+
+TEST(ConnectionRateLimitConfig, NegativeRateLimitFallsBackToTheDefault)
+{
+  auto node = bridgeWithConnectionOverride(
+    "connection_cap_negative", "maximum_bytes_per_second",
+    rclcpp::ParameterValue(int64_t{-1}));
+  ASSERT_EQ(node->configure().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+    << "a params file has no return channel, so a nonsensical scalar is "
+       "warned about and carried, not fatal";
+
+  auto connection = node->connectionForTest(kRemote, kConnection);
+  ASSERT_TRUE(connection != nullptr);
+  EXPECT_GT(connection->rateLimit(), 0u)
+    << "negative degrades to 0, which selects the built-in default — "
+       "never to a wrapped, near-2^32 limit";
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);

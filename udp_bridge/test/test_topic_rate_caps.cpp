@@ -448,6 +448,32 @@ TEST(TopicRateCapConfig, AbsentCapIsUnlimited)
        "pre-existing config behaves exactly as it did";
 }
 
+// The configure path CLAMPS what the runtime path refuses, because a
+// params file has no return channel (connection_tunables.h). Only the
+// runtime half of that asymmetry was covered; the asymmetry is this
+// branch's central validation policy, so both halves need pinning.
+TEST(TopicRateCapConfig, ConfiguredNegativeCapWarnsAndBecomesNoCap)
+{
+  Bridge bridge("topic_cap_config_negative", -5);
+  ASSERT_TRUE(bridge.configure())
+    << "a nonsensical scalar must not stop a telemetry bridge starting";
+  EXPECT_EQ(bridge.cap(), 0u)
+    << "a negative cap degrades to no cap — today's behaviour and the "
+       "least surprising reading — where a runtime set is refused";
+}
+
+TEST(TopicRateCapConfig, ConfiguredOverRangeCapIsClampedNotWrapped)
+{
+  // Past uint32. Cast unchecked it would wrap to a small cap and shed
+  // almost everything on a config asking for the opposite.
+  constexpr int64_t kOverRange =
+    static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1000;
+  Bridge bridge("topic_cap_config_over_range", kOverRange);
+  ASSERT_TRUE(bridge.configure());
+  EXPECT_EQ(bridge.cap(), std::numeric_limits<uint32_t>::max())
+    << "clamped to the largest representable cap, not wrapped";
+}
+
 TEST(TopicRateCapConfig, RuntimeSetChangesTheCap)
 {
   Bridge bridge("topic_cap_runtime", 200000);

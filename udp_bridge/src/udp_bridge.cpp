@@ -640,11 +640,41 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       declareIfMissing(return_port_param, 0);
       connection.return_port = get_parameter(return_port_param).as_int();
 
+      // Connection-level rate limit. ROS 2 integer parameters are int64
+      // and RemoteConnection::maximum_bytes_per_second is a uint32, so
+      // the value is range-checked before the cast — exactly as the
+      // per-topic cap below is, and for a worse failure mode: narrowing
+      // straight to `int` turned a YAML 3000000000 negative, the `> 0`
+      // guard then skipped the assignment, and the link silently fell
+      // back to Connection::default_rate_limit (50000 B/s) on a config
+      // that asked for 3 GB/s. Clamped rather than refused, like every
+      // other configure-time value: a params file has no return channel
+      // (connection_tunables.h), and a runtime `ros2 param set` of this
+      // same key is REJECTED with a reason.
       std::string maximum_bytes_per_second_param = "remotes." + remote_name + ".connections." + connection_name + ".maximum_bytes_per_second";
       declareIfMissing(maximum_bytes_per_second_param, 0);
-      int mbps = get_parameter(maximum_bytes_per_second_param).as_int();
+      constexpr int64_t kMaxConnectionBytesPerSecond =
+        static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+      int64_t mbps = get_parameter(maximum_bytes_per_second_param).as_int();
+      if(mbps < 0)
+      {
+        RCLCPP_WARN_STREAM(get_logger(),
+          "maximum_bytes_per_second for " << remote_name << "/" << connection_name
+          << " is " << mbps << "; treating as 0, which selects Connection's "
+          "built-in default rate limit");
+        mbps = 0;
+      }
+      else if(mbps > kMaxConnectionBytesPerSecond)
+      {
+        RCLCPP_WARN_STREAM(get_logger(),
+          "maximum_bytes_per_second for " << remote_name << "/" << connection_name
+          << " is " << mbps << "; clamping to " << kMaxConnectionBytesPerSecond);
+        mbps = kMaxConnectionBytesPerSecond;
+      }
+      // 0 keeps its documented meaning — leave the field at the
+      // RemoteConnection default so Connection uses default_rate_limit.
       if(mbps > 0)
-        connection.maximum_bytes_per_second = mbps;
+        connection.maximum_bytes_per_second = static_cast<uint32_t>(mbps);
 
       std::string resend_budget_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".resend_budget_fraction";
       declareDoubleIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
