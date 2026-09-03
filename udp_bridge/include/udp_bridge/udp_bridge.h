@@ -114,6 +114,19 @@ public:
                             const std::string& connection_id,
                             ConnectionRateInfo& info);
 
+  /// Test hook: tear a forwarding out of the routing table, which is all
+  /// the `remove_advertise` service does (UDPBridge::removeAdvertise is
+  /// this one call). It exists so a test can reach the state a runtime
+  /// parameter set must REFUSE — a per-topic cap whose (topic, remote,
+  /// connection) target no longer exists — without standing up a service
+  /// client and an executor for a one-line effect.
+  void removeSubscriberConnectionForTest(const std::string& source_topic,
+                                         const std::string& remote_name,
+                                         const std::string& connection_id)
+  {
+    removeSubscriberConnection(source_topic, remote_name, connection_id);
+  }
+
   /// Test hook: re-add a forwarding with exactly the arguments the
   /// service and wire callers supply — `remote_advertise`,
   /// `remote_subscribe` and `decodeSubscribeRequest` all call

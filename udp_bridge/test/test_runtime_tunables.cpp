@@ -87,6 +87,19 @@ constexpr int64_t kConfiguredRateLimit = 500000;
 constexpr double kConfiguredFloor = 8192.0;
 constexpr double kConfiguredRefractory = 3.0;
 constexpr double kConfiguredResendBudget = 0.25;
+constexpr int64_t kConfiguredTopicCap = 200000;
+
+// The topics_list label spells a parameter path segment; the RESOLVED
+// `source` is what the routing table is keyed by.
+const std::string kTopicLabel = "bulk";
+const std::string kSourceTopic = "/bulk";
+
+std::string topicParam(const std::string& key)
+{
+  return "remotes." + kRemote + ".connections." + kConnection + ".topics."
+       + kTopicLabel + "." + key;
+}
+
 std::string connectionParam(const std::string& key)
 {
   return "remotes." + kRemote + ".connections." + kConnection + "." + key;
@@ -105,7 +118,12 @@ std::string connectionParam(const std::string& key)
 class Bridge
 {
 public:
-  explicit Bridge(const std::string& node_name)
+  // `with_topic` adds one forwarded topic, so the per-topic
+  // `maximum_bytes_per_second` tunable is registered too. Off by default:
+  // the connection-level tests do not need a routing-table entry, and a
+  // fixture that quietly creates one would make their state harder to
+  // reason about.
+  explicit Bridge(const std::string& node_name, bool with_topic = false)
   : node_(std::make_shared<udp_bridge::UDPBridge>(node_name))
   {
     node_->declare_parameter("port", 0);
@@ -123,6 +141,14 @@ public:
                              kConfiguredRefractory);
     node_->declare_parameter(connectionParam("resend_budget_fraction"),
                              kConfiguredResendBudget);
+    if(with_topic)
+    {
+      node_->declare_parameter(connectionParam("topics_list"),
+                               std::vector<std::string>{kTopicLabel});
+      node_->declare_parameter(topicParam("source"), kSourceTopic);
+      node_->declare_parameter(topicParam("maximum_bytes_per_second"),
+                               kConfiguredTopicCap);
+    }
   }
 
   // Configure and hand back the live Connection. Both are assertions in
@@ -134,6 +160,15 @@ public:
        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
       return nullptr;
     return node_->connectionForTest(kRemote, kConnection);
+  }
+
+  // Back to UNCONFIGURED. Safe to re-configure afterwards because the
+  // fixture binds `port` 0: nothing closes the socket (issue #66), so a
+  // FIXED port would hit EADDRINUSE and exit(1) on the second bind.
+  bool cleanup()
+  {
+    return node_->cleanup().id() ==
+           lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
   }
 
   udp_bridge::UDPBridge& node() { return *node_; }
@@ -521,6 +556,35 @@ TEST(ConnectionRateLimitConfig, NegativeRateLimitFallsBackToTheDefault)
 // Lifecycle: the registry, the callback handle, and their ordering.
 // ---------------------------------------------------------------------
 
+// A cleanup/configure cycle must leave exactly one live callback and a
+// registry describing the NEW configuration. on_cleanup drops the handle
+// and clears the map; on_configure clears it again and refills it before
+// re-registering. If any of that were skipped, the second cycle would
+// either accumulate a duplicate callback or resolve tunables against
+// Connections destroyed by the first cycle.
+TEST(RuntimeTunablesLifecycle, CleanupThenConfigureRebuildsTheRegistry)
+{
+  Bridge bridge("runtime_reconfigure");
+  auto first = bridge.configure();
+  ASSERT_TRUE(first != nullptr);
+  ASSERT_TRUE(bridge.cleanup());
+
+  auto second = bridge.configure();
+  ASSERT_TRUE(second != nullptr) << "the bridge must re-configure";
+  ASSERT_NE(first.get(), second.get())
+    << "a re-configure builds fresh Connections; the test is meaningless "
+       "if the old object survived";
+
+  const std::string name = connectionParam("admission_floor_bytes_per_second");
+  auto result = bridge.node().set_parameter(rclcpp::Parameter(name, 20000.0));
+  EXPECT_TRUE(result.successful) << result.reason;
+  EXPECT_FLOAT_EQ(second->admissionFloorBytesPerSecond(), 20000.0f)
+    << "the rebuilt registry must resolve to the CURRENT Connection";
+  EXPECT_FLOAT_EQ(first->admissionFloorBytesPerSecond(),
+                  static_cast<float>(kConfiguredFloor))
+    << "and not to the one the previous configure cycle created";
+}
+
 // The callback must be unregistered on the way to FINALIZED, exactly as
 // it is on the way to UNCONFIGURED. Shutdown is reachable from ACTIVE and
 // from INACTIVE without passing through on_cleanup, and rclcpp does not
@@ -545,6 +609,89 @@ TEST(RuntimeTunablesLifecycle, ShutdownStopsTheCallbackLikeCleanupDoes)
   EXPECT_FLOAT_EQ(connection->admissionFloorBytesPerSecond(),
                   static_cast<float>(kConfiguredFloor))
     << "a FINALIZED node must not still be retuning its links";
+}
+
+// "Accepted, reads back, does nothing" for a target that has gone away is
+// the same defect in a different place, so a set whose (topic, remote,
+// connection) no longer exists is REFUSED. remove_advertise can produce
+// exactly this state at runtime.
+TEST(RuntimeTunablesLifecycle, TargetGoneIsRefusedNotSilentlyIgnored)
+{
+  Bridge bridge("runtime_target_gone", /*with_topic=*/true);
+  ASSERT_TRUE(bridge.configure() != nullptr);
+
+  const std::string name = topicParam("maximum_bytes_per_second");
+  // Sanity: while the forwarding exists, the same set is accepted.
+  ASSERT_TRUE(bridge.node().set_parameter(
+    rclcpp::Parameter(name, int64_t{50000})).successful);
+
+  bridge.node().removeSubscriberConnectionForTest(kSourceTopic, kRemote,
+                                                  kConnection);
+
+  auto result = bridge.node().set_parameter(
+    rclcpp::Parameter(name, int64_t{60000}));
+  EXPECT_FALSE(result.successful)
+    << "a cap with nowhere to land must say so, not be quietly stored";
+  EXPECT_NE(result.reason.find(name), std::string::npos)
+    << "the reason must name the parameter; got: " << result.reason;
+  EXPECT_NE(result.reason.find(kSourceTopic), std::string::npos)
+    << "and say which forwarding is missing; got: " << result.reason;
+}
+
+// The OnSetParameters callback is registered at the END of on_configure,
+// and that ordering is load-bearing: rclcpp invokes the callback for
+// declare_parameter() as well as for set_parameter(), and the runtime
+// validator REFUSES values the configure path deliberately CLAMPS. A
+// callback registered before the connection block would therefore see
+// every YAML override on its way in, refuse one of them, and throw
+// InvalidParameterValueException out of on_configure — which
+// rclcpp_lifecycle swallows, leaving a node that is silently
+// unconfigured with the socket already bound.
+//
+// `admission_refractory_period_seconds` above the 60 s ceiling is the
+// cleanest probe: it is precisely a value configure clamps and runtime
+// refuses. The parameters are supplied as NodeOptions OVERRIDES, not
+// pre-declared on the node, so on_configure performs the declaration
+// itself — the moment an early-registered callback would fire.
+TEST(RuntimeTunablesLifecycle, CallbackIsRegisteredAfterEveryDeclaration)
+{
+  const std::string base =
+    "remotes." + kRemote + ".connections." + kConnection + ".";
+  std::vector<rclcpp::Parameter> overrides{
+    rclcpp::Parameter("port", 0),
+    rclcpp::Parameter("name", std::string("test_bridge")),
+    rclcpp::Parameter("remotes_list", std::vector<std::string>{kRemote}),
+    rclcpp::Parameter("remotes." + kRemote + ".connections_list",
+                      std::vector<std::string>{kConnection}),
+    rclcpp::Parameter(base + "host", std::string("127.0.0.1")),
+    rclcpp::Parameter(base + "port", 45999),
+    // Above kMaximumAdmissionRefractoryPeriodSeconds: clamped here,
+    // refused at runtime.
+    rclcpp::Parameter(base + "admission_refractory_period_seconds", 500.0),
+  };
+  auto node = std::make_shared<udp_bridge::UDPBridge>(
+    "runtime_callback_order",
+    rclcpp::NodeOptions().parameter_overrides(overrides));
+
+  ASSERT_EQ(node->configure().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+    << "a config-file value the RUNTIME validator would refuse must not "
+       "be able to fail the transition — that is what registering the "
+       "callback last buys";
+
+  auto connection = node->connectionForTest(kRemote, kConnection);
+  ASSERT_TRUE(connection != nullptr);
+  EXPECT_DOUBLE_EQ(connection->admissionRefractoryPeriodSeconds(),
+                   udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds)
+    << "the configure path clamps to the ceiling";
+
+  // And the callback IS registered by the time configure returns.
+  auto result = node->set_parameter(rclcpp::Parameter(
+    base + "admission_refractory_period_seconds",
+    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds + 1.0));
+  EXPECT_FALSE(result.successful)
+    << "registered last, but registered: the same value is refused once "
+       "configure has finished";
 }
 
 int main(int argc, char** argv)

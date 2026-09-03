@@ -289,6 +289,35 @@ TEST(TopicRateCaps, CapAppliesToRelayedTrafficIdentically)
     << "relayed traffic must be capped by exactly the same rule";
 }
 
+// The exact condition relayToOtherRemotes branches on to pick between
+// RelayDropReason::NoDestinationDue and RelayDropReason::TopicRateLimited
+// (`over_budget.empty() ? ... : ...`). The two are counted apart because
+// they are tuned in different places, so the selector has to leave them
+// distinguishable: "nothing due" and "everything due was over budget"
+// must not both arrive as an empty selection with nothing else set.
+TEST(TopicRateCaps, ShedEverythingIsDistinguishableFromNothingDue)
+{
+  // Nothing due: a long `period` that has not elapsed, no cap at all.
+  std::map<std::string, RemoteDetails> not_due;
+  not_due["operator"] = remote("/bulk", "vpn", 0, 10.0f);
+  ASSERT_EQ(selectRateLimitedConnections(not_due, kT0, 100).due.count("operator"), 1u);
+  auto held = selectRateLimitedConnections(not_due, at(0.1), 100);
+  EXPECT_TRUE(held.due.empty());
+  EXPECT_TRUE(held.over_budget.empty())
+    << "the `period` rule holding a message back is NoDestinationDue — "
+       "nothing was over budget, so nothing may be reported as such";
+
+  // Everything due, everything over its cap.
+  std::map<std::string, RemoteDetails> capped;
+  capped["operator"] = remote("/bulk", "vpn", 1000);
+  ASSERT_EQ(selectRateLimitedConnections(capped, kT0, 5000).due.count("operator"), 1u);
+  auto shed = selectRateLimitedConnections(capped, kT0, 5000);
+  EXPECT_TRUE(shed.due.empty());
+  EXPECT_FALSE(shed.over_budget.empty())
+    << "an item whose every due destination was shed by the per-topic cap "
+       "is TopicRateLimited, and the relay sink can only tell from this";
+}
+
 // ---------------------------------------------------------------------
 // Accounting: a shed message must be visible.
 // ---------------------------------------------------------------------
