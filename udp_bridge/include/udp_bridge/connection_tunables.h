@@ -48,6 +48,33 @@ namespace udp_bridge
 //   range. Rejecting also keeps the parameter store and the live object
 //   in agreement: an accepted value is one the setter stores unchanged,
 //   so a subsequent `ros2 param get` reports what is actually in force.
+//
+//   That agreement is EXACT for `admission_refractory_period_seconds`
+//   (double stored as double) and for both `maximum_bytes_per_second`
+//   parameters (integer stored as uint32 after a range check). For
+//   `resend_budget_fraction` and `admission_floor_bytes_per_second` it
+//   is exact to float precision and no further: the parameter store
+//   holds a `double` and `Connection` holds a `float`, so a value with
+//   more precision than a float carries reads back from `ros2 param
+//   get` as the double that was set while the controller uses its
+//   float-rounded form. Deliberate — the values are rates and fractions
+//   whose meaningful precision is far coarser than a float — and called
+//   out for the same reason the 0-means-default exception below is.
+//
+// ParameterDescriptor ranges: DEFERRED, deliberately, and not for want of
+// effort (#75, review round 2 — #52's rebase notes had assigned the work
+// here). A FloatingPointRange/IntegerRange on a descriptor makes rclcpp
+// REJECT an out-of-range value, at DECLARE time as well as at set time.
+// That is the opposite of this node's configure-path policy — clamp a
+// mistyped YAML scalar and carry on, because a params file has no return
+// channel — and the rejection would surface as an exception thrown out of
+// on_configure, which rclcpp_lifecycle swallows: a bridge left silently
+// unconfigured over a typo, which is exactly the failure mode
+// declareDoubleIfMissing / declareIntIfMissing exist to prevent. Adopting
+// descriptors therefore means deciding whether the configure path should
+// start refusing what it currently clamps — a field-behaviour change, not
+// a mechanical annotation. Worth doing; needs its own issue and its own
+// decision, not a line at the end of a fix round.
 //   (The one deliberate exception is a connection's
 //   `maximum_bytes_per_second` of 0, whose documented meaning is "use
 //   Connection::default_rate_limit"; see below.)

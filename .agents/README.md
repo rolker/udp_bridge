@@ -144,7 +144,10 @@ than `maximum_connection_id_size - 1` — `"telemetry"` in
 Names are built as `<node_name>/...` (relative, so they resolve under the
 node's namespace). With the default node name: `udp_bridge/bridge_info`
 (`BridgeInfo`, latched transient_local keep-last-1), `udp_bridge/topic_statistics`
-(`TopicStatisticsArray`, depth 10), and per-remote latched
+(`TopicStatisticsArray`, depth 10 — its `average_fragment_count` is averaged
+over the records that CARRY a fragment count, not over every record (#75), so a
+rate-limited message no longer counts as zero fragments; see
+`TopicStatistics.msg`), and per-remote latched
 `udp_bridge/remotes/<remote>/bridge_info` + `.../topic_statistics`.
 Diagnostics go to `/diagnostics` via `diagnostic_updater` at ~1 Hz
 (per-connection status, per-remote resend give-ups, publish-queue health,
