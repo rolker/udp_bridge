@@ -731,6 +731,28 @@ private:
   // needed. Population finishes before the callback that reads it is
   // registered, so the lock is defensive rather than load-bearing.
   std::map<std::string, TunableTarget> runtime_tunables_;
+
+  // Parameter names that WERE runtime tunables under a previous
+  // configure and are not under the current one — a connection or a
+  // topic dropped from the config between two configure cycles. rclcpp
+  // has no undeclare-on-cleanup, so those parameters are still declared
+  // and still settable; without this set a `ros2 param set` of one would
+  // fall through the "a name this node does not recognise is left alone"
+  // rule and be accepted, silently, having changed nothing. That is the
+  // same accepted-reads-back-inert defect the registry exists to remove,
+  // and it is the harder one to spot: the parameter is still in
+  // `ros2 param list` and still reads back the new value.
+  //
+  // Accumulated: on_configure and on_cleanup both empty the registry's
+  // keys into it, and on_configure then erases each name it
+  // re-registers. (Accumulating rather than replacing is load-bearing —
+  // a cleanup/configure cycle is the commonest way for a connection to
+  // leave the config, and by the time on_configure runs the registry it
+  // would have read is already empty.) Dropped entirely in on_shutdown,
+  // with the registry. Guarded by runtime_tunables_mutex_, the same lock
+  // as the registry it is the complement of.
+  std::set<std::string> stale_tunables_;
+
   mutable std::mutex runtime_tunables_mutex_;
 
   // Handle for the parameter-change callback. Reset in on_cleanup AND in

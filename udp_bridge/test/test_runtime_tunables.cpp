@@ -694,6 +694,72 @@ TEST(RuntimeTunablesLifecycle, CallbackIsRegisteredAfterEveryDeclaration)
        "configure has finished";
 }
 
+// A parameter left over from a PREVIOUS configure. rclcpp has no
+// undeclare-on-reconfigure, so when a connection leaves the config its
+// tunables stay declared and stay settable — and, being unknown to the
+// current registry, a set of one used to fall through the "leave names
+// this node does not recognise alone" rule and be accepted in silence.
+// That is the same accepted-reads-back-inert defect as the one this
+// branch removes, in its hardest-to-spot form: the key is still in
+// `ros2 param list` and still reads back the value just set.
+TEST(RuntimeTunablesLifecycle, AParameterFromAPreviousConfigureIsRefused)
+{
+  const std::string kept = kConnection;
+  const std::string dropped = "wifi";
+  auto param = [&](const std::string& connection, const std::string& key)
+  {
+    return "remotes." + kRemote + ".connections." + connection + "." + key;
+  };
+
+  auto node = std::make_shared<udp_bridge::UDPBridge>("runtime_stale_param");
+  node->declare_parameter("port", 0);
+  node->declare_parameter("name", std::string("test_bridge"));
+  node->declare_parameter("remotes_list", std::vector<std::string>{kRemote});
+  node->declare_parameter("remotes." + kRemote + ".connections_list",
+                          std::vector<std::string>{kept, dropped});
+  for(const auto& connection: {kept, dropped})
+  {
+    node->declare_parameter(param(connection, "host"), std::string("127.0.0.1"));
+    node->declare_parameter(param(connection, "port"), 45999);
+    node->declare_parameter(param(connection, "admission_floor_bytes_per_second"),
+                            kConfiguredFloor);
+  }
+  ASSERT_EQ(node->configure().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+  const std::string dropped_floor =
+    param(dropped, "admission_floor_bytes_per_second");
+  ASSERT_TRUE(node->set_parameter(
+    rclcpp::Parameter(dropped_floor, 20000.0)).successful)
+    << "while the connection is configured the set is applied";
+
+  // Reconfigure without it — the parameter store keeps the orphaned keys.
+  ASSERT_EQ(node->cleanup().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  ASSERT_TRUE(node->set_parameter(
+    rclcpp::Parameter("remotes." + kRemote + ".connections_list",
+                      std::vector<std::string>{kept})).successful);
+  ASSERT_EQ(node->configure().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+  auto result = node->set_parameter(rclcpp::Parameter(dropped_floor, 30000.0));
+  EXPECT_FALSE(result.successful)
+    << "a tunable whose connection has left the configuration must say so";
+  EXPECT_NE(result.reason.find(dropped_floor), std::string::npos)
+    << "the reason must name the parameter; got: " << result.reason;
+
+  // The connection that survived is unaffected.
+  auto kept_result = node->set_parameter(
+    rclcpp::Parameter(param(kept, "admission_floor_bytes_per_second"), 30000.0));
+  EXPECT_TRUE(kept_result.successful) << kept_result.reason;
+
+  // And a name that was never a tunable is still left alone, which is
+  // what rclcpp asks of an OnSetParameters callback.
+  node->declare_parameter("some_unrelated_parameter", 3);
+  EXPECT_TRUE(node->set_parameter(
+    rclcpp::Parameter("some_unrelated_parameter", 4)).successful);
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);

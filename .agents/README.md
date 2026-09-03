@@ -124,7 +124,11 @@ load-bearing — see the pitfall below. It validates the whole proposed
 batch before applying any of it, refuses out-of-range values with a reason
 (where `on_configure` clamps), and refuses a set whose target connection or
 topic forwarding is no longer registered rather than silently doing
-nothing. The handle is dropped in **both** `on_cleanup` and `on_shutdown`,
+nothing — and, since #75, a set of a parameter that WAS a tunable under a
+previous configure but is not under the current one (its connection or
+topic left the config; rclcpp has no undeclare, so the key is still
+declared and still settable) is refused too, rather than falling through
+the "leave unrecognised names alone" rule. The handle is dropped in **both** `on_cleanup` and `on_shutdown`,
 and `runtime_tunables_` is declared *before* the handle so the handle is
 destroyed first — a callback must never outlive the registry it reads.
 

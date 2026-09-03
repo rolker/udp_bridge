@@ -237,7 +237,12 @@ For each connection in `connections_list`:
     > A batch is validated as a whole: `ros2 param set` of several values
     > applies all of them or none. Setting a value for a connection that is no
     > longer registered is **refused**, not silently ignored — "accepted,
-    > reads back, does nothing" is the failure mode being removed.
+    > reads back, does nothing" is the failure mode being removed. The same
+    > goes for a key that was a tunable under a **previous** configuration
+    > and is not under the current one: a connection or topic removed from
+    > the config leaves its parameters declared (rclcpp has no undeclare),
+    > and a set of one is refused with a reason naming it rather than being
+    > quietly accepted as a name the node does not recognise.
     >
     > **Type the value the way the parameter was declared.** rclcpp enforces a
     > parameter's declared type before the node ever sees the set, so

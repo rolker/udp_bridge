@@ -569,8 +569,21 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // BEFORE the connection loop below fills it, and before the
   // OnSetParameters callback that reads it is registered at the end of
   // this method.
+  //
+  // What the previous cycle registered is remembered as it is cleared:
+  // rclcpp has no undeclare-on-reconfigure, so a parameter for a
+  // connection or topic that has since left the config is still declared
+  // and still settable. Recognising it lets a set of one be REFUSED
+  // instead of falling through the "leave unknown names alone" rule and
+  // being accepted, silently, having changed nothing.
   {
     std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    // Accumulated, not replaced: on_cleanup has usually already emptied
+    // the registry into this set, so reading only the registry here
+    // would forget everything a cleanup/configure cycle dropped — which
+    // is the commonest way for a connection to leave the config.
+    for(const auto& entry: runtime_tunables_)
+      stale_tunables_.insert(entry.first);
     runtime_tunables_.clear();
   }
 
@@ -834,6 +847,13 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // contain '.' (#67), which makes the dotted path ambiguous.
       {
         std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+        // Re-registered, so no longer stale (a no-op on a first
+        // configure, and on any cycle whose config did not shrink).
+        for(const auto& name: {maximum_bytes_per_second_param,
+                               resend_budget_fraction_param,
+                               admission_floor_bps_param,
+                               admission_refractory_param})
+          stale_tunables_.erase(name);
         runtime_tunables_[maximum_bytes_per_second_param] =
           {TunableKind::ConnectionMaximumBytesPerSecond, remote_name,
            canonical_connection_id, ""};
@@ -946,6 +966,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         // routing table this drives is keyed by `source`.
         {
           std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+          stale_tunables_.erase(topic_max_bps_param);
           runtime_tunables_[topic_max_bps_param] =
             {TunableKind::TopicMaximumBytesPerSecond, remote_info.name,
              canonical_connection_id, source};
@@ -1103,6 +1124,12 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
   // and cannot observe it mid-clear.
   {
     std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    // Retained, not dropped: these parameters are still declared (rclcpp
+    // has no undeclare), so if the next configure does not re-register
+    // one, a set of it must be refused rather than silently accepted.
+    // The next on_configure erases the names it re-registers.
+    for(const auto& entry: runtime_tunables_)
+      stale_tunables_.insert(entry.first);
     runtime_tunables_.clear();
   }
   // Per-remote diagnostic state: also clear, so an
@@ -1144,6 +1171,7 @@ UDPBridge::CallbackReturn UDPBridge::on_shutdown(const rclcpp_lifecycle::State &
   {
     std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
     runtime_tunables_.clear();
+    stale_tunables_.clear();
   }
   return LifecycleNode::on_shutdown(state);
 }
@@ -2089,7 +2117,28 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
     {
       auto it = runtime_tunables_.find(p.get_name());
       if(it != runtime_tunables_.end())
+      {
         pending.push_back({&p, it->second});
+        continue;
+      }
+      // Not a tunable NOW, but one under a previous configure: the
+      // connection or the topic it names has left the config, and
+      // rclcpp has left the parameter declared. Refuse it rather than
+      // let it through as an unrecognised name — accepted, reads back,
+      // changes nothing is what this callback exists to remove, and the
+      // "not currently registered" refusal below covers only a
+      // forwarding removed at runtime, not one removed from the config.
+      if(stale_tunables_.count(p.get_name()) > 0)
+      {
+        result.successful = false;
+        result.reason = p.get_name() + " was a runtime tunable under a "
+          "previous configuration but is not in the current one — its "
+          "connection or topic is no longer configured, so the value "
+          "could not be applied. The parameter is still declared because "
+          "rclcpp has no undeclare; re-add the entry to the config and "
+          "re-configure, or stop setting this key.";
+        return result;
+      }
     }
   }
 
