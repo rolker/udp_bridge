@@ -7,6 +7,7 @@
 // C++ standard library
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <set>
 
 // Other library / project includes
@@ -113,6 +114,22 @@ public:
                             const std::string& connection_id,
                             ConnectionRateInfo& info);
 
+  /// Test hook: re-add a forwarding with exactly the arguments the
+  /// service and wire callers supply — `remote_advertise`,
+  /// `remote_subscribe` and `decodeSubscribeRequest` all call
+  /// addSubscriberConnection with no cap argument at all. Deliberately
+  /// offers no way to pass one, so a test cannot accidentally exercise a
+  /// path no caller has: what it pins is that such a re-advertise leaves
+  /// an existing per-topic cap alone.
+  void readvertiseForTest(const std::string& source_topic,
+                          const std::string& destination_topic,
+                          uint32_t queue_size, float period,
+                          const std::string& remote_name,
+                          const std::string& connection_id)
+  {
+    addSubscriberConnection(source_topic, destination_topic, queue_size,
+                            period, remote_name, connection_id);
+  }
 #endif  // UDP_BRIDGE_BUILD_TESTING
   /// Test accessor: how many RETIRED-parameter tripwires fired during
   /// the last on_configure (#52).
@@ -471,14 +488,26 @@ private:
   /// @param history_depth KEEP_LAST(N); 0 means default 1
   /// @param maximum_bytes_per_second per-topic send cap in payload bytes
   ///                    per second for this (topic, remote, connection).
-  ///                    0 retains whatever is already configured — the
-  ///                    same "empty/zero does not clear" convention the
-  ///                    QoS arguments use, so a service call that re-adds
-  ///                    a forwarding (remote_subscribe / remote_advertise,
-  ///                    whose wire message carries no cap field) cannot
-  ///                    silently wipe a cap set from the config file or at
-  ///                    runtime. Clearing a cap is done through the
-  ///                    parameter, where 0 unambiguously means unlimited.
+  ///
+  ///                    **`std::nullopt` retains** whatever is already
+  ///                    configured, and is what every wire/service caller
+  ///                    passes: `remote_subscribe`, `remote_advertise` and
+  ///                    `decodeSubscribeRequest` carry no cap field at all
+  ///                    (adding one to RemoteSubscribeInternal would change
+  ///                    the message's ROS 2 type hash and force a
+  ///                    coordinated redeploy of both bridge ends), so a
+  ///                    re-subscribe from a peer must not be able to wipe a
+  ///                    cap the config file or the operator put in place.
+  ///
+  ///                    **An engaged value is AUTHORITATIVE, 0 included.**
+  ///                    `on_configure` passes one, because there 0 is a
+  ///                    real, documented value meaning "no cap": with a
+  ///                    "0 retains" rule a cap could be added to a config
+  ///                    but never removed by one — a re-configure with the
+  ///                    key set back to 0 would read back as 0 through
+  ///                    `ros2 param get` while the selector went on
+  ///                    shedding at the old cap. That accepted-but-inert
+  ///                    shape is exactly what issue #75 exists to remove.
   void addSubscriberConnection(std::string const &source_topic,
                                std::string const &destination_topic,
                                uint32_t queue_size, float period,
@@ -487,7 +516,8 @@ private:
                                std::string reliability = "",
                                std::string durability = "",
                                uint32_t history_depth = 0,
-                               uint32_t maximum_bytes_per_second = 0);
+                               std::optional<uint32_t>
+                                 maximum_bytes_per_second = std::nullopt);
 
   /// Handle a runtime parameter set: validate the whole proposed batch,
   /// then apply all of it or none of it.

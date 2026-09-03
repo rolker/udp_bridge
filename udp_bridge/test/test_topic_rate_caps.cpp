@@ -58,6 +58,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <map>
 #include <string>
 #include <vector>
@@ -365,7 +366,7 @@ public:
   // parameter path is spelled with. It is deliberately settable so the
   // over-long-id case (the repo's own example_params.yaml carries
   // "telemetry", nine characters) can be exercised.
-  Bridge(const std::string& node_name, int64_t topic_cap,
+  Bridge(const std::string& node_name, std::optional<int64_t> topic_cap,
          const std::string& connection = kConnection)
   : node_(std::make_shared<udp_bridge::UDPBridge>(node_name)),
     connection_(connection)
@@ -382,11 +383,13 @@ public:
     node_->declare_parameter(connection_base + "topics_list",
                              std::vector<std::string>{kTopicLabel});
     node_->declare_parameter(topicParam("source", connection_), kSourceTopic);
-    // A negative argument means "leave the key out entirely", so the
-    // absent-key path is tested as an absent key and not as an explicit 0.
-    if(topic_cap >= 0)
+    // std::nullopt means "leave the key out entirely", so the absent-key
+    // path is tested as an absent key and not as an explicit 0 — and a
+    // NEGATIVE value can still be declared, which the configure-side
+    // clamp tests need.
+    if(topic_cap.has_value())
       node_->declare_parameter(
-        topicParam("maximum_bytes_per_second", connection_), topic_cap);
+        topicParam("maximum_bytes_per_second", connection_), *topic_cap);
   }
 
   bool configure()
@@ -395,6 +398,18 @@ public:
            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE;
   }
 
+  // Back to UNCONFIGURED. Re-configuring afterwards is safe only because
+  // the fixture binds `port` 0 — nothing closes the socket (issue #66),
+  // so a fixed port would hit EADDRINUSE and exit(1) on the second bind.
+  bool cleanup()
+  {
+    return node_->cleanup().id() ==
+           lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
+  }
+
+  // Looked up by whatever id the caller names, defaulting to the
+  // configured one. `capUnderId` is what the canonicalization test needs:
+  // it asserts WHICH key the routing table is built under.
   uint32_t cap() { return capUnderId(connection_); }
 
   uint32_t capUnderId(const std::string& connection_id)
@@ -426,7 +441,7 @@ TEST(TopicRateCapConfig, ConfiguredCapReachesTheRoutingTable)
 
 TEST(TopicRateCapConfig, AbsentCapIsUnlimited)
 {
-  Bridge bridge("topic_cap_absent", -1);  // key not declared at all
+  Bridge bridge("topic_cap_absent", std::nullopt);  // key not declared at all
   ASSERT_TRUE(bridge.configure());
   EXPECT_EQ(bridge.cap(), 0u)
     << "an absent maximum_bytes_per_second means unlimited, so every "
@@ -528,6 +543,52 @@ TEST(TopicRateCapConfig, RuntimeSetResolvesAnOverLongConnectionId)
   EXPECT_EQ(bridge.capUnderId(canonical), 50000u)
     << "a set spelled with the configured id must reach the entry the "
        "senders meter against";
+}
+
+// A cap must be REMOVABLE by the config file that added it. `on_configure`
+// passes the value it read, engaged, so 0 there means "no cap" — the
+// documented meaning of the key. Under the older "0 retains" rule a cap
+// could be added by a params file and never taken back out by one: the
+// key set to 0 read back as 0 through `ros2 param get` while the selector
+// went on shedding at the previous value. That is the accepted-but-inert
+// shape this whole branch exists to remove, and it is worse here than
+// elsewhere because the operator's evidence says the cap is gone.
+TEST(TopicRateCapConfig, ReconfigureCanRemoveACap)
+{
+  Bridge bridge("topic_cap_reconfigure_zero", 200000);
+  ASSERT_TRUE(bridge.configure());
+  ASSERT_EQ(bridge.cap(), 200000u);
+
+  ASSERT_TRUE(bridge.cleanup());
+  // With the callback unregistered (on_cleanup drops it), this writes the
+  // parameter store only — exactly what editing the YAML and restarting
+  // the lifecycle does.
+  ASSERT_TRUE(bridge.node().set_parameter(
+    rclcpp::Parameter(topicParam("maximum_bytes_per_second"),
+                      int64_t{0})).successful);
+  ASSERT_TRUE(bridge.configure());
+
+  EXPECT_EQ(bridge.cap(), 0u)
+    << "a re-configure with the key set back to 0 must actually remove "
+       "the cap, not read back as 0 while the old value keeps shedding";
+}
+
+// The other half of the same rule: the wire/service callers carry no cap
+// field at all (adding one to RemoteSubscribeInternal would change the
+// message's type hash and force a coordinated redeploy of both ends), so
+// they must RETAIN whatever is configured. A peer re-subscribing must not
+// be able to wipe a cap the operator put in place — which is what makes
+// "an engaged value is authoritative" safe to add above.
+TEST(TopicRateCapConfig, AReadvertiseDoesNotWipeTheCap)
+{
+  Bridge bridge("topic_cap_readvertise", 200000);
+  ASSERT_TRUE(bridge.configure());
+  ASSERT_EQ(bridge.cap(), 200000u);
+
+  bridge.node().readvertiseForTest(kSourceTopic, kSourceTopic, 10, 0.0f,
+                                   kRemote, kConnection);
+  EXPECT_EQ(bridge.cap(), 200000u)
+    << "a re-advertise carries no cap field, so it must leave the cap alone";
 }
 
 int main(int argc, char** argv)

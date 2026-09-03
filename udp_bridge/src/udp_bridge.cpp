@@ -1945,7 +1945,8 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
                                         std::string reliability,
                                         std::string durability,
                                         uint32_t history_depth,
-                                        uint32_t maximum_bytes_per_second)
+                                        std::optional<uint32_t>
+                                          maximum_bytes_per_second)
 {
   // Canonicalize the connection id before it is used as a map key.
   // `connection_rates` has to be keyed on exactly the same form the
@@ -1976,17 +1977,25 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
       auto& rd = sub.remote_details[remote_node];
       rd.destination_topic = destination_topic;
       rd.connection_rates[connection_id].period = period;
-      // Per-topic byte cap: zero retains, matching the QoS overrides
-      // below. The service/wire paths into this function
+      // Per-topic byte cap. ABSENT retains, matching the QoS overrides
+      // below: the service/wire paths into this function
       // (remote_subscribe, remote_advertise, decodeSubscribeRequest)
       // carry no cap field — adding one to RemoteSubscribeInternal would
       // change the message's ROS 2 type hash and force a coordinated
-      // redeploy of both bridge ends — so they all arrive here with 0.
-      // Overwriting on 0 would let an unrelated re-subscribe silently
-      // remove a cap the config or the operator put in place.
-      if(maximum_bytes_per_second != 0)
+      // redeploy of both bridge ends — so they all arrive here with
+      // nullopt, and an unrelated re-subscribe cannot silently remove a
+      // cap the config or the operator put in place.
+      //
+      // A PRESENT value is authoritative, 0 included. on_configure
+      // always passes one, because there 0 is a real documented value
+      // meaning "no cap": under the older "0 retains" rule a cap could
+      // be added by a config file but never removed by one — the key set
+      // back to 0 read back as 0 while the selector went on shedding at
+      // the old value. Accepted, reads back, does nothing is the defect
+      // this whole branch exists to remove.
+      if(maximum_bytes_per_second.has_value())
         rd.connection_rates[connection_id].maximum_bytes_per_second =
-          maximum_bytes_per_second;
+          *maximum_bytes_per_second;
       // QoS overrides — empty/zero retains existing or default behavior so
       // that re-adding a subscription doesn't accidentally clear earlier
       // per-topic QoS that was set elsewhere.
