@@ -87,7 +87,6 @@ constexpr int64_t kConfiguredRateLimit = 500000;
 constexpr double kConfiguredFloor = 8192.0;
 constexpr double kConfiguredRefractory = 3.0;
 constexpr double kConfiguredResendBudget = 0.25;
-
 std::string connectionParam(const std::string& key)
 {
   return "remotes." + kRemote + ".connections." + kConnection + "." + key;

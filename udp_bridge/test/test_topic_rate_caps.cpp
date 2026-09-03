@@ -67,7 +67,9 @@
 #include "lifecycle_msgs/msg/state.hpp"
 #include "rclcpp/rclcpp.hpp"
 
+#include "udp_bridge/connection.h"
 #include "udp_bridge/destination_selection.h"
+#include "udp_bridge/packet.h"
 #include "udp_bridge/statistics.h"
 #include "udp_bridge/types.h"
 #include "udp_bridge/udp_bridge.h"
@@ -346,9 +348,10 @@ const std::string kConnection = "vpn";
 const std::string kTopicLabel = "bulk";
 const std::string kSourceTopic = "/bulk";
 
-std::string topicParam(const std::string& key)
+std::string topicParam(const std::string& key,
+                       const std::string& connection = kConnection)
 {
-  return "remotes." + kRemote + ".connections." + kConnection + ".topics."
+  return "remotes." + kRemote + ".connections." + connection + ".topics."
        + kTopicLabel + "." + key;
 }
 
@@ -358,25 +361,32 @@ std::string topicParam(const std::string& key)
 class Bridge
 {
 public:
-  Bridge(const std::string& node_name, int64_t topic_cap)
-  : node_(std::make_shared<udp_bridge::UDPBridge>(node_name))
+  // `connection` is the CONFIGURED connection id, i.e. what the
+  // parameter path is spelled with. It is deliberately settable so the
+  // over-long-id case (the repo's own example_params.yaml carries
+  // "telemetry", nine characters) can be exercised.
+  Bridge(const std::string& node_name, int64_t topic_cap,
+         const std::string& connection = kConnection)
+  : node_(std::make_shared<udp_bridge::UDPBridge>(node_name)),
+    connection_(connection)
   {
     const std::string connection_base =
-      "remotes." + kRemote + ".connections." + kConnection + ".";
+      "remotes." + kRemote + ".connections." + connection_ + ".";
     node_->declare_parameter("port", 0);
     node_->declare_parameter("name", std::string("test_bridge"));
     node_->declare_parameter("remotes_list", std::vector<std::string>{kRemote});
     node_->declare_parameter("remotes." + kRemote + ".connections_list",
-                             std::vector<std::string>{kConnection});
+                             std::vector<std::string>{connection_});
     node_->declare_parameter(connection_base + "host", std::string("127.0.0.1"));
     node_->declare_parameter(connection_base + "port", 45999);
     node_->declare_parameter(connection_base + "topics_list",
                              std::vector<std::string>{kTopicLabel});
-    node_->declare_parameter(topicParam("source"), kSourceTopic);
+    node_->declare_parameter(topicParam("source", connection_), kSourceTopic);
     // A negative argument means "leave the key out entirely", so the
     // absent-key path is tested as an absent key and not as an explicit 0.
     if(topic_cap >= 0)
-      node_->declare_parameter(topicParam("maximum_bytes_per_second"), topic_cap);
+      node_->declare_parameter(
+        topicParam("maximum_bytes_per_second", connection_), topic_cap);
   }
 
   bool configure()
@@ -385,18 +395,22 @@ public:
            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE;
   }
 
-  uint32_t cap()
+  uint32_t cap() { return capUnderId(connection_); }
+
+  uint32_t capUnderId(const std::string& connection_id)
   {
     ConnectionRateInfo info;
-    if(!node_->topicRateInfoForTest(kSourceTopic, kRemote, kConnection, info))
+    if(!node_->topicRateInfoForTest(kSourceTopic, kRemote, connection_id, info))
       return std::numeric_limits<uint32_t>::max();  // distinctive "no entry"
     return info.maximum_bytes_per_second;
   }
 
   udp_bridge::UDPBridge& node() { return *node_; }
+  const std::string& connection() const { return connection_; }
 
 private:
   std::shared_ptr<udp_bridge::UDPBridge> node_;
+  std::string connection_;
 };
 
 }  // namespace
@@ -457,6 +471,63 @@ TEST(TopicRateCapConfig, RuntimeNegativeRejected)
   EXPECT_NE(result.reason.find("maximum_bytes_per_second"), std::string::npos)
     << "got: " << result.reason;
   EXPECT_EQ(bridge.cap(), 200000u) << "a refused set must change nothing";
+}
+
+// A connection id longer than the on-wire limit must key the routing
+// table by its CANONICAL (truncated) form — the same form connections_
+// is keyed by and the same form send() records every send_result under.
+//
+// Keyed raw, the shedding and the sending of one topic on one link land
+// in two different TopicStatistics rows (the drop record under
+// "telemetry", the successful send under "telemet"), so neither row
+// shows what the link actually did — and two configured ids agreeing in
+// their first `maximum_connection_id_size - 1` characters become ONE
+// Connection with TWO independent per-topic budgets, carrying up to
+// twice the configured cap. The repo's own example_params.yaml uses
+// "telemetry", so this is not a hypothetical id.
+TEST(TopicRateCapConfig, OverLongConnectionIdIsKeyedCanonically)
+{
+  const std::string configured = "telemetry";
+  const std::string canonical = udp_bridge::truncate_connection_id(configured);
+  ASSERT_NE(configured, canonical)
+    << "the fixture only tests anything if the id really is over-long";
+
+  Bridge bridge("topic_cap_long_id", 200000, configured);
+  ASSERT_TRUE(bridge.configure());
+
+  EXPECT_EQ(bridge.capUnderId(canonical), 200000u)
+    << "the routing table must be keyed by the canonical id, which is "
+       "what Connection::id() — and so every send_results record — uses";
+  EXPECT_EQ(bridge.capUnderId(configured),
+            std::numeric_limits<uint32_t>::max())
+    << "and NOT by the raw configured id: a second entry under the raw "
+       "name is a second budget for the same link";
+
+  // The live Connection and the routing entry must agree on the key, or
+  // the per-topic cap meters a link the statistics report under another
+  // name.
+  auto connection = bridge.node().connectionForTest(kRemote, configured);
+  ASSERT_TRUE(connection != nullptr);
+  EXPECT_EQ(connection->id(), canonical);
+}
+
+// The runtime path has to resolve the same way: the parameter PATH is
+// spelled with the configured id (that is what the operator wrote), but
+// the target it resolves to is the canonical key.
+TEST(TopicRateCapConfig, RuntimeSetResolvesAnOverLongConnectionId)
+{
+  const std::string configured = "telemetry";
+  const std::string canonical = udp_bridge::truncate_connection_id(configured);
+
+  Bridge bridge("topic_cap_long_id_runtime", 200000, configured);
+  ASSERT_TRUE(bridge.configure());
+
+  auto result = bridge.node().set_parameter(rclcpp::Parameter(
+    topicParam("maximum_bytes_per_second", configured), int64_t{50000}));
+  EXPECT_TRUE(result.successful) << result.reason;
+  EXPECT_EQ(bridge.capUnderId(canonical), 50000u)
+    << "a set spelled with the configured id must reach the entry the "
+       "senders meter against";
 }
 
 int main(int argc, char** argv)

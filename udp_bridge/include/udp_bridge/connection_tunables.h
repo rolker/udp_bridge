@@ -83,8 +83,11 @@ enum class TunableKind
 /// strings here are exactly the ones the rest of the node keys on:
 /// `remote` is the remotes_list entry (which since #67 is also the
 /// remote's wire name and the routing-table key), `connection_id` is
-/// the connection name as configured (RemoteNode::connection()
-/// canonicalizes it on lookup), and `source_topic` — set only for
+/// the CANONICAL (truncated) connection id — `truncate_connection_id`
+/// of the configured name, which is the form both `connections_` and
+/// the routing table's `connection_rates` are keyed by, so a
+/// per-topic cap on a connection whose configured id is longer than
+/// the on-wire limit still resolves — and `source_topic` — set only for
 /// TopicMaximumBytesPerSecond — is the RESOLVED local source topic, the
 /// subscribers_ key, not the topics_list label the parameter path is
 /// spelled with.

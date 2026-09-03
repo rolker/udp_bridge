@@ -103,10 +103,16 @@ public:
   /// (source_topic, remote, connection_id), or false when the routing
   /// table has no such entry. Copies under subscribers_mutex_, because
   /// ConnectionRateInfo lives in a map forwarding callbacks mutate.
+  ///
+  /// `connection_id` is matched RAW — this does not canonicalize the way
+  /// RemoteNode::connection() does, so a test can pin which key the
+  /// routing table is actually built under (the canonical, truncated
+  /// form; see addSubscriberConnection).
   bool topicRateInfoForTest(const std::string& source_topic,
                             const std::string& remote_name,
                             const std::string& connection_id,
                             ConnectionRateInfo& info);
+
 #endif  // UDP_BRIDGE_BUILD_TESTING
   /// Test accessor: how many RETIRED-parameter tripwires fired during
   /// the last on_configure (#52).

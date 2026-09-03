@@ -614,6 +614,16 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       RemoteConnection connection;
       connection.connection_id = connection_name;
 
+      // The form every live map is keyed by: connections_ (PR #25) and,
+      // since the routing table was canonicalized to match it, the
+      // per-topic connection_rates too. The parameter PATH still spells
+      // the configured name — that is what the operator wrote — but a
+      // TunableTarget has to name the key, not the label, or a runtime
+      // set of a per-topic cap on a connection whose configured id is
+      // longer than the wire limit resolves to nothing and is refused.
+      const std::string canonical_connection_id =
+        truncate_connection_id(connection_name);
+
       std::string host_param = "remotes." + remote_name + ".connections." + connection_name + ".host";
       declareIfMissing(host_param, "");
       connection.host = get_parameter(host_param).as_string();
@@ -795,13 +805,17 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       {
         std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
         runtime_tunables_[maximum_bytes_per_second_param] =
-          {TunableKind::ConnectionMaximumBytesPerSecond, remote_name, connection_name, ""};
+          {TunableKind::ConnectionMaximumBytesPerSecond, remote_name,
+           canonical_connection_id, ""};
         runtime_tunables_[resend_budget_fraction_param] =
-          {TunableKind::ResendBudgetFraction, remote_name, connection_name, ""};
+          {TunableKind::ResendBudgetFraction, remote_name,
+           canonical_connection_id, ""};
         runtime_tunables_[admission_floor_bps_param] =
-          {TunableKind::AdmissionFloorBytesPerSecond, remote_name, connection_name, ""};
+          {TunableKind::AdmissionFloorBytesPerSecond, remote_name,
+           canonical_connection_id, ""};
         runtime_tunables_[admission_refractory_param] =
-          {TunableKind::AdmissionRefractoryPeriodSeconds, remote_name, connection_name, ""};
+          {TunableKind::AdmissionRefractoryPeriodSeconds, remote_name,
+           canonical_connection_id, ""};
       }
 
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
@@ -904,7 +918,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
           std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
           runtime_tunables_[topic_max_bps_param] =
             {TunableKind::TopicMaximumBytesPerSecond, remote_info.name,
-             connection.connection_id, source};
+             canonical_connection_id, source};
         }
       }
     }
@@ -1933,6 +1947,26 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
                                         uint32_t history_depth,
                                         uint32_t maximum_bytes_per_second)
 {
+  // Canonicalize the connection id before it is used as a map key.
+  // `connection_rates` has to be keyed on exactly the same form the
+  // connections_ map and every send_results record use, which is the
+  // truncated wire form (PR #25 runs every connections_ insertion
+  // through truncate_connection_id, and send() records results under
+  // connection->id()). Keyed raw, two failures follow, both silent:
+  //
+  //   1) Two configured ids that agree in their first
+  //      maximum_connection_id_size - 1 characters are ONE Connection
+  //      but TWO rate entries, so each gets the full per-topic cap and
+  //      the link carries up to twice what was configured.
+  //   2) A single over-long id (the repo's own example_params.yaml
+  //      carries "telemetry") is recorded as dropped under the raw name
+  //      and as sent under the canonical one, so the shedding and the
+  //      sending land in two different TopicStatistics rows and neither
+  //      row shows the whole picture.
+  //
+  // RemoteNode::connection() already canonicalizes its lookup input for
+  // the same reason; this is the routing-table half of that contract.
+  connection_id = truncate_connection_id(connection_id);
   if(!remote_node.empty())
   {
     {
@@ -2262,7 +2296,13 @@ void UDPBridge::removeSubscriberConnection(std::string const &source_topic,
   SubscriberRemoval removal;
   {
     std::lock_guard<std::mutex> lock(subscribers_mutex_);
-    removal = removeSubscriberConnectionFrom(subscribers_, source_topic, remote_node, connection_id);
+    // Canonicalized to match addSubscriberConnection's key (see there).
+    // Without this an unsubscribe spelled with the configured
+    // (untruncated) id would find nothing and silently leave the
+    // forwarding in place.
+    removal = removeSubscriberConnectionFrom(
+      subscribers_, source_topic, remote_node,
+      truncate_connection_id(connection_id));
   }
   removal.expired_subscription.reset();  // destroys the generic subscription, off-lock
   if(removal.changed)
@@ -3553,6 +3593,11 @@ bool UDPBridge::topicRateInfoForTest(const std::string& source_topic,
   auto rd_it = sub_it->second.remote_details.find(remote_name);
   if(rd_it == sub_it->second.remote_details.end())
     return false;
+  // Raw lookup, deliberately — unlike RemoteNode::connection(), which
+  // canonicalizes its input. A test hook that silently accepted either
+  // form could not pin WHICH key the routing table is built under, and
+  // that key (the canonical one, matching connections_ and every
+  // send_results record) is the contract this accessor exists to check.
   auto rate_it = rd_it->second.connection_rates.find(connection_id);
   if(rate_it == rd_it->second.connection_rates.end())
     return false;
