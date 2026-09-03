@@ -38,6 +38,16 @@ Two coupled bounds, both enforced in `Connection::resend_packets()`:
    `duplicate_bytes_per_second`, from the most recent
    `updateAdmissionControl()` sample.
 
+   **Note (2026-08-25, issue #52):** the admission controller's own
+   congested branch no longer reads goodput — the
+   `(1 − link_headroom_fraction) × goodput` decrease clamp was removed
+   because that target fed back on itself. Goodput is still measured,
+   still published per connection, and is still **this** budget's basis;
+   `updateAdmissionControl` deliberately stores it *before* its
+   refractory gate, so a frozen controller does not also starve the
+   resend budget of fresh data. See
+   `doc/admission_control_design.md`.
+
    The basis was the configured `maximum_bytes_per_second` under #44 and
    the AIMD `effective_rate_limit` under #43. **Issue #52 moved it to
    goodput** because both of those inherited the same flaw: they are

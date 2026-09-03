@@ -21,7 +21,7 @@
 //
 //   AdmissionFloorAppliesToLiveConnection — the headline regression.
 //   MaximumBytesPerSecondAppliesToLiveConnection
-//   LinkHeadroomFractionAppliesToLiveConnection
+//   AdmissionRefractoryPeriodAppliesToLiveConnection
 //   ResendBudgetFractionAppliesToLiveConnection
 //                               — the sibling tunables, same defect.
 //   NonFiniteFloorRejected / NegativeFloorRejected
@@ -31,10 +31,14 @@
 //                                 channel, so it rejects where
 //                                 on_configure clamps (see
 //                                 connection_tunables.h).
-//   OutOfRangeHeadroomRejected  — the accepted range is the setter's
-//                                 clamp range, so an accepted value is
-//                                 stored unchanged and `param get`
-//                                 cannot disagree with what is in force.
+//   OutOfRangeRefractoryPeriodRejected — the accepted range stops where
+//                                 the setter's clamp begins, so an
+//                                 accepted value is stored unchanged and
+//                                 `param get` cannot disagree with what
+//                                 is in force. This is the one place the
+//                                 runtime and configure paths differ on
+//                                 purpose: configure clamps, runtime
+//                                 refuses (connection_tunables.h).
 //   BadValueInBatchAppliesNothing — validate-whole-batch-then-apply: one
 //                                 bad value leaves every other value in
 //                                 the batch untouched.
@@ -66,7 +70,7 @@
 
 using udp_bridge::TunableValidation;
 using udp_bridge::validateAdmissionFloorBytesPerSecond;
-using udp_bridge::validateLinkHeadroomFraction;
+using udp_bridge::validateAdmissionRefractoryPeriodSeconds;
 using udp_bridge::validateMaximumBytesPerSecond;
 using udp_bridge::validateResendBudgetFraction;
 
@@ -81,7 +85,7 @@ const std::string kConnection = "vpn";
 
 constexpr int64_t kConfiguredRateLimit = 500000;
 constexpr double kConfiguredFloor = 8192.0;
-constexpr double kConfiguredHeadroom = 0.2;
+constexpr double kConfiguredRefractory = 3.0;
 constexpr double kConfiguredResendBudget = 0.25;
 
 std::string connectionParam(const std::string& key)
@@ -116,8 +120,8 @@ public:
                              kConfiguredRateLimit);
     node_->declare_parameter(connectionParam("admission_floor_bytes_per_second"),
                              kConfiguredFloor);
-    node_->declare_parameter(connectionParam("link_headroom_fraction"),
-                             kConfiguredHeadroom);
+    node_->declare_parameter(connectionParam("admission_refractory_period_seconds"),
+                             kConfiguredRefractory);
     node_->declare_parameter(connectionParam("resend_budget_fraction"),
                              kConfiguredResendBudget);
   }
@@ -172,17 +176,27 @@ TEST(TunableValidationRules, AdmissionFloorRejectsNonFiniteAndNegative)
   EXPECT_FALSE(validateAdmissionFloorBytesPerSecond("floor", 1.0e300).ok);
 }
 
-TEST(TunableValidationRules, HeadroomAcceptsExactlyWhatTheSetterKeeps)
+TEST(TunableValidationRules, RefractoryPeriodRefusesWhatTheSetterWouldClamp)
 {
-  EXPECT_TRUE(validateLinkHeadroomFraction("headroom", 0.0).ok);
-  EXPECT_TRUE(validateLinkHeadroomFraction("headroom", 0.5).ok);
-  EXPECT_TRUE(validateLinkHeadroomFraction(
-    "headroom", static_cast<double>(udp_bridge::kMaxLinkHeadroomFraction)).ok);
-  // 1.0 would target zero throughput on every congested sample.
-  EXPECT_FALSE(validateLinkHeadroomFraction("headroom", 1.0).ok);
-  EXPECT_FALSE(validateLinkHeadroomFraction("headroom", -0.1).ok);
-  EXPECT_FALSE(validateLinkHeadroomFraction(
-    "headroom", std::numeric_limits<double>::quiet_NaN()).ok);
+  // 0 is accepted on purpose: it disables the gate, restoring the
+  // pre-#52 behaviour an operator needs to reproduce the 2026-08-25
+  // collapse, and the configure path accepts it too (with a WARN).
+  EXPECT_TRUE(validateAdmissionRefractoryPeriodSeconds("refractory", 0.0).ok);
+  EXPECT_TRUE(validateAdmissionRefractoryPeriodSeconds("refractory", 5.0).ok);
+  EXPECT_TRUE(validateAdmissionRefractoryPeriodSeconds(
+    "refractory", udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds).ok);
+  // The ceiling is where the two entry points DIVERGE by design: the
+  // configure path clamps, the runtime path refuses, because clamping
+  // here would leave the parameter store holding a value the controller
+  // does not — the accepted-and-inert shape this whole branch removes.
+  EXPECT_FALSE(validateAdmissionRefractoryPeriodSeconds(
+    "refractory",
+    udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds + 1.0).ok);
+  EXPECT_FALSE(validateAdmissionRefractoryPeriodSeconds(
+    "refractory", std::numeric_limits<double>::infinity()).ok);
+  EXPECT_FALSE(validateAdmissionRefractoryPeriodSeconds("refractory", -0.1).ok);
+  EXPECT_FALSE(validateAdmissionRefractoryPeriodSeconds(
+    "refractory", std::numeric_limits<double>::quiet_NaN()).ok);
 }
 
 TEST(TunableValidationRules, ResendBudgetFractionIsAFraction)
@@ -246,18 +260,25 @@ TEST(RuntimeTunables, MaximumBytesPerSecondAppliesToLiveConnection)
   EXPECT_EQ(connection->effectiveRateLimit(), 250000u);
 }
 
-TEST(RuntimeTunables, LinkHeadroomFractionAppliesToLiveConnection)
+// The parameter RCA item D names as what blocked live mitigation on
+// 2026-08-25: the operator could not slow the admission controller down
+// without a re-configure, and the re-configure cost ~3 minutes of link.
+TEST(RuntimeTunables, AdmissionRefractoryPeriodAppliesToLiveConnection)
 {
-  Bridge bridge("runtime_headroom");
+  Bridge bridge("runtime_refractory");
   auto connection = bridge.configure();
   ASSERT_TRUE(connection != nullptr);
-  ASSERT_FLOAT_EQ(connection->linkHeadroomFraction(),
-                  static_cast<float>(kConfiguredHeadroom));
+  ASSERT_DOUBLE_EQ(connection->admissionRefractoryPeriodSeconds(),
+                   kConfiguredRefractory);
 
   auto result = bridge.node().set_parameter(
-    rclcpp::Parameter(connectionParam("link_headroom_fraction"), 0.4));
+    rclcpp::Parameter(connectionParam("admission_refractory_period_seconds"),
+                      12.0));
   EXPECT_TRUE(result.successful) << result.reason;
-  EXPECT_FLOAT_EQ(connection->linkHeadroomFraction(), 0.4f);
+  EXPECT_DOUBLE_EQ(connection->admissionRefractoryPeriodSeconds(), 12.0);
+  // The setter resets the in-force window rather than leaving the node
+  // frozen under the value it was just told to abandon.
+  EXPECT_DOUBLE_EQ(connection->currentAdmissionRefractoryWindowSeconds(), 12.0);
 }
 
 TEST(RuntimeTunables, ResendBudgetFractionAppliesToLiveConnection)
@@ -307,17 +328,20 @@ TEST(RuntimeTunables, NegativeFloorRejectedRatherThanSilentlyDisablingTheFloor)
                   static_cast<float>(kConfiguredFloor));
 }
 
-TEST(RuntimeTunables, OutOfRangeHeadroomRejected)
+TEST(RuntimeTunables, OutOfRangeRefractoryPeriodRejected)
 {
-  Bridge bridge("runtime_headroom_range");
+  Bridge bridge("runtime_refractory_range");
   auto connection = bridge.configure();
   ASSERT_TRUE(connection != nullptr);
 
   auto result = bridge.node().set_parameter(
-    rclcpp::Parameter(connectionParam("link_headroom_fraction"), 1.0));
+    rclcpp::Parameter(connectionParam("admission_refractory_period_seconds"),
+                      udp_bridge::kMaximumAdmissionRefractoryPeriodSeconds + 1.0));
   EXPECT_FALSE(result.successful);
-  EXPECT_FLOAT_EQ(connection->linkHeadroomFraction(),
-                  static_cast<float>(kConfiguredHeadroom));
+  EXPECT_DOUBLE_EQ(connection->admissionRefractoryPeriodSeconds(),
+                   kConfiguredRefractory)
+    << "refused, not clamped: a clamp here would leave `param get` "
+       "reporting a value the controller is not using";
 }
 
 TEST(RuntimeTunables, NegativeRateLimitRejected)
@@ -339,17 +363,17 @@ TEST(RuntimeTunables, BadValueInBatchAppliesNothing)
   auto connection = bridge.configure();
   ASSERT_TRUE(connection != nullptr);
 
-  // A good floor and an impossible headroom in one atomic set.
+  // A good floor and an impossible refractory period in one atomic set.
   auto result = bridge.node().set_parameters_atomically({
     rclcpp::Parameter(connectionParam("admission_floor_bytes_per_second"), 20000.0),
-    rclcpp::Parameter(connectionParam("link_headroom_fraction"), 5.0),
+    rclcpp::Parameter(connectionParam("admission_refractory_period_seconds"), 5000.0),
   });
   EXPECT_FALSE(result.successful);
   EXPECT_FLOAT_EQ(connection->admissionFloorBytesPerSecond(),
                   static_cast<float>(kConfiguredFloor))
     << "the whole batch is validated before any of it is applied";
-  EXPECT_FLOAT_EQ(connection->linkHeadroomFraction(),
-                  static_cast<float>(kConfiguredHeadroom));
+  EXPECT_DOUBLE_EQ(connection->admissionRefractoryPeriodSeconds(),
+                   kConfiguredRefractory);
 }
 
 TEST(RuntimeTunables, WholeValidBatchApplies)
@@ -360,11 +384,11 @@ TEST(RuntimeTunables, WholeValidBatchApplies)
 
   auto result = bridge.node().set_parameters_atomically({
     rclcpp::Parameter(connectionParam("admission_floor_bytes_per_second"), 30000.0),
-    rclcpp::Parameter(connectionParam("link_headroom_fraction"), 0.35),
+    rclcpp::Parameter(connectionParam("admission_refractory_period_seconds"), 8.0),
   });
   EXPECT_TRUE(result.successful) << result.reason;
   EXPECT_FLOAT_EQ(connection->admissionFloorBytesPerSecond(), 30000.0f);
-  EXPECT_FLOAT_EQ(connection->linkHeadroomFraction(), 0.35f);
+  EXPECT_DOUBLE_EQ(connection->admissionRefractoryPeriodSeconds(), 8.0);
 }
 
 // The behaviour this callback had before the tunables were added. The

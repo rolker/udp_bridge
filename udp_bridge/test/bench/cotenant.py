@@ -9,9 +9,15 @@ This exists because `maximum_bytes_per_second` was added after a
 udp_bridge saturating a link locked an operator out of a remote machine.
 An absolute ceiling only restrains the bridge while the link is healthy
 -- on a degraded path the cap sits far above real capacity and the bridge
-saturates anyway. The property that actually protects the operator is
-headroom against *measured* throughput, and the only way to know whether
-the bridge honours it is to put a co-tenant on the wire and watch.
+saturates anyway. What protects the operator is the bridge backing its
+own cap DOWN when the link says it is not delivering: since the
+2026-08-25 pass on #52 that is the refractory-gated multiplicative
+decrease. (It used to be `link_headroom_fraction`, a clamp that held the
+target below measured goodput; that clamp was removed because goodput is
+depressed by the throttling it was computing. The parameter is now inert
+-- see doc/admission_control_design.md.) Either way the only way to know
+whether the operator's own traffic actually survives is to put a
+co-tenant on the wire and watch, which is what this does.
 
 Two modes, one per namespace:
 
@@ -38,9 +44,11 @@ _HEADER = struct.Struct('!Qd')
 
 # Defaults chosen to look like an interactive session rather than a
 # transfer: small packets, steady, ~4 kB/s. On the trajectory's worst
-# phase (62.5 kB/s) that is ~6% of the link -- comfortably inside the
-# 20% the bridge is supposed to leave, so a failure means the bridge
-# took the headroom, not that the co-tenant was greedy.
+# phase (62.5 kB/s) that is ~6% of the link -- a small enough share that
+# a failure means the bridge took the whole path, not that the co-tenant
+# was greedy. (~6% was originally chosen against the 20% headroom the
+# removed `link_headroom_fraction` clamp reserved; the clamp is gone, the
+# margin argument is not, so the figure stands on its own.)
 DEFAULT_RATE_HZ = 20.0
 DEFAULT_SIZE_BYTES = 200
 

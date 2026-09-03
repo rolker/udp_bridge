@@ -67,8 +67,8 @@ enum class TunableKind
 {
   /// Connection::setAdmissionFloorBytesPerSecond
   AdmissionFloorBytesPerSecond,
-  /// Connection::setLinkHeadroomFraction
-  LinkHeadroomFraction,
+  /// Connection::setAdmissionRefractoryPeriodSeconds
+  AdmissionRefractoryPeriodSeconds,
   /// Connection::setResendBudgetFraction
   ResendBudgetFraction,
   /// Connection::setRateLimit
@@ -127,21 +127,37 @@ inline TunableValidation validateAdmissionFloorBytesPerSecond(
   return {true, ""};
 }
 
-/// `link_headroom_fraction`: share of measured goodput left unused for
-/// co-tenant traffic. Must be finite and within [0, kMaxLinkHeadroomFraction].
+/// `admission_refractory_period_seconds`: minimum interval between
+/// admission-control decisions (#52). Must be finite and within
+/// [0, kMaximumAdmissionRefractoryPeriodSeconds].
 ///
-/// The upper bound is the setter's clamp, not 1.0: a headroom of exactly
-/// 1.0 would target zero throughput on every congested sample and the
-/// connection could never carry data again. Refusing anything the setter
-/// would clamp keeps `ros2 param get` honest about what is in force.
-inline TunableValidation validateLinkHeadroomFraction(
+/// 0 is ACCEPTED, and disables the gate — the pre-#52 behaviour that
+/// produced the 2026-08-25 collapse. It stays reachable because an
+/// operator reproducing that collapse needs it, and because the
+/// configure path accepts it too (with a WARN); refusing it here would
+/// make the two entry points disagree about what the parameter means.
+///
+/// The upper bound is where this validation deliberately DIVERGES from
+/// the configure path: `Connection::setAdmissionRefractoryPeriodSeconds`
+/// CLAMPS a base above the ceiling, and a params file has nowhere to
+/// print a reason, so clamping is the only honest thing it can do. A
+/// `ros2 param set` does have somewhere to print a reason, and the rule
+/// this header exists to keep is that an accepted value reads back as
+/// the value in force. Clamping here would break that: the store would
+/// hold 600 while the controller held 60. So it is refused instead.
+inline TunableValidation validateAdmissionRefractoryPeriodSeconds(
     const std::string& name, double value)
 {
   if(!std::isfinite(value))
     return {false, name + " must be finite; got " + std::to_string(value)};
-  if(value < 0.0 || value > static_cast<double>(kMaxLinkHeadroomFraction))
-    return {false, name + " must be in [0, "
-                   + std::to_string(kMaxLinkHeadroomFraction) + "]; got "
+  if(value < 0.0)
+    return {false, name + " must be >= 0; got " + std::to_string(value)};
+  if(value > kMaximumAdmissionRefractoryPeriodSeconds)
+    return {false, name + " must be <= "
+                   + std::to_string(kMaximumAdmissionRefractoryPeriodSeconds)
+                   + " (the configure path clamps to this ceiling; the "
+                     "runtime path refuses, so an accepted value always "
+                     "reads back as the value in force); got "
                    + std::to_string(value)};
   return {true, ""};
 }
