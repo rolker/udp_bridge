@@ -1094,6 +1094,43 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       return applyRuntimeParameters(params);
     });
 
+  // Close the re-configure window (#75). The callback is unregistered in
+  // on_cleanup and re-registered only here, at the end of a transition
+  // that does DNS resolution and DDS entity creation; under the
+  // MultiThreadedExecutor this node runs on, a `ros2 param set` can land
+  // in between. Such a set is accepted by rclcpp and reads back — but
+  // the connection loop above has already read its parameters, and
+  // nothing would look at them again: "accepted, reads back, changes
+  // nothing", the exact defect class this branch exists to remove, this
+  // time inside its own transition.
+  //
+  // Re-apply the current store values through the same validated path
+  // now that the callback is live. Any set that landed during the
+  // transition is picked up; a value that was already applied is applied
+  // again, which is idempotent for all four setters (setRateLimit's
+  // clamp-not-reset semantics are pinned by
+  // SetRateLimitClampPreservesBackoff). A refusal here is not an error
+  // to report: the configure path CLAMPS where the runtime path REFUSES,
+  // so a params file holding an out-of-range value leaves the store
+  // holding it while the Connection holds the clamped one — and the
+  // clamped one is what should stand.
+  {
+    std::vector<rclcpp::Parameter> current;
+    {
+      std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+      current.reserve(runtime_tunables_.size());
+      for(const auto& entry: runtime_tunables_)
+        current.push_back(get_parameter(entry.first));
+    }
+    // One batch, not one call per parameter: validation is all-or-nothing
+    // by design, and a batch of values the node itself just configured
+    // from either all validate or names a config error worth seeing. The
+    // INFO lines it emits double as a startup summary of the tunables in
+    // force.
+    if(!current.empty())
+      applyRuntimeParameters(current);
+  }
+
   return LifecycleNode::on_configure(state);
 }
 
@@ -2167,6 +2204,19 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
 rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
   const std::vector<rclcpp::Parameter>& params)
 {
+  // NOTE on where this runs (#75, review round 2). This is an
+  // OnSetParameters — a PRE-set callback — and it MUTATES live state
+  // (Connection setters, the routing table's byte caps) rather than only
+  // validating. rclcpp's sanctioned split is validate here and mutate in
+  // an `add_post_set_parameters_callback`; mutating from the pre-set
+  // callback is correct only while this node registers exactly ONE such
+  // callback, which it does. If a second one is ever added and returns
+  // false AFTER this one has run, the parameter store keeps the old
+  // value while the Connections hold the new one — the store and the
+  // live object disagreeing, which is precisely the invariant
+  // connection_tunables.h calls load-bearing. Whoever adds a second
+  // OnSetParameters callback to this node must move the mutation half
+  // into a post-set callback first.
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
