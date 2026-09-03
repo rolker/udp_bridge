@@ -6,6 +6,8 @@
 
 // C++ standard library
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -434,6 +436,72 @@ private:
       declare_parameter(
         name,
         rclcpp::ParameterValue(static_cast<double>(override_entry->second.get<int64_t>())),
+        rcl_interfaces::msg::ParameterDescriptor(),
+        true);  // ignore_override: the override is the value we just coerced
+      return;
+    }
+    declare_parameter(name, default_value);
+  }
+
+  /// Declare an integer-valued parameter, accepting a DOUBLE override
+  /// (issue #75) — the mirror of `declareDoubleIfMissing`, and the same
+  /// trap read from the other side.
+  ///
+  /// YAML types a parameter override from the literal, so
+  /// `maximum_bytes_per_second: 1500000.0` — a shape an operator writes
+  /// without a second thought, and one a generated or hand-edited config
+  /// produces freely — arrives as a DOUBLE override for an
+  /// INTEGER-defaulted parameter. Under static parameter typing that
+  /// throws `InvalidParameterTypeException` inside `declare_parameter`.
+  /// For every integer parameter this node declares that throw lands in
+  /// `on_configure` AFTER the socket is bound, where `rclcpp_lifecycle`
+  /// swallows it: the node sits silently UNCONFIGURED holding the port,
+  /// and under the shipped `respawn=True` that is a restart loop with
+  /// nothing in the log naming the parameter.
+  ///
+  /// Like the double form, the coerced value is declared with
+  /// `ignore_override = true`, so the parameter stays statically typed
+  /// as an INTEGER and every later read (including `set_parameter` from
+  /// a running system) keeps its type checking. Only DOUBLE is coerced;
+  /// any other wrong type is still refused, because there is no
+  /// defensible reading of a string as a count.
+  ///
+  /// A double that is not an exact integer is ROUNDED with a WARN rather
+  /// than refused: the operator's intent in `1500000.5` is not in doubt,
+  /// and the alternative on this path is the swallowed throw above. One
+  /// that cannot be represented at all (non-finite, or outside int64) is
+  /// an ERROR and falls back to the default, which is announced in the
+  /// log rather than silently unconfigured.
+  void declareIntIfMissing(const std::string& name, int64_t default_value)
+  {
+    if(has_parameter(name))
+      return;
+    const auto& overrides =
+      get_node_parameters_interface()->get_parameter_overrides();
+    const auto override_entry = overrides.find(name);
+    if(override_entry != overrides.end() &&
+       override_entry->second.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
+    {
+      const double value = override_entry->second.get<double>();
+      int64_t coerced = default_value;
+      constexpr double kInt64Limit = 9223372036854775808.0;  // 2^63
+      if(!std::isfinite(value) || value >= kInt64Limit || value < -kInt64Limit)
+      {
+        RCLCPP_ERROR_STREAM(get_logger(),
+          name << ": " << value << " is not representable as an integer "
+          "parameter; using the default " << default_value);
+      }
+      else
+      {
+        coerced = static_cast<int64_t>(std::llround(value));
+        if(static_cast<double>(coerced) != value)
+          RCLCPP_WARN_STREAM(get_logger(),
+            name << ": " << value << " is not an integer; rounding to "
+            << coerced);
+      }
+      declare_parameter(
+        name,
+        rclcpp::ParameterValue(coerced),
         rcl_interfaces::msg::ParameterDescriptor(),
         true);  // ignore_override: the override is the value we just coerced
       return;

@@ -547,6 +547,83 @@ TEST(RetiredParameters, StringLiteralForADoubleParameterFailsToConfigure)
     << "a string where a rate belongs must not be silently accepted";
 }
 
+// The mirror trap, from the other side (#75). A DOUBLE literal for an
+// INTEGER-typed parameter — `maximum_bytes_per_second: 1500000.0`, the
+// shape a hand-edited or generated config produces without a second
+// thought — throws `InvalidParameterTypeException` out of
+// `declare_parameter` in exactly the same way. For these parameters the
+// throw lands AFTER the socket bind, so the swallowed exception leaves
+// the node UNCONFIGURED still holding the port: a restart loop under the
+// shipped `respawn=True`.
+TEST(RetiredParameters, DoubleLiteralForAnIntegerParameterConfigures)
+{
+  Bridge bridge("double_integer_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "port", 4200.0);
+  bridge.connectionParameter("peer", "c0", "maximum_bytes_per_second", 1500000.0);
+  bridge.topic("peer", "c0", "chatter");
+  bridge.topicParameter("peer", "c0", "chatter", "queue_size", 5.0);
+  bridge.topicParameter("peer", "c0", "chatter", "history_depth", 10.0);
+  bridge.topicParameter("peer", "c0", "chatter", "maximum_bytes_per_second", 400000.0);
+  ASSERT_EQ(bridge.configure(), kInactive)
+    << "a double literal for an integer-typed parameter must be coerced "
+       "at declaration, not thrown out of the lifecycle transition after "
+       "the socket bind, where the exception is swallowed and the node "
+       "sits unconfigured holding the port";
+
+  const std::string base = "remotes.peer.connections.c0.";
+  for(const auto& expected: std::map<std::string, int64_t>{
+        {base + "port", 4200},
+        {base + "maximum_bytes_per_second", 1500000},
+        {base + "topics.chatter.queue_size", 5},
+        {base + "topics.chatter.history_depth", 10},
+        {base + "topics.chatter.maximum_bytes_per_second", 400000}})
+  {
+    const auto parameter = bridge.node()->get_parameter(expected.first);
+    EXPECT_EQ(parameter.get_type(), rclcpp::ParameterType::PARAMETER_INTEGER)
+      << expected.first << " must stay statically typed as an integer";
+    EXPECT_EQ(parameter.as_int(), expected.second)
+      << expected.first << " must carry the value the config asked for";
+  }
+}
+
+// A non-integral double is rounded rather than refused: the intent is
+// not in doubt, and refusing means the swallowed throw above.
+TEST(RetiredParameters, NonIntegralDoubleForAnIntegerParameterIsRounded)
+{
+  Bridge bridge("nonintegral_integer_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "maximum_bytes_per_second", 1500000.6);
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_EQ(bridge.node()->get_parameter(
+              "remotes.peer.connections.c0.maximum_bytes_per_second").as_int(),
+            1500001);
+}
+
+// The ordinary way still works — the coercion path must not displace it.
+TEST(RetiredParameters, IntegerLiteralForAnIntegerParameterConfigures)
+{
+  Bridge bridge("integer_integer_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "maximum_bytes_per_second", 1500000);
+  ASSERT_EQ(bridge.configure(), kInactive);
+  EXPECT_EQ(bridge.node()->get_parameter(
+              "remotes.peer.connections.c0.maximum_bytes_per_second").as_int(),
+            1500000);
+}
+
+// And a genuinely wrong type is still refused, the same way the double
+// form refuses a string.
+TEST(RetiredParameters, StringLiteralForAnIntegerParameterFailsToConfigure)
+{
+  Bridge bridge("string_integer_literal");
+  bridge.name("hub").remote("peer", "").connection("peer", "c0");
+  bridge.connectionParameter("peer", "c0", "maximum_bytes_per_second",
+                             std::string("lots"));
+  EXPECT_EQ(bridge.configure(), kUnconfigured)
+    << "a string where a byte rate belongs must not be silently accepted";
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);

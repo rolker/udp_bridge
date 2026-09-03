@@ -164,7 +164,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
 
-  declareIfMissing("port", port_);
+  declareIntIfMissing("port", static_cast<int64_t>(port_));
   // ROS 2 parameters are int64. port_ is uint16_t; out-of-range values
   // would silently wrap and bind to an unintended port. Clamp + warn.
   {
@@ -185,7 +185,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   }
   RCLCPP_INFO_STREAM(get_logger(), "port: " << port_);
 
-  declareIfMissing("maximum_packet_size", max_packet_size_);
+  declareIntIfMissing("maximum_packet_size", static_cast<int64_t>(max_packet_size_));
   // Bound the packet size to a sensible UDP range. Lower bound is the
   // minimum that still leaves room for a Packet header + a meaningful
   // payload after fragmentation; upper bound is the IPv4/UDP maximum.
@@ -297,7 +297,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // history_depth above) so a tiny/negative value can't make the queue drop
   // everything, and a huge value can't invite unbounded memory growth or wrap
   // the int64 → size_t cast on 32-bit size_t platforms.
-  declareIfMissing("publish_queue_max_bytes",
+  declareIntIfMissing("publish_queue_max_bytes",
     static_cast<int64_t>(kDefaultPublishQueueMaxBytes));
   {
     int64_t configured = get_parameter("publish_queue_max_bytes").as_int();
@@ -327,7 +327,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // same component bounding the same kind of exposure (memory held while a
   // consumer stalls), but they are independent failure domains and a hub
   // sizes its downstream fan-out separately from its local republishing.
-  declareIfMissing("relay_queue_max_bytes",
+  declareIntIfMissing("relay_queue_max_bytes",
     static_cast<int64_t>(kDefaultPublishQueueMaxBytes));
   {
     int64_t configured = get_parameter("relay_queue_max_bytes").as_int();
@@ -642,7 +642,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       connection.host = get_parameter(host_param).as_string();
 
       std::string port_param = "remotes." + remote_name + ".connections." + connection_name + ".port";
-      declareIfMissing(port_param, 0);
+      declareIntIfMissing(port_param, 0);
       connection.port = get_parameter(port_param).as_int();
 
       std::string return_host_param = "remotes." + remote_name + ".connections." + connection_name + ".return_host";
@@ -650,7 +650,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       connection.return_host = get_parameter(return_host_param).as_string();
 
       std::string return_port_param = "remotes." + remote_name + ".connections." + connection_name + ".return_port";
-      declareIfMissing(return_port_param, 0);
+      declareIntIfMissing(return_port_param, 0);
       connection.return_port = get_parameter(return_port_param).as_int();
 
       // Connection-level rate limit. ROS 2 integer parameters are int64
@@ -665,7 +665,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       // (connection_tunables.h), and a runtime `ros2 param set` of this
       // same key is REJECTED with a reason.
       std::string maximum_bytes_per_second_param = "remotes." + remote_name + ".connections." + connection_name + ".maximum_bytes_per_second";
-      declareIfMissing(maximum_bytes_per_second_param, 0);
+      declareIntIfMissing(maximum_bytes_per_second_param, 0);
       constexpr int64_t kMaxConnectionBytesPerSecond =
         static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
       int64_t mbps = get_parameter(maximum_bytes_per_second_param).as_int();
@@ -874,7 +874,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       for(auto topic: topics_list)
       {
         std::string queue_size_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".queue_size";
-        declareIfMissing(queue_size_param, 10);
+        declareIntIfMissing(queue_size_param, 10);
         int queue_size = get_parameter(queue_size_param).as_int();
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
@@ -899,7 +899,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         std::string durability = get_parameter(durability_param).as_string();
 
         std::string history_depth_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".history_depth";
-        declareIfMissing(history_depth_param, 0);
+        declareIntIfMissing(history_depth_param, 0);
         // ROS 2 parameters are int64; an unchecked static_cast<uint32_t>
         // of a negative or out-of-range value wraps to a billions-large
         // depth and triggers a huge KEEP_LAST allocation in the rmw
@@ -936,7 +936,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         // `ros2 param set` of the same key is REJECTED with a reason
         // (connection_tunables.h).
         std::string topic_max_bps_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".maximum_bytes_per_second";
-        declareIfMissing(topic_max_bps_param, 0);
+        declareIntIfMissing(topic_max_bps_param, 0);
         int64_t topic_max_bps_value = get_parameter(topic_max_bps_param).as_int();
         constexpr int64_t kMaxTopicBytesPerSecond =
           static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
