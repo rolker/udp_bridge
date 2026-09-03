@@ -119,8 +119,12 @@
             # fraction of the rate limit under #43, which floored six times
             # above capacity on a degraded link.
             #
-            # LIVE-TUNABLE (issue #75) -- see the note under
-            # admission_refractory_period_seconds below.
+            # LIVE-TUNABLE (issue #75). A raise binds on the next
+            # admission sample -- one remote feedback interval (~2 s) --
+            # unconditionally: the floor is a lower bound applied ahead
+            # of the refractory gate, not an AIMD decision the gate has
+            # any reason to suppress. It can never lift the cap above
+            # this connection's own maximum_bytes_per_second.
             admission_floor_bytes_per_second: 8192.0
 
             # RETIRED (issue #52, 2026-08-25) — DO NOT SET. Shown here
@@ -194,11 +198,15 @@
             #
             # Tuning THIS parameter also resets the in-force window and
             # clears any accumulated growth — which is what releases a
-            # frozen controller. That matters because a raised
-            # admission_floor_bytes_per_second does NOT take effect until
-            # an open refractory window expires: the gate returns before
-            # the floor clamp. See doc/admission_control_design.md,
-            # "Tuning it while it is running".
+            # frozen controller, i.e. resumes AIMD recovery after a
+            # collapse. It is NOT needed to make a raised
+            # admission_floor_bytes_per_second take effect: since #75 the
+            # floor is applied as an unconditional lower bound ahead of
+            # the refractory gate and of both AIMD branches, so it binds
+            # on the next admission sample whether or not a window is
+            # open and whether that sample reads congested or clean. See
+            # doc/admission_control_design.md, "Tuning it while it is
+            # running".
             admission_refractory_period_seconds: 5.0
 
             # List of topics to forward over this connection.

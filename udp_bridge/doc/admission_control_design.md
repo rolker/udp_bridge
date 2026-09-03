@@ -417,30 +417,42 @@ Two consequences worth knowing when tuning under pressure:
 
 - **The floor takes effect on the next admission sample**, i.e. within
   one remote feedback interval (the remote's `bridge_info` period, 2 s),
-  not immediately — nothing recomputes the cap between samples.
+  not immediately — nothing recomputes the cap between samples. That is
+  the whole of the delay: see the third point below.
 - **A floor above the connection's `maximum_bytes_per_second` yields the
   cap**, because the floor is clamped at use. An over-large value is
   blunt but safe: it lifts a collapsed cap to the configured ceiling and
   no further.
-- **A raised floor waits out an open refractory window.** This is the
-  one place the #52 gate and the #75 live tunables interact, and it is
-  the case you are most likely to hit, because raising the floor is what
-  an operator does *during* a collapse — when a decrease is by
-  definition outstanding. `updateAdmissionControl` returns at the
-  refractory gate **before** it reaches the floor clamp, so the new
-  floor changes nothing until the window expires: up to
-  `kMaximumAdmissionRefractoryPeriodSeconds` (60 s) with a grown window,
-  ~5 s at the default. Read that delay as a delay. It looks exactly like
-  the accepted-and-inert defect #75 removed — `param get` reports the
-  new floor while `effective_rate_limit` sits at the old one — and
-  concluding "the floor is inert again" is the wrong call. Wait one
-  window before drawing any conclusion, or shorten the wait by setting
-  `admission_refractory_period_seconds` first: **its** setter *does*
-  reset the in-force window and clear accumulated growth, so tuning it
-  is what releases a frozen controller.
-  `AdmissionControl.FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit`
-  pins both halves — inert inside the window, in force on the first
-  sample past it.
+- **A raised floor does not wait for anything.** The floor is applied as
+  an unconditional lower bound at the top of `updateAdmissionControl`,
+  ahead of the refractory gate and of both AIMD branches, so it binds on
+  the next sample whatever else is true: whether or not a decrease
+  window is open, and whether that sample reads congested or clean.
+  Applying it inside the branches instead — which is what the code did
+  until #75's second review round — was wrong twice over, and both cases
+  are the ones an operator actually meets. Inside an open refractory
+  window neither branch runs, so a floor raised *during* a collapse (when
+  a decrease is by definition outstanding) was inert for the length of
+  the window. Worse, the clean branch never read the floor at all, so on
+  a collapsed link that had gone quiet — no traffic offered, every
+  sample clean, which is exactly where a rescue is attempted — the floor
+  bound on *no* sample, for as long as the link stayed quiet, while the
+  cap crept back one additive step at a time. Neither is a bounded delay,
+  and an earlier draft of this section described them as one.
+
+  Raising the floor is a lower bound on the cap, not an AIMD decision,
+  which is why the gate has no business suppressing it: the gate exists
+  to limit how often the controller *decides*, and this does not decide
+  anything. `AdmissionControl.FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit`
+  pins the in-window case and
+  `AdmissionControl.FloorRaisedAtRuntimeBindsOnTheCleanRecoveryPath`
+  pins the quiesced-link case.
+
+  What the refractory gate still holds is the AIMD loop itself. If you
+  need the *controller* released — recovery resumed after a collapse, not
+  just the cap lifted — set `admission_refractory_period_seconds`:
+  **its** setter resets the in-force window and clears accumulated
+  growth.
 - **The refractory period's runtime range stops where the setter's clamp
   begins.** A base above 60 s is *clamped* by a config file and
   *refused* by `ros2 param set`, so an accepted runtime value always

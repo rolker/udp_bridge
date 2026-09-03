@@ -62,11 +62,20 @@
 //                                 the default, never clamps to 0 (#52).
 //   FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit — a floor
 //                                 raised while the cap sits collapsed
-//                                 takes effect on the next sample and
-//                                 stops at the configured limit. This is
-//                                 the operational half of the runtime
+//                                 takes effect on the next sample —
+//                                 including one INSIDE an open
+//                                 refractory window — and stops at the
+//                                 configured limit. This is the
+//                                 operational half of the runtime
 //                                 parameter path in
 //                                 test_runtime_tunables.cpp.
+//   FloorRaisedAtRuntimeBindsOnTheCleanRecoveryPath — the same raise on
+//                                 a collapsed, QUIESCED link, where every
+//                                 sample takes the clean branch. The
+//                                 floor was previously read only in the
+//                                 congested branch, so on this path it
+//                                 bound on no sample at all and the cap
+//                                 crept back additively (#75).
 //   CeilingClamp                — recovery never exceeds the configured
 //                                 limit.
 //   FeedbackStaleBackoff        — stale last_receive_time is congestion
@@ -444,15 +453,16 @@ TEST_F(AdmissionControl, FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit)
   //     so an over-large value is a safe (if blunt) thing to type under
   //     pressure.
   //
-  // Point 1 is deliberately NOT "on the next sample". #52's refractory
-  // gate returns BEFORE the floor clamp (connection.cpp), so a floor
-  // raised while a decrease window is open does nothing until that
-  // window expires — up to kMaximumAdmissionRefractoryPeriodSeconds.
-  // That is the honest shape of the field fix and it is asserted both
-  // ways below, because an operator typing `ros2 param set` mid-collapse
-  // and seeing no change for tens of seconds must not conclude the
-  // parameter is inert again — the exact wrong conclusion #75 exists to
-  // prevent. Documented in doc/admission_control_design.md.
+  // Point 1 means the NEXT sample, with no qualification — including a
+  // sample that lands inside an open refractory window. The floor is
+  // applied as an unconditional lower bound ahead of the gate
+  // (connection.cpp, #75 review round 2), so it is not a control
+  // decision the gate has any reason to suppress. This test previously
+  // pinned the opposite — inert until the window expired — which was
+  // the behaviour, not the contract: an operator typing `ros2 param
+  // set` mid-collapse and seeing no change for tens of seconds
+  // concludes the parameter is inert, the exact wrong conclusion #75
+  // exists to prevent. Documented in doc/admission_control_design.md.
   rclcpp::Clock clock(RCL_STEADY_TIME);
   const auto t0 = clock.now();
   const uint32_t default_floor =
@@ -479,18 +489,27 @@ TEST_F(AdmissionControl, FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit)
   // when they do not know how much headroom the link has.
   conn->setAdmissionFloorBytesPerSecond(static_cast<float>(kRateLimit) * 10.0f);
 
-  // Drive one sample INSIDE the still-open window first and pin that it
-  // changes nothing: setAdmissionFloorBytesPerSecond does not reset the
-  // refractory state (only setAdmissionRefractoryPeriodSeconds does), so
-  // the last decrease is still outstanding.
+  // Drive one sample INSIDE the still-open window. The last decrease is
+  // still outstanding (setAdmissionFloorBytesPerSecond does not reset
+  // the refractory state — only setAdmissionRefractoryPeriodSeconds
+  // does), and the raised floor must bind anyway.
   const auto in_window = t + rclcpp::Duration::from_seconds(0.1);
   send_traffic(*conn, in_window, 80);
   conn->update_last_receive_time(in_window.seconds(), 100, false);
   conn->updateAdmissionControl(0.0f, 0.0f, in_window);
-  EXPECT_EQ(conn->effectiveRateLimit(), default_floor)
-    << "inside the refractory window the gate returns before the floor "
-       "clamp, so a raised floor is not yet in force — this is a delay, "
-       "not the accepted-and-inert defect";
+  EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
+    << "a floor raised at runtime must bind on the very next sample even "
+       "inside an open refractory window — the gate suppresses control "
+       "DECISIONS, and a lower bound is not one";
+
+  // And it stays there: the window is still open, so no AIMD decision
+  // runs, and a further congested sample must not undo the raise.
+  const auto still_in_window = in_window + rclcpp::Duration::from_seconds(0.1);
+  send_traffic(*conn, still_in_window, 80);
+  conn->update_last_receive_time(still_in_window.seconds(), 100, false);
+  conn->updateAdmissionControl(0.0f, 0.0f, still_in_window);
+  EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
+    << "the raised floor holds the cap for as long as it is configured";
 
   t = past_refractory(t);
   send_traffic(*conn, t, 80);
@@ -498,9 +517,57 @@ TEST_F(AdmissionControl, FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit)
   conn->updateAdmissionControl(0.0f, 0.0f, t);
 
   EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
-    << "a floor raised at runtime must lift the collapsed cap on the "
-       "first sample past the refractory window, and must stop at the "
-       "configured limit rather than raise it";
+    << "and past the window a congested sample cannot decrease below the "
+       "floor, which here is the configured limit — the floor is a lower "
+       "bound on backoff, never a way to raise the cap above the limit";
+}
+
+TEST_F(AdmissionControl, FloorRaisedAtRuntimeBindsOnTheCleanRecoveryPath)
+{
+  // The operator's actual situation on 2026-08-25: the cap has
+  // collapsed and the link has gone quiet, so no traffic is being
+  // offered and every subsequent admission sample takes the CLEAN
+  // branch (sent_bps == 0 can never read as congested). Raising the
+  // floor must rescue the cap here too.
+  //
+  // This is the hole the round-2 review found. The floor used to be
+  // read only inside the congested branch, so on this path it bound on
+  // NO sample at all — not "inert until the refractory window expires",
+  // but inert for as long as the link stayed quiet, while the cap crept
+  // back one additive step at a time (8192 -> 10240 -> ...). The
+  // unconditional lower bound in updateAdmissionControl closes it.
+  rclcpp::Clock clock(RCL_STEADY_TIME);
+  const auto t0 = clock.now();
+  const uint32_t default_floor =
+    static_cast<uint32_t>(udp_bridge::kDefaultAdmissionFloorBytesPerSecond);
+
+  auto conn = make_connection();
+  auto t = t0;
+  for(int i = 0; i < 10; ++i)
+  {
+    if(i > 0)
+      t = past_refractory(t);
+    send_traffic(*conn, t, 80);
+    conn->update_last_receive_time(t.seconds(), 100, false);
+    conn->updateAdmissionControl(0.0f, 0.0f, t);
+  }
+  ASSERT_EQ(conn->effectiveRateLimit(), default_floor)
+    << "precondition: the cap has collapsed to the default floor";
+
+  // The link quiesces and the refractory window expires. No traffic is
+  // offered from here on, so `sent_bps` is 0 over the send-rate window
+  // and every sample below is a clean one.
+  t = past_refractory(t);
+  conn->setAdmissionFloorBytesPerSecond(static_cast<float>(kRateLimit) * 10.0f);
+  conn->update_last_receive_time(t.seconds(), 100, false);
+  conn->updateAdmissionControl(0.0f, 0.0f, t);
+
+  EXPECT_EQ(conn->effectiveRateLimit(), kRateLimit)
+    << "a floor raised on a quiesced link must bind on the next clean "
+       "sample — before this fix the clean branch never read the floor "
+       "and the cap would have taken one additive step to "
+    << (default_floor +
+        static_cast<uint32_t>(udp_bridge::kAdmissionAdditiveStepMinimumBytesPerSecond));
 }
 
 TEST_F(AdmissionControl, NegativeFloorFallsBackToDefault)
