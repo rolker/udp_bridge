@@ -624,6 +624,34 @@ TEST(RetiredParameters, StringLiteralForAnIntegerParameterFailsToConfigure)
     << "a string where a byte rate belongs must not be silently accepted";
 }
 
+// Connection ids collide the way remote names do, and silently (#75).
+// Every live map is keyed by the CANONICAL (truncated to 7 characters)
+// id, so two configured ids agreeing in their first 7 register two
+// parameter names against one runtime-tunable target: last write wins,
+// and the loser reads back a value that is not in force.
+TEST(ConnectionIdCollision, CollidingCanonicalIdsFailToConfigure)
+{
+  Bridge bridge("colliding_connection_ids");
+  bridge.name("hub").remote("peer", "")
+        .connection("peer", "vpn_link_alpha")
+        .connection("peer", "vpn_link_beta");
+  EXPECT_EQ(bridge.configure(), kUnconfigured)
+    << "two connection ids that canonicalize to the same wire id share one "
+       "connection, one routing-table entry and one tunable target; that "
+       "must fail loudly at configure rather than silently last-write-wins";
+}
+
+// Distinct within the truncation length: fine, including one id that is
+// itself over the limit.
+TEST(ConnectionIdCollision, DistinctCanonicalIdsConfigure)
+{
+  Bridge bridge("distinct_connection_ids");
+  bridge.name("hub").remote("peer", "")
+        .connection("peer", "vpn_link_that_is_long")
+        .connection("peer", "cell");
+  EXPECT_EQ(bridge.configure(), kInactive);
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);

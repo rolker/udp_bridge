@@ -446,6 +446,60 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
     return CallbackReturn::FAILURE;
   }
 
+  // Connection ids collide the same way remote names do, and the
+  // collision is silent (#75). Every live map — connections_ (PR #25),
+  // the routing table's connection_rates, and the TunableTarget registry
+  // — is keyed by the CANONICAL (truncated) id, so two configured ids
+  // agreeing in their first `truncate_connection_id` characters become
+  // one key. Two parameter names then register against one target:
+  // the last write wins, and the loser reads back a value that is not in
+  // force — the exact invariant connection_tunables.h calls load-bearing.
+  //
+  // Checked HERE, above the socket, so the remedy is edit-and-reconfigure
+  // rather than a restart (see the note above the retired-key block).
+  std::string colliding_ids;
+  for(const auto& remote_label: remotes_list)
+  {
+    std::string connections_list_param =
+      "remotes." + remote_label + ".connections_list";
+    declareIfMissing(connections_list_param, std::vector<std::string>());
+    std::map<std::string, std::string> canonical_seen;
+    // Copy, not a reference into a temporary: as_string_array() returns a
+    // reference into the rclcpp::Parameter, which a range-for over the
+    // call expression would destroy before the first iteration.
+    const auto connection_names =
+      get_parameter(connections_list_param).as_string_array();
+    for(const auto& connection_name: connection_names)
+    {
+      const std::string canonical = truncate_connection_id(connection_name);
+      auto inserted = canonical_seen.emplace(canonical, connection_name);
+      // A repeated entry is idempotent, as it is in remotes_list; only a
+      // genuine collision between two DIFFERENT ids is an error.
+      if(!inserted.second && inserted.first->second != connection_name)
+      {
+        if(!colliding_ids.empty())
+          colliding_ids += "; ";
+        colliding_ids += "remote '" + remote_label + "': '" +
+          inserted.first->second + "' and '" + connection_name +
+          "' both canonicalize to '" + canonical + "'";
+      }
+    }
+  }
+  if(!colliding_ids.empty())
+  {
+    RCLCPP_ERROR_STREAM(get_logger(), "connection id collision — "
+      << colliding_ids << ". Connection ids are truncated to the on-wire"
+         " length and every live map is keyed by that truncated form, so"
+         " colliding ids share one connection, one routing-table entry and"
+         " one runtime-tunable target: a `ros2 param set` on either name"
+         " would silently overwrite the other and read back a value that is"
+         " not in force. Make the ids differ within their first"
+      << " " << (maximum_connection_id_size - 1)
+      << " characters. This check runs before the socket is created, so a"
+         " fix needs only a re-configure.");
+    return CallbackReturn::FAILURE;
+  }
+
   std::string identity_error;
   auto remote_identities = resolveRemoteIdentities(remotes_list, name_,
                                                    &identity_error);
