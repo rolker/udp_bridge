@@ -81,3 +81,101 @@ round-1 review.
   configure/teardown path the merge also moved through — recheck them against
   the merged code, not the reviewed code.
 - Finding 5 (`doc/relay_design.md` missed entirely) is untouched by the merge.
+
+## Implementation
+**Status**: complete
+**When**: 2026-09-03 13:49 -04:00
+**By**: Claude Code Agent (Claude Opus)
+
+**Branch**: feature/issue-75 at `f2a88f2`
+**Addressed**: the `## Local Review (Pre-Push)` of 2026-08-25 23:44 -04:00 (round 1,
+branch at `9a7d54a`) — all 6 must-fix and all 8 suggestions. None deferred.
+**Commits**: `db15c94` `5e6a581` `825ede3` `7d8a1d9` `bf20894` `3007639` `b60d0eb`
+`261f81a` `d3655d6` `0792564` `f2a88f2`
+
+Re-located every finding by symbol, not by line: the #52 merge had moved
+all of them. Two of the six needed re-checking against the merged code, as
+the previous entry's notes required, and both survived it — finding 4's
+`on_shutdown`/declaration-order defect and finding 6's untested
+callback-registration ordering are still real after the merge. Nothing
+touched `link_headroom_fraction`; it is retired and stays retired. The
+fifth runtime tunable added by the merge,
+`admission_refractory_period_seconds`, is carried through every fix and is
+the probe the new ordering test uses.
+
+### Actions
+- [x] (must-fix) Connection ids keyed raw in `connection_rates` / `TunableTarget` /
+  drop records — `addSubscriberConnection` and `removeSubscriberConnection` now
+  canonicalize on the way in, matching `RemoteNode::connection()`, and `on_configure`
+  records the canonical id in each `TunableTarget`. `topicRateInfoForTest` deliberately
+  does NOT canonicalize, so a test can pin which key the table is built under —
+  `src/udp_bridge.cpp`, `include/udp_bridge/connection_tunables.h` (`db15c94`)
+- [x] (must-fix) A per-topic cap could never be removed by a re-configure — the cap
+  argument is `std::optional<uint32_t>`: absent retains (every wire/service caller, and
+  the test hook offers no way to pass anything else), present is authoritative
+  including 0 (`on_configure`) — `src/udp_bridge.cpp`, `include/udp_bridge/udp_bridge.h`
+  (`5e6a581`)
+- [x] (must-fix) Connection-level `maximum_bytes_per_second` narrowed int64→int with no
+  range check — read as int64 and clamped at both ends with a WARN, mirroring the
+  per-topic cap. Pinned by a test on the exact reported value: 3000000000 must reach the
+  Connection, not fall back to the 50000 default — `src/udp_bridge.cpp` (`825ede3`)
+- [x] (must-fix) `on_shutdown` not symmetric with `on_cleanup` — the callback handle is
+  reset and the registry cleared there too, and the handle is now declared AFTER
+  `runtime_tunables_` so `~UDPBridge` destroys it first. The ordering is documented as
+  load-bearing where a tidy-up would reach for it — `src/udp_bridge.cpp`,
+  `include/udp_bridge/udp_bridge.h` (`7d8a1d9`)
+- [x] (must-fix) `doc/relay_design.md` missed entirely — call signature corrected, the
+  drop-reason contract rewritten around both rate limits (`rateLimited()` sums them,
+  `topicRateLimited()` is the cap half, `rate_limited_by_topic_cap` is its row), and the
+  "single implementation" section now covers the byte cap as well as `period`. Also
+  records the gate ordering and that the relay probe stays may-send — `doc/relay_design.md`
+  (`3007639`)
+- [x] (must-fix) Four behaviours untested — target-gone refusal, cleanup→configure
+  registry rebuild, `RelayDropReason::TopicRateLimited` accounting, and the
+  callback-registration ordering. The ordering test supplies a config value the runtime
+  validator would refuse (`admission_refractory_period_seconds` above the 60 s ceiling)
+  as a NodeOptions override, so `on_configure` performs the declaration itself: the
+  transition must succeed with the value clamped, and the same value must be refused once
+  configure has returned. Two `UDP_BRIDGE_BUILD_TESTING` hooks support this —
+  `test/test_runtime_tunables.cpp`, `test/test_relay_queue.cpp`,
+  `test/test_topic_rate_caps.cpp` (`bf20894`)
+- [x] (suggestion) A byte-cap shed skipped `periods.insert()`, so capping one connection
+  changed when an uncapped sibling of the same period was sent to — group membership is
+  now decided by the `period` rule alone — `include/udp_bridge/destination_selection.h`
+  (`261f81a`)
+- [x] (suggestion) Drop records diluted `average_fragment_count` — averaged over the
+  records that carry a fragment count, 0 when none does — `src/statistics.cpp` (`d3655d6`)
+- [x] (suggestion) A tunable left over from a previous configure was accepted and did
+  nothing — `stale_tunables_` accumulates the keys each cycle drops and a set of one is
+  refused with a reason. Accumulating rather than replacing is load-bearing: by the time
+  `on_configure` runs, `on_cleanup` has usually already emptied the registry —
+  `src/udp_bridge.cpp` (`0792564`)
+- [x] (suggestion) README runtime table gave the floor's range as "finite double >= 0" —
+  now `[0, 3.4028235e38]`, with the float-representability reason — `udp_bridge/README.md`
+  (`b60d0eb`)
+- [x] (suggestion) The per-topic cap's config-file over-range clamp was in no document —
+  recorded in the README, `config/example_params.yaml` and `.agents/README.md`, along with
+  the connection-level clamp added here (`b60d0eb`)
+- [x] (suggestion) The config-side negative→warn+0 path was untested —
+  `ConfiguredNegativeCapWarnsAndBecomesNoCap` and `ConfiguredOverRangeCapIsClampedNotWrapped`
+  (`825ede3`)
+- [x] (suggestion) `example_params.yaml` said "live-tunable" on two of the four connection
+  tunables — now on all four (`b60d0eb`)
+- [x] (suggestion) The "0 retains" rule was never exercised — now pinned as
+  `AReadvertiseDoesNotWipeTheCap`, in the shape finding 2 gave it: a re-advertise carries
+  no cap field and must leave the cap alone, which is what makes "an engaged value is
+  authoritative" safe (`5e6a581`)
+
+### Notes
+- Out of scope, found while working and NOT fixed: two configured connection ids that
+  agree in their first `maximum_connection_id_size - 1` characters are now correctly ONE
+  routing entry, but nothing REJECTS such a collision at configure time. That is a
+  separate hazard (the operator's two configured links silently become one) and wants its
+  own issue.
+- `.agents/README.md`'s live-tunable list was stale after the #52 merge — it named the
+  retired `link_headroom_fraction` and omitted `admission_refractory_period_seconds`.
+  Corrected in `b60d0eb`.
+- **Verification**: build clean; full suite **352 tests, 0 failures, 14 skipped** (baseline
+  332/0/14 — 20 new tests, no test removed or weakened).
+  `pre-commit run --from-ref origin/jazzy --to-ref HEAD` all Passed, including cmake-lint
+  and yamllint. Not pushed — the host pushes.
