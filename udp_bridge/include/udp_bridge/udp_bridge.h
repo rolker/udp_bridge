@@ -706,24 +706,6 @@ private:
   double resend_giveup_warn_rate_per_s_ {5.0};
   double resend_giveup_error_rate_per_s_ {50.0};
 
-  // Handle for the parameter-change callback. Reset in on_cleanup so
-  // re-configure cycles don't accumulate stale handles.
-  //
-  // Registered at the END of on_configure, deliberately. rclcpp calls an
-  // OnSetParameters callback for declare_parameter() as well as for
-  // set_parameter() (rclcpp/node.hpp: "the callback is called when
-  // declare_parameter() and its variants are called"), so a callback
-  // registered before the remotes/connections/topics declarations would
-  // see every YAML override on its way in — and REFUSING one there
-  // throws InvalidParameterValueException out of on_configure, which
-  // rclcpp_lifecycle swallows, leaving a half-configured node with the
-  // socket already bound. Registering last means the callback only ever
-  // sees a genuine runtime set, so it can validate strictly (see
-  // connection_tunables.h) while on_configure keeps its clamp-and-carry-on
-  // treatment of a mistyped config file.
-  rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
-    on_set_parameters_handle_;
-
   // Runtime-settable per-connection and per-topic tunables, keyed by full
   // parameter name (see connection_tunables.h for why the mapping is
   // built rather than parsed). Populated in on_configure as each
@@ -737,6 +719,33 @@ private:
   // registered, so the lock is defensive rather than load-bearing.
   std::map<std::string, TunableTarget> runtime_tunables_;
   mutable std::mutex runtime_tunables_mutex_;
+
+  // Handle for the parameter-change callback. Reset in on_cleanup AND in
+  // on_shutdown so re-configure cycles don't accumulate stale handles and
+  // a shutdown leaves no callback able to mutate live Connections from
+  // FINALIZED.
+  //
+  // Registered at the END of on_configure, deliberately. rclcpp calls an
+  // OnSetParameters callback for declare_parameter() as well as for
+  // set_parameter() (rclcpp/node.hpp: "the callback is called when
+  // declare_parameter() and its variants are called"), so a callback
+  // registered before the remotes/connections/topics declarations would
+  // see every YAML override on its way in — and REFUSING one there
+  // throws InvalidParameterValueException out of on_configure, which
+  // rclcpp_lifecycle swallows, leaving a half-configured node with the
+  // socket already bound. Registering last means the callback only ever
+  // sees a genuine runtime set, so it can validate strictly (see
+  // connection_tunables.h) while on_configure keeps its clamp-and-carry-on
+  // treatment of a mistyped config file.
+  //
+  // DECLARATION ORDER IS LOAD-BEARING: this handle is declared AFTER
+  // runtime_tunables_ and its mutex, so ~UDPBridge destroys it FIRST
+  // (members are destroyed in reverse declaration order) and the callback
+  // is unregistered before the map and the mutex it reads are gone. The
+  // reverse order let a set_parameter racing destruction read a destroyed
+  // map. Same reason on_cleanup resets the handle before clearing the map.
+  rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
+    on_set_parameters_handle_;
 
   // Byte budget for publish_queue_ (issue #10). Declared as a ROS
   // parameter in on_configure (declareIfMissing) so deployments can size

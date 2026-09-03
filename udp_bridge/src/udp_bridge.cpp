@@ -1130,6 +1130,21 @@ UDPBridge::CallbackReturn UDPBridge::on_shutdown(const rclcpp_lifecycle::State &
   // deactivate -> cleanup -> shutdown path pays nothing (issues #10/#51).
   publish_queue_.stop();
   relay_queue_.stop();
+  // Unregister the parameter-change callback, for the same reason the
+  // workers are stopped here: shutdown is reachable from ACTIVE and from
+  // INACTIVE without passing through on_cleanup, so without this the
+  // callback stays live into FINALIZED and a `ros2 param set` would still
+  // mutate live Connections on a node that has been shut down. rclcpp
+  // does not stop dispatching parameter callbacks at a lifecycle
+  // transition — nothing but this reset does.
+  //
+  // Reset BEFORE clearing the registry it reads, matching on_cleanup:
+  // once the handle is gone no callback can observe the map mid-clear.
+  on_set_parameters_handle_.reset();
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    runtime_tunables_.clear();
+  }
   return LifecycleNode::on_shutdown(state);
 }
 

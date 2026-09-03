@@ -517,6 +517,36 @@ TEST(ConnectionRateLimitConfig, NegativeRateLimitFallsBackToTheDefault)
        "never to a wrapped, near-2^32 limit";
 }
 
+// ---------------------------------------------------------------------
+// Lifecycle: the registry, the callback handle, and their ordering.
+// ---------------------------------------------------------------------
+
+// The callback must be unregistered on the way to FINALIZED, exactly as
+// it is on the way to UNCONFIGURED. Shutdown is reachable from ACTIVE and
+// from INACTIVE without passing through on_cleanup, and rclcpp does not
+// stop dispatching parameter callbacks at a lifecycle transition — so
+// without the reset in on_shutdown a `ros2 param set` still reached, and
+// mutated, the live Connections of a node that had been shut down.
+TEST(RuntimeTunablesLifecycle, ShutdownStopsTheCallbackLikeCleanupDoes)
+{
+  Bridge bridge("runtime_shutdown");
+  auto connection = bridge.configure();
+  ASSERT_TRUE(connection != nullptr);
+
+  ASSERT_EQ(bridge.node().shutdown().id(),
+            lifecycle_msgs::msg::State::PRIMARY_STATE_FINALIZED);
+
+  const std::string name = connectionParam("admission_floor_bytes_per_second");
+  auto result = bridge.node().set_parameter(rclcpp::Parameter(name, 20000.0));
+  // The store still takes the value — the parameter is declared and this
+  // node no longer objects to anything. What must NOT happen is the live
+  // Connection moving.
+  EXPECT_TRUE(result.successful) << result.reason;
+  EXPECT_FLOAT_EQ(connection->admissionFloorBytesPerSecond(),
+                  static_cast<float>(kConfiguredFloor))
+    << "a FINALIZED node must not still be retuning its links";
+}
+
 int main(int argc, char** argv)
 {
   testing::InitGoogleTest(&argc, argv);
