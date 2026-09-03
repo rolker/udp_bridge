@@ -39,3 +39,45 @@ Specialists: Static Analysis (pre-commit green over origin/jazzy..HEAD, incl. cm
 - Lens A specifically CLEARED the risk the field flagged hardest — callback registration order and teardown symmetry across on_configure/on_cleanup, plus token-bucket correctness (sustained rate, oversized message, backwards clock, first use) and the single-implementation claim. Lens B independently cleared the concurrency claim (bounded arithmetic inside the existing subscribers_mutex_ scope, nothing held across sendto), lock ordering, and all-or-nothing batching. B's on_shutdown finding is not a contradiction of A: A examined configure/cleanup, B examined shutdown and destruction.
 - CONCURRENT WORK HAZARD: udp_bridge#52 (branch feature/issue-52, 13 commits, unpushed, updated today) rewrites the AIMD control law these four tunables tune, and adds 78 lines to resend_constants.h — the file this branch hoists kMaxLinkHeadroomFraction into precisely so the setter clamp and the validation cannot drift. Trial merge: textual conflicts in 3 docs only; the code auto-merges, which is what makes the semantic drift dangerous. Issue #75's body wrongly states #52's fix "merged 2026-08-22". Sequence #52 first, then rebase this and re-check the ranges.
 - Open #66 (on_cleanup never closes the socket; CLEANUP->CONFIGURE exit(1)s on EADDRINUSE) touches the same lifecycle path this branch modifies.
+
+## Implementation
+**Status**: complete
+**By**: Claude Code Agent (Claude Opus 5 (1M context))
+
+**What**: merged the now-merged #52 (PR #77) into this branch and resolved the
+semantic drift the round-1 review predicted. Merge commit, not a rebase — the
+field SHAs (tip `9a7d54a`) are the provenance link issue #75 records.
+
+- `link_headroom_fraction` runtime tunable REMOVED. #52 round 3 retired the
+  parameter *and* undeclared it, deleting `Connection::setLinkHeadroomFraction`;
+  the merged tree called a setter that no longer exists. `TunableKind::
+  LinkHeadroomFraction`, `validateLinkHeadroomFraction` and the hoisted
+  `kMaxLinkHeadroomFraction` are gone with it. This supersedes
+  `rebase-notes-issue-52.md`, which recorded the round-2 shape
+  ("stays DECLARED, inert") and correctly warned round 3 would overwrite it.
+- `admission_refractory_period_seconds` ADDED as the fifth runtime tunable
+  (operator-approved scope addition). #52 wrote the expectation down and it is
+  the parameter RCA item D names as what blocked live mitigation on 2026-08-25.
+  Runtime path REFUSES a base above the 60 s ceiling where configure CLAMPS —
+  the branch's central validation asymmetry.
+- `AdmissionControl.FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit`
+  drifted while merging clean. Fixed, and the fix exposed an operator-facing
+  interaction now documented: `updateAdmissionControl` returns at the refractory
+  gate BEFORE the floor clamp, so a floor raised mid-collapse is inert for up to
+  60 s. Reads exactly like the defect this branch removes; pinned both ways.
+
+**Verification**: build clean; full suite **332 tests, 0 failures, 14 skipped**.
+`pre-commit run --from-ref origin/jazzy --to-ref HEAD` all Passed, **including
+`cmake-lint` and `yamllint`** — the issue's "pre-commit did not run" blocker is
+discharged. The issue body's "UNCOMPILED, no test ever run" is stale as of the
+round-1 review.
+
+### Notes for the fix pass
+- The round-1 review's **6 must-fix findings are all still open** and unaddressed.
+- Their **line numbers have shifted** — re-locate by symbol, not by line.
+- Nothing in the merge addressed any of them. Finding 4 (`on_shutdown` not
+  symmetric with `on_cleanup`; `runtime_tunables_` declared after the callback
+  handle) and finding 6 (callback-registration ordering untested) touch the
+  configure/teardown path the merge also moved through — recheck them against
+  the merged code, not the reviewed code.
+- Finding 5 (`doc/relay_design.md` missed entirely) is untouched by the merge.
