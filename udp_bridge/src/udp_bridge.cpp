@@ -1389,7 +1389,23 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
 
   if (destinations.empty())
   {
-    RCLCPP_DEBUG_STREAM(get_logger(), "No ready destination to send message");
+    // Say WHICH limit shed it. "No destination due under `period`" is the
+    // rate limiter working as configured and stays at DEBUG; "every
+    // destination that was due is over its own per-topic cap" is a
+    // configured cause with the #60 shape — the operator's indicators
+    // read healthy while the topic delivers nothing — and a cap the
+    // operator can see is the difference between diagnosing it in
+    // seconds and not at all. Throttled, because it fires per message on
+    // a saturated topic. The relay path counts the same distinction on
+    // RelayDropReason::TopicRateLimited (#75).
+    if(over_budget.empty())
+      RCLCPP_DEBUG_STREAM(get_logger(),
+        "No ready destination to send " << topic_name);
+    else
+      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 10000,
+        topic_name << ": every destination due under `period` is over its "
+        "own per-topic maximum_bytes_per_second; nothing sent. This is the "
+        "configured cap shedding the topic, not a link failure.");
     return;
   }
 
@@ -2426,14 +2442,42 @@ rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
         // cap makes the existing charge drain faster and lowering it
         // slower, which is the honest accounting either way; resetting it
         // would let a burst re-run the whole budget on the next message.
-        entry.rate_info->maximum_bytes_per_second =
-          static_cast<uint32_t>(parameter.as_int());
+        //
+        // Lowering it sharply therefore SILENCES the topic while the old
+        // overdraft drains at the new rate: 400000 -> 20000 B/s with a
+        // full second outstanding is ~20 s of nothing (#75). Bounded and
+        // self-clearing, but invisible in the parameter that caused it,
+        // so it is called out in the log line below and in the operator
+        // docs (README.md live-tuning note, destination_selection.h).
+      {
+        const uint32_t previous = entry.rate_info->maximum_bytes_per_second;
+        const uint32_t requested = static_cast<uint32_t>(parameter.as_int());
+        entry.rate_info->maximum_bytes_per_second = requested;
+        if(requested > 0 && previous > requested &&
+           entry.rate_info->budget_used_bytes > requested)
+          RCLCPP_WARN_STREAM(get_logger(),
+            parameter.get_name() << ": lowering the cap to " << requested
+            << " B/s leaves " << entry.rate_info->budget_used_bytes
+            << " bytes already charged, which now drain at the new rate — "
+            "expect this topic to stay silent for up to about "
+            << (entry.rate_info->budget_used_bytes / requested)
+            << " s before the next message is admitted");
         break;
+      }
     }
+    // Log the value IN FORCE, not the value asked for. The two differ:
+    // a connection maximum_bytes_per_second of 0 means "use Connection's
+    // built-in default" (50000 B/s), so "applied: 0" told an operator
+    // the link was uncapped while it had in fact just dropped to 50 kB/s
+    // (#75). setRateLimit's clamp against accumulated backoff can also
+    // move it. Only the connection cap has a getter that reports the
+    // resolved value; the others store exactly what was set.
+    std::string in_force = parameter.value_to_string();
+    if(target.kind == TunableKind::ConnectionMaximumBytesPerSecond)
+      in_force = std::to_string(connection->rateLimit());
     RCLCPP_INFO_STREAM(get_logger(),
       parameter.get_name() << " applied to remote '" << target.remote
-      << "' connection '" << target.connection_id << "': "
-      << parameter.value_to_string());
+      << "' connection '" << target.connection_id << "': " << in_force);
   }
 
   return result;

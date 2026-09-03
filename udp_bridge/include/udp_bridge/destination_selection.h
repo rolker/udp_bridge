@@ -127,6 +127,18 @@ struct RateLimitedSelection
 ///    computing a negative drain. Sim time and NTP corrections both
 ///    produce one; the conservative direction here is to forget the
 ///    charge, since the alternative is a bucket that can never drain.
+///
+/// One consequence of the drain being computed at the CURRENT cap is
+/// worth knowing before tuning one down at runtime (#75): an existing
+/// overdraft drains at the NEW cap, not the old one. Lowering a topic
+/// from 400000 to 20000 B/s while a full second of the old cap is
+/// outstanding silences that topic for ~20 s before the first message is
+/// admitted again. That is the honest accounting — the bytes were spent,
+/// and forgiving them would let a burst re-run the whole budget on the
+/// next message — but the outage is bounded by nothing visible in the
+/// parameter the operator just set, so it is documented at both entry
+/// points (see udp_bridge.cpp's TopicMaximumBytesPerSecond case and
+/// the live-tuning note in README.md).
 inline bool admitAgainstTopicByteCap(ConnectionRateInfo& rate,
                                      uint64_t message_bytes,
                                      const rclcpp::Time& now)
