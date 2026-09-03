@@ -270,6 +270,51 @@ TEST(TopicRateCaps, PeriodGateRunsFirst)
     << "an offer the period rule refused must not be charged to the cap";
 }
 
+// Same-period connections fan out together, and which of them are in that
+// cohort is decided by the `period` rule alone. A connection shed by its
+// own byte cap must still open the group: if it did not, capping ONE
+// connection would change WHEN an uncapped sibling of the same period is
+// sent to — a per-topic cap silently reshaping a link it was never
+// configured for.
+TEST(TopicRateCaps, AShedConnectionStillOpensItsPeriodGroup)
+{
+  // Two connections to one remote, same 1 s period. "a" sorts first, so
+  // the loop meets it first and it is the one that opens the group. Its
+  // clock says due (2 s since its last send); "b"'s says NOT due (0.5 s),
+  // so "b" can only be selected through the group.
+  std::map<std::string, RemoteDetails> table;
+  RemoteDetails details;
+  details.destination_topic = "/bulk";
+
+  ConnectionRateInfo capped;
+  capped.period = 1.0f;
+  capped.last_sent_time = kT0 - rclcpp::Duration::from_seconds(2.0);
+  capped.maximum_bytes_per_second = 1000;
+  // A bucket that already holds a full second of the cap, so the next
+  // message is shed rather than admitted by the empty-bucket rule.
+  capped.budget_started = true;
+  capped.budget_used_bytes = 1000.0;
+  capped.budget_updated_time = kT0;
+
+  ConnectionRateInfo uncapped;
+  uncapped.period = 1.0f;
+  uncapped.last_sent_time = kT0 - rclcpp::Duration::from_seconds(0.5);
+
+  details.connection_rates["a"] = capped;
+  details.connection_rates["b"] = uncapped;
+  table["operator"] = details;
+
+  auto selection = selectRateLimitedConnections(table, kT0, 5000);
+
+  ASSERT_EQ(selection.over_budget["operator"].size(), 1u);
+  EXPECT_EQ(selection.over_budget["operator"].front(), "a")
+    << "the capped connection was due under `period` and shed by its cap";
+  ASSERT_EQ(selection.due["operator"].size(), 1u)
+    << "the uncapped sibling is due through the group `a` opened; its own "
+       "send timing must not depend on whether `a` was over budget";
+  EXPECT_EQ(selection.due["operator"].front(), "b");
+}
+
 TEST(TopicRateCaps, CapAppliesToRelayedTrafficIdentically)
 {
   // Same table, same cap, reached through the relay path's exclude_remote

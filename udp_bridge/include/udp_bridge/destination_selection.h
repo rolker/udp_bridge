@@ -220,14 +220,21 @@ inline MessageSizeData overBudgetDropRecord(
 ///     one with the same period is skipped, and only the connections after
 ///     it join the group. Pre-#51 behaviour, preserved verbatim — noted
 ///     here so the asymmetry is not mistaken for a guarantee.
+///
+///     Membership of the group is decided by the `period` rule ALONE. A
+///     connection that is due and then shed by its own per-topic byte cap
+///     still opens the group, so capping one connection cannot change
+///     when an uncapped sibling with the same period is sent to.
 ///   - Every selected connection's last_sent_time is set to `now`.
 ///   - A connection that is due under `period` is then charged
 ///     `message_bytes` against its own per-topic
 ///     `maximum_bytes_per_second` (0 = unlimited, the default). Over
-///     budget, it is reported in `over_budget` instead of `due`, and
-///     neither its last_sent_time nor the same-period grouping is
-///     touched — nothing was sent to it, so nothing about its send state
-///     should move. Charging happens here, in the one place both senders
+///     budget, it is reported in `over_budget` instead of `due`, and its
+///     last_sent_time is not touched — nothing was sent to it, so nothing
+///     about its own send state should move. Its membership of the
+///     same-period group IS recorded, because that group is about the
+///     period rule and belongs to the other connections as much as to
+///     this one. Charging happens here, in the one place both senders
 ///     already meter, so relayed traffic is capped by exactly the same
 ///     rule and the same state as locally published traffic.
 ///
@@ -270,11 +277,18 @@ inline RateLimitedSelection selectRateLimitedConnections(
       if(connection_rate.second.period >= 0)
         if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
         {
-          // Due under `period`. The per-topic byte cap is the second
-          // gate, applied only to connections that got this far: a
-          // connection the period rule already held back must not have
-          // its budget charged for a message it was never going to
-          // receive.
+          // Due under `period`. Join the same-period group HERE, before
+          // the byte cap is consulted: the group expresses "this period's
+          // cohort fires on this message", which is a property of the
+          // period rule alone. Joining it only on admission would let a
+          // cap on ONE connection change WHEN an uncapped sibling of the
+          // same period is sent to — a per-topic cap perturbing a link it
+          // was never configured for.
+          periods.insert(connection_rate.second.period);
+          // The per-topic byte cap is the second gate, applied only to
+          // connections that got this far: a connection the period rule
+          // already held back must not have its budget charged for a
+          // message it was never going to receive.
           if(!admitAgainstTopicByteCap(connection_rate.second, message_bytes, now))
           {
             selection.over_budget[remote.first].push_back(connection_rate.first);
@@ -282,8 +296,6 @@ inline RateLimitedSelection selectRateLimitedConnections(
           }
           selection.due[remote.first].push_back(connection_rate.first);
           connection_rate.second.last_sent_time = now;
-          if(periods.count(connection_rate.second.period) == 0)
-            periods.insert(connection_rate.second.period);
         }
   }
   return selection;
