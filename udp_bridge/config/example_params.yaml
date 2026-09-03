@@ -95,6 +95,15 @@
             # 500000 set here -- do not read the value below as "the
             # default". 500000 is the socket buffer size, a different
             # quantity that this comment used to conflate with the default.
+            #
+            # Range: 0 .. 4294967295. From THIS FILE a negative value
+            # warns and is treated as 0 (the built-in default), and an
+            # over-range value warns and is clamped -- a params file has
+            # no return channel. A `ros2 param set` of the same key is
+            # REFUSED with a reason instead.
+            #
+            # LIVE-TUNABLE (issue #75) -- see the note under
+            # admission_refractory_period_seconds below.
             maximum_bytes_per_second: 500000
 
             # Maximum fraction of MEASURED GOODPUT that resend traffic may
@@ -109,6 +118,9 @@
             # the control tier and the BridgeInfo feedback loop alive. Was a
             # fraction of the rate limit under #43, which floored six times
             # above capacity on a degraded link.
+            #
+            # LIVE-TUNABLE (issue #75) -- see the note under
+            # admission_refractory_period_seconds below.
             admission_floor_bytes_per_second: 8192.0
 
             # RETIRED (issue #52, 2026-08-25) — DO NOT SET. Shown here
@@ -220,6 +232,14 @@
                 # cap is dropped and counted there, so the shedding is
                 # visible rather than silent. Live-tunable with
                 # `ros2 param set`.
+                #
+                # Range: 0 .. 4294967295. From THIS FILE both ends CLAMP
+                # with a WARN -- a negative becomes 0 (no cap), an
+                # over-range value becomes 4294967295 -- while a
+                # `ros2 param set` of either is REFUSED with a reason.
+                # Setting this key back to 0 here genuinely REMOVES the
+                # cap on the next configure; 0 is the documented "no cap"
+                # value, not a "leave it alone" sentinel.
                 maximum_bytes_per_second: 0
 
               /robot_a/battery:
