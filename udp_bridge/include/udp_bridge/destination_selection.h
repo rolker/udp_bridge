@@ -207,8 +207,11 @@ inline MessageSizeData overBudgetDropRecord(
 ///
 ///   - A negative period means "never send" and is skipped.
 ///   - period == 0 means "no rate limit".
-///   - Otherwise a connection is due when it has never been sent to
-///     (last_sent_time == 0) or `now - last_sent_time > period`.
+///   - Otherwise a connection is due when its period has elapsed against
+///     every stamp that records the period being satisfied — an actual
+///     send (`last_sent_time`) and a message that reached it and was shed
+///     by its own byte cap (`period_satisfied_time`). A connection with
+///     neither stamp set has never been offered anything and is due.
 ///   - `periods` groups connections that share a period: once a connection
 ///     with period P has been selected in this call, every LATER connection
 ///     (in `connection_rates` iteration order, i.e. by connection id) with
@@ -225,19 +228,49 @@ inline MessageSizeData overBudgetDropRecord(
 ///     connection that is due and then shed by its own per-topic byte cap
 ///     still opens the group, so capping one connection cannot change
 ///     when an uncapped sibling with the same period is sent to.
-///   - Every selected connection's last_sent_time is set to `now`.
+///   - Every selected connection's last_sent_time is set to `now`, and
+///     every connection the period rule selected — whether it was then
+///     sent to or shed by its byte cap — has its period_satisfied_time
+///     set to `now`.
 ///   - A connection that is due under `period` is then charged
 ///     `message_bytes` against its own per-topic
 ///     `maximum_bytes_per_second` (0 = unlimited, the default). Over
 ///     budget, it is reported in `over_budget` instead of `due`, and its
 ///     last_sent_time is not touched — nothing was sent to it, so nothing
-///     about its own send state should move. Its membership of the
+///     about its own send state should move. Its `period_satisfied_time`
+///     IS stamped: it consumed its slot in this period's cohort, and
+///     leaving it perpetually due would re-open that cohort on every
+///     message and drag uncapped same-period siblings past their own
+///     period check (#75). Its membership of the
 ///     same-period group IS recorded, because that group is about the
 ///     period rule and belongs to the other connections as much as to
 ///     this one. Charging happens here, in the one place both senders
 ///     already meter, so relayed traffic is capped by exactly the same
 ///     rule and the same state as locally published traffic.
 ///
+/// True when `rate`'s `period` has elapsed against every stamp that
+/// records the period being satisfied. Both stamps are consulted, and
+/// each is skipped when it holds the never-set sentinel (0) — a
+/// default-constructed rclcpp::Time carries RCL_SYSTEM_TIME, and
+/// subtracting it from a RCL_ROS_TIME `now` throws.
+///
+/// Callers with `period <= 0` must not reach here: 0 is "no limit" and
+/// negative is "never send", both decided before this test.
+inline bool topicPeriodElapsed(const ConnectionRateInfo& rate,
+                               const rclcpp::Time& now)
+{
+  const auto period = rclcpp::Duration::from_seconds(rate.period);
+  const bool never_sent = rate.last_sent_time.nanoseconds() == 0;
+  const bool never_satisfied = rate.period_satisfied_time.nanoseconds() == 0;
+  if(never_sent && never_satisfied)
+    return true;
+  if(!never_sent && !(now - rate.last_sent_time > period))
+    return false;
+  if(!never_satisfied && !(now - rate.period_satisfied_time > period))
+    return false;
+  return true;
+}
+
 /// @param remote_details the routing table for one topic
 ///        (SubscriberDetails::remote_details). Mutated: last_sent_time and
 ///        the per-topic byte budget are updated for each selected
@@ -275,7 +308,7 @@ inline RateLimitedSelection selectRateLimitedConnections(
     std::unordered_set<float> periods; // group the sending to connections with same period
     for(auto& connection_rate: remote.second.connection_rates)
       if(connection_rate.second.period >= 0)
-        if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
+        if(connection_rate.second.period == 0 || topicPeriodElapsed(connection_rate.second, now) || periods.count(connection_rate.second.period) > 0)
         {
           // Due under `period`. Join the same-period group HERE, before
           // the byte cap is consulted: the group expresses "this period's
@@ -285,6 +318,11 @@ inline RateLimitedSelection selectRateLimitedConnections(
           // same period is sent to — a per-topic cap perturbing a link it
           // was never configured for.
           periods.insert(connection_rate.second.period);
+          // This connection has consumed its slot in the period cohort,
+          // whichever way the byte cap below decides. Stamp it here, once,
+          // so a shed connection does not stay due on every message and
+          // re-open the cohort for its siblings (#75).
+          connection_rate.second.period_satisfied_time = now;
           // The per-topic byte cap is the second gate, applied only to
           // connections that got this far: a connection the period rule
           // already held back must not have its budget charged for a

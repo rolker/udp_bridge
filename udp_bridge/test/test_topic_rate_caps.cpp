@@ -33,6 +33,14 @@
 //                                 not have last_sent_time stamped:
 //                                 nothing was sent to it, so its `period`
 //                                 clock must not move.
+//   AShedConnectionStillOpensItsPeriodGroup /
+//   ASaturatedCapDoesNotReopenItsPeriodGroupEveryMessage — the two halves
+//                                 of the cohort rule: a shed connection
+//                                 opens its period group, and opens it
+//                                 ONCE per period. Keyed on last_sent_time
+//                                 alone the second failed, and a saturated
+//                                 cap pulled an uncapped sibling past its
+//                                 own period check on every message (#75).
 //   BudgetDrainsAtTheCap        — the bucket drains continuously, so the
 //                                 sustained rate converges on the cap
 //                                 rather than on a per-window sawtooth.
@@ -313,6 +321,75 @@ TEST(TopicRateCaps, AShedConnectionStillOpensItsPeriodGroup)
     << "the uncapped sibling is due through the group `a` opened; its own "
        "send timing must not depend on whether `a` was over budget";
   EXPECT_EQ(selection.due["operator"].front(), "b");
+}
+
+// The other half of that rule, and the one a single selector call cannot
+// see: opening the group ONCE per period is the contract. A shed
+// connection must not re-open it on every message.
+TEST(TopicRateCaps, ASaturatedCapDoesNotReopenItsPeriodGroupEveryMessage)
+{
+  // "a" is capped and saturated; "b" is uncapped. Both are on a 1 s
+  // period, and "a" sorts first so it is the one that opens the group.
+  //
+  // A shed connection's `last_sent_time` deliberately does not move
+  // (ShedConnectionKeepsItsSendState). Keyed on that alone, "a" was due
+  // on EVERY message, re-opened its period group every message, and
+  // dragged "b" through `periods.count() > 0` past "b"'s own period
+  // check — so "b" sent at the full publish rate on the link the cap
+  // existed to protect (#75). `period_satisfied_time` is what makes the
+  // cohort fire once per period.
+  std::map<std::string, RemoteDetails> table;
+  RemoteDetails details;
+  details.destination_topic = "/bulk";
+
+  ConnectionRateInfo capped;
+  capped.period = 1.0f;
+  capped.last_sent_time = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  capped.maximum_bytes_per_second = 1000;
+  // Bucket already full, so the empty-bucket probe rule does not admit
+  // the first message.
+  capped.budget_started = true;
+  capped.budget_used_bytes = 1000.0;
+  capped.budget_updated_time = kT0;
+
+  ConnectionRateInfo uncapped;
+  uncapped.period = 1.0f;
+  uncapped.last_sent_time = rclcpp::Time(0, 0, RCL_ROS_TIME);
+
+  details.connection_rates["a"] = capped;
+  details.connection_rates["b"] = uncapped;
+  table["operator"] = details;
+
+  // Message 1: "a" is due and shed; "b" fires with the cohort.
+  auto first = selectRateLimitedConnections(table, kT0, 5000);
+  ASSERT_EQ(first.over_budget["operator"].size(), 1u);
+  ASSERT_EQ(first.due["operator"].size(), 1u);
+  ASSERT_EQ(first.due["operator"].front(), "b");
+
+  // Messages 2..10, all well inside the 1 s period. Nothing may be
+  // selected: "a" has answered its period (by being shed) and "b" has
+  // answered it (by being sent to).
+  for(int i = 1; i <= 9; ++i)
+  {
+    auto again = selectRateLimitedConnections(table, at(i * 0.02), 5000);
+    EXPECT_TRUE(again.due.empty())
+      << "message " << i << " inside the period: a saturated cap must not "
+         "re-open its period cohort and pull an uncapped sibling past its "
+         "own period check";
+    EXPECT_TRUE(again.over_budget.empty())
+      << "message " << i << ": the shed connection is not due either";
+  }
+
+  // Past the period the cohort fires again — once. ("a" is admitted this
+  // time: 1.5 s of drain at its 1000 B/s cap has emptied the bucket, which
+  // is the token bucket working. What matters here is that the cohort
+  // fired once in the period, not on all ten messages.)
+  auto next_period = selectRateLimitedConnections(table, at(1.5), 5000);
+  EXPECT_EQ(next_period.due["operator"].size(), 2u)
+    << "both connections are due again a period later";
+  auto after = selectRateLimitedConnections(table, at(1.52), 5000);
+  EXPECT_TRUE(after.due.empty())
+    << "and the next message inside the new period selects nothing";
 }
 
 TEST(TopicRateCaps, CapAppliesToRelayedTrafficIdentically)

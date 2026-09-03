@@ -19,6 +19,28 @@ struct ConnectionRateInfo
   float period = 0.0f;
   rclcpp::Time last_sent_time;
 
+  /// When this connection's `period` was last SATISFIED, which is not
+  /// the same thing as when it was last sent to.
+  ///
+  /// A connection selected by the period rule and then shed by its own
+  /// per-topic byte cap has consumed its slot in the period cohort: the
+  /// message reached it, the cap is what stopped it, and the next one
+  /// is not due until `period` has elapsed. Without a stamp of its own
+  /// it stayed due on EVERY message (`last_sent_time` deliberately does
+  /// not move for a shed connection — nothing was sent), so it re-opened
+  /// its period group every time and pulled every later-iterating
+  /// same-period sibling through `periods.count() > 0`, past that
+  /// sibling's own period check. An uncapped sibling then sent at the
+  /// full publish rate on the very link the cap was meant to protect
+  /// (#75).
+  ///
+  /// Stamped on both outcomes — sent and shed — so it reads as "the
+  /// period rule was last answered here". The due test in
+  /// selectRateLimitedConnections requires the period to have elapsed
+  /// against BOTH stamps, so a caller that only knows about
+  /// `last_sent_time` keeps its existing behaviour.
+  rclcpp::Time period_satisfied_time;
+
   /// Optional per-topic send cap for this (topic, remote, connection),
   /// in bytes per second of OFFERED MESSAGE PAYLOAD. 0 (the default,
   /// and what an absent `maximum_bytes_per_second` key configures)
