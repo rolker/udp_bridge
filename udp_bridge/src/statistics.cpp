@@ -35,6 +35,14 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
   {
     int total_message_size = 0;
     int total_fragment_count = 0;
+    // Data points that actually carry a fragment count. A record built
+    // for a message that was never serialized — the per-topic byte-cap
+    // drop record (destination_selection.h) and the ("", "") aggregate
+    // seed — has no wire form and so no fragmentation, and carries 0.
+    // Averaging those 0s in would pull average_fragment_count toward
+    // zero in proportion to how much a topic is being shed, i.e. exactly
+    // when an operator is reading it to size maximum_packet_size.
+    int total_fragmented_data_point_count = 0;
     int total_ok_sent_bytes = 0;
     int total_failed_sent_bytes = 0;
     uint32_t total_dropped_bytes = 0;
@@ -51,7 +59,11 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
       {
         Totals& totals = totals_by_connection[std::make_pair(remote_send_result.first, connection_send_result.first)];
         totals.total_message_size += data_point.message_size;
-        totals.total_fragment_count += data_point.fragment_count;
+        if(data_point.fragment_count > 0)
+        {
+          totals.total_fragment_count += data_point.fragment_count;
+          totals.total_fragmented_data_point_count++;
+        }
         switch(connection_send_result.second)
         {
         case SendResult::success:
@@ -81,7 +93,15 @@ std::vector<udp_bridge_interfaces::msg::TopicStatistics> MessageStatistics::get(
     auto& data = totals.second;
     ts.stamp = data.latest;
     float count = data.total_data_point_count;
-    ts.average_fragment_count = data.total_fragment_count/count;
+    // Averaged over the records that HAVE a fragment count, not over
+    // every record. 0 when none does — the honest answer for a window in
+    // which nothing was serialized, and the same value the old
+    // divide-by-everything form produced for it.
+    ts.average_fragment_count =
+      data.total_fragmented_data_point_count > 0
+        ? data.total_fragment_count /
+            static_cast<float>(data.total_fragmented_data_point_count)
+        : 0.0f;
 
     if(data.latest > data.earliest)
     {

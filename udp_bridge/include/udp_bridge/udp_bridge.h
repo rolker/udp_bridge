@@ -6,7 +6,10 @@
 
 // C++ standard library
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <mutex>
+#include <optional>
 #include <set>
 
 // Other library / project includes
@@ -23,6 +26,7 @@
 #include "udp_bridge_interfaces/msg/topic_statistics_array.hpp"
 
 #include "connection.h"
+#include "connection_tunables.h"
 #include "giveup_diagnostic.h"
 #include "packet.h"
 #include "defragmenter.h"
@@ -84,6 +88,64 @@ public:
   /// called when a packet is received.
   void spin_once();
 
+#ifdef UDP_BRIDGE_BUILD_TESTING
+  /// Test accessor: the live Connection for (remote, connection_id), or
+  /// nullptr when either is unknown. Used by test_runtime_tunables.cpp to
+  /// assert that a `ros2 param set` reached the object that meters the
+  /// link, rather than only the parameter store — the exact gap this
+  /// accessor's tests exist to close.
+  ///
+  /// Method-only, so unlike the UDP_BRIDGE_BUILD_TESTING data members in
+  /// connection.h / remote_node.h it does not change sizeof(UDPBridge);
+  /// it is gated all the same so it stays out of the installed public
+  /// ABI, per the CMakeLists ODR discipline.
+  std::shared_ptr<Connection> connectionForTest(const std::string& remote_name,
+                                                const std::string& connection_id);
+
+  /// Test accessor: a copy of the per-topic rate state for
+  /// (source_topic, remote, connection_id), or false when the routing
+  /// table has no such entry. Copies under subscribers_mutex_, because
+  /// ConnectionRateInfo lives in a map forwarding callbacks mutate.
+  ///
+  /// `connection_id` is matched RAW — this does not canonicalize the way
+  /// RemoteNode::connection() does, so a test can pin which key the
+  /// routing table is actually built under (the canonical, truncated
+  /// form; see addSubscriberConnection).
+  bool topicRateInfoForTest(const std::string& source_topic,
+                            const std::string& remote_name,
+                            const std::string& connection_id,
+                            ConnectionRateInfo& info);
+
+  /// Test hook: tear a forwarding out of the routing table, which is all
+  /// the `remove_advertise` service does (UDPBridge::removeAdvertise is
+  /// this one call). It exists so a test can reach the state a runtime
+  /// parameter set must REFUSE — a per-topic cap whose (topic, remote,
+  /// connection) target no longer exists — without standing up a service
+  /// client and an executor for a one-line effect.
+  void removeSubscriberConnectionForTest(const std::string& source_topic,
+                                         const std::string& remote_name,
+                                         const std::string& connection_id)
+  {
+    removeSubscriberConnection(source_topic, remote_name, connection_id);
+  }
+
+  /// Test hook: re-add a forwarding with exactly the arguments the
+  /// service and wire callers supply — `remote_advertise`,
+  /// `remote_subscribe` and `decodeSubscribeRequest` all call
+  /// addSubscriberConnection with no cap argument at all. Deliberately
+  /// offers no way to pass one, so a test cannot accidentally exercise a
+  /// path no caller has: what it pins is that such a re-advertise leaves
+  /// an existing per-topic cap alone.
+  void readvertiseForTest(const std::string& source_topic,
+                          const std::string& destination_topic,
+                          uint32_t queue_size, float period,
+                          const std::string& remote_name,
+                          const std::string& connection_id)
+  {
+    addSubscriberConnection(source_topic, destination_topic, queue_size,
+                            period, remote_name, connection_id);
+  }
+#endif  // UDP_BRIDGE_BUILD_TESTING
   /// Test accessor: how many RETIRED-parameter tripwires fired during
   /// the last on_configure (#52).
   ///
@@ -381,6 +443,72 @@ private:
     declare_parameter(name, default_value);
   }
 
+  /// Declare an integer-valued parameter, accepting a DOUBLE override
+  /// (issue #75) — the mirror of `declareDoubleIfMissing`, and the same
+  /// trap read from the other side.
+  ///
+  /// YAML types a parameter override from the literal, so
+  /// `maximum_bytes_per_second: 1500000.0` — a shape an operator writes
+  /// without a second thought, and one a generated or hand-edited config
+  /// produces freely — arrives as a DOUBLE override for an
+  /// INTEGER-defaulted parameter. Under static parameter typing that
+  /// throws `InvalidParameterTypeException` inside `declare_parameter`.
+  /// For every integer parameter this node declares that throw lands in
+  /// `on_configure` AFTER the socket is bound, where `rclcpp_lifecycle`
+  /// swallows it: the node sits silently UNCONFIGURED holding the port,
+  /// and under the shipped `respawn=True` that is a restart loop with
+  /// nothing in the log naming the parameter.
+  ///
+  /// Like the double form, the coerced value is declared with
+  /// `ignore_override = true`, so the parameter stays statically typed
+  /// as an INTEGER and every later read (including `set_parameter` from
+  /// a running system) keeps its type checking. Only DOUBLE is coerced;
+  /// any other wrong type is still refused, because there is no
+  /// defensible reading of a string as a count.
+  ///
+  /// A double that is not an exact integer is ROUNDED with a WARN rather
+  /// than refused: the operator's intent in `1500000.5` is not in doubt,
+  /// and the alternative on this path is the swallowed throw above. One
+  /// that cannot be represented at all (non-finite, or outside int64) is
+  /// an ERROR and falls back to the default, which is announced in the
+  /// log rather than silently unconfigured.
+  void declareIntIfMissing(const std::string& name, int64_t default_value)
+  {
+    if(has_parameter(name))
+      return;
+    const auto& overrides =
+      get_node_parameters_interface()->get_parameter_overrides();
+    const auto override_entry = overrides.find(name);
+    if(override_entry != overrides.end() &&
+       override_entry->second.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
+    {
+      const double value = override_entry->second.get<double>();
+      int64_t coerced = default_value;
+      constexpr double kInt64Limit = 9223372036854775808.0;  // 2^63
+      if(!std::isfinite(value) || value >= kInt64Limit || value < -kInt64Limit)
+      {
+        RCLCPP_ERROR_STREAM(get_logger(),
+          name << ": " << value << " is not representable as an integer "
+          "parameter; using the default " << default_value);
+      }
+      else
+      {
+        coerced = static_cast<int64_t>(std::llround(value));
+        if(static_cast<double>(coerced) != value)
+          RCLCPP_WARN_STREAM(get_logger(),
+            name << ": " << value << " is not an integer; rounding to "
+            << coerced);
+      }
+      declare_parameter(
+        name,
+        rclcpp::ParameterValue(coerced),
+        rcl_interfaces::msg::ParameterDescriptor(),
+        true);  // ignore_override: the override is the value we just coerced
+      return;
+    }
+    declare_parameter(name, default_value);
+  }
+
   /// Read a double-valued parameter, tolerating an INTEGER value
   /// (issue #52).
   ///
@@ -439,6 +567,28 @@ private:
   ///                    "best_effort" and explicit "best_available".)
   /// @param durability per-topic durability ("volatile" default, "transient_local")
   /// @param history_depth KEEP_LAST(N); 0 means default 1
+  /// @param maximum_bytes_per_second per-topic send cap in payload bytes
+  ///                    per second for this (topic, remote, connection).
+  ///
+  ///                    **`std::nullopt` retains** whatever is already
+  ///                    configured, and is what every wire/service caller
+  ///                    passes: `remote_subscribe`, `remote_advertise` and
+  ///                    `decodeSubscribeRequest` carry no cap field at all
+  ///                    (adding one to RemoteSubscribeInternal would change
+  ///                    the message's ROS 2 type hash and force a
+  ///                    coordinated redeploy of both bridge ends), so a
+  ///                    re-subscribe from a peer must not be able to wipe a
+  ///                    cap the config file or the operator put in place.
+  ///
+  ///                    **An engaged value is AUTHORITATIVE, 0 included.**
+  ///                    `on_configure` passes one, because there 0 is a
+  ///                    real, documented value meaning "no cap": with a
+  ///                    "0 retains" rule a cap could be added to a config
+  ///                    but never removed by one — a re-configure with the
+  ///                    key set back to 0 would read back as 0 through
+  ///                    `ros2 param get` while the selector went on
+  ///                    shedding at the old cap. That accepted-but-inert
+  ///                    shape is exactly what issue #75 exists to remove.
   void addSubscriberConnection(std::string const &source_topic,
                                std::string const &destination_topic,
                                uint32_t queue_size, float period,
@@ -446,7 +596,31 @@ private:
                                std::string connection_id,
                                std::string reliability = "",
                                std::string durability = "",
-                               uint32_t history_depth = 0);
+                               uint32_t history_depth = 0,
+                               std::optional<uint32_t>
+                                 maximum_bytes_per_second = std::nullopt);
+
+  /// Handle a runtime parameter set: validate the whole proposed batch,
+  /// then apply all of it or none of it.
+  ///
+  /// Registered as the node's OnSetParameters callback at the END of
+  /// on_configure (see on_set_parameters_handle_ below for why last), so
+  /// it only ever sees a genuine `ros2 param set` — never a
+  /// declare_parameter during configuration. Two families are handled:
+  ///
+  ///   - the resend give-up diagnostic thresholds, whose validation is a
+  ///     cross-value check (warn <= error) and so is computed against the
+  ///     current values the batch does not change;
+  ///   - the per-connection tunables in runtime_tunables_, which were
+  ///     declared, read once in on_configure and then never looked at
+  ///     again — a set of one was accepted, read back and had no effect
+  ///     on the live Connection.
+  ///
+  /// Validation runs over the whole batch first: a batch containing one
+  /// bad value applies none of it, so a rejected set never leaves the
+  /// node half-changed.
+  rcl_interfaces::msg::SetParametersResult applyRuntimeParameters(
+    const std::vector<rclcpp::Parameter>& params);
 
   /// @brief Remove a source->remote forwarding added by addSubscriberConnection.
   ///
@@ -613,8 +787,66 @@ private:
   double resend_giveup_warn_rate_per_s_ {5.0};
   double resend_giveup_error_rate_per_s_ {50.0};
 
-  // Handle for the parameter-change callback. Reset in on_cleanup so
-  // re-configure cycles don't accumulate stale handles.
+  // Runtime-settable per-connection and per-topic tunables, keyed by full
+  // parameter name (see connection_tunables.h for why the mapping is
+  // built rather than parsed). Populated in on_configure as each
+  // parameter is declared, cleared at the start of on_configure and in
+  // on_cleanup. Read by the OnSetParameters callback.
+  //
+  // Guarded by its own mutex rather than one of the map mutexes: the
+  // callback already takes remote_nodes_mutex_ + subscribers_mutex_ to
+  // apply what it resolves, and this lookup happens before either is
+  // needed. Population finishes before the callback that reads it is
+  // registered, so the lock is defensive rather than load-bearing.
+  std::map<std::string, TunableTarget> runtime_tunables_;
+
+  // Parameter names that WERE runtime tunables under a previous
+  // configure and are not under the current one — a connection or a
+  // topic dropped from the config between two configure cycles. rclcpp
+  // has no undeclare-on-cleanup, so those parameters are still declared
+  // and still settable; without this set a `ros2 param set` of one would
+  // fall through the "a name this node does not recognise is left alone"
+  // rule and be accepted, silently, having changed nothing. That is the
+  // same accepted-reads-back-inert defect the registry exists to remove,
+  // and it is the harder one to spot: the parameter is still in
+  // `ros2 param list` and still reads back the new value.
+  //
+  // Accumulated: on_configure and on_cleanup both empty the registry's
+  // keys into it, and on_configure then erases each name it
+  // re-registers. (Accumulating rather than replacing is load-bearing —
+  // a cleanup/configure cycle is the commonest way for a connection to
+  // leave the config, and by the time on_configure runs the registry it
+  // would have read is already empty.) Dropped entirely in on_shutdown,
+  // with the registry. Guarded by runtime_tunables_mutex_, the same lock
+  // as the registry it is the complement of.
+  std::set<std::string> stale_tunables_;
+
+  mutable std::mutex runtime_tunables_mutex_;
+
+  // Handle for the parameter-change callback. Reset in on_cleanup AND in
+  // on_shutdown so re-configure cycles don't accumulate stale handles and
+  // a shutdown leaves no callback able to mutate live Connections from
+  // FINALIZED.
+  //
+  // Registered at the END of on_configure, deliberately. rclcpp calls an
+  // OnSetParameters callback for declare_parameter() as well as for
+  // set_parameter() (rclcpp/node.hpp: "the callback is called when
+  // declare_parameter() and its variants are called"), so a callback
+  // registered before the remotes/connections/topics declarations would
+  // see every YAML override on its way in — and REFUSING one there
+  // throws InvalidParameterValueException out of on_configure, which
+  // rclcpp_lifecycle swallows, leaving a half-configured node with the
+  // socket already bound. Registering last means the callback only ever
+  // sees a genuine runtime set, so it can validate strictly (see
+  // connection_tunables.h) while on_configure keeps its clamp-and-carry-on
+  // treatment of a mistyped config file.
+  //
+  // DECLARATION ORDER IS LOAD-BEARING: this handle is declared AFTER
+  // runtime_tunables_ and its mutex, so ~UDPBridge destroys it FIRST
+  // (members are destroyed in reverse declaration order) and the callback
+  // is unregistered before the map and the mutex it reads are gone. The
+  // reverse order let a set_parameter racing destruction read a destroyed
+  // map. Same reason on_cleanup resets the handle before clearing the map.
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr
     on_set_parameters_handle_;
 

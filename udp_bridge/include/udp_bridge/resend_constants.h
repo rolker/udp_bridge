@@ -319,6 +319,13 @@ static_assert(
 // doc/admission_control_design.md, "link_headroom_fraction after the
 // clamp removal".
 
+// RETIRED with the parameter: `kMaxLinkHeadroomFraction`. It bounded
+// Connection::setLinkHeadroomFraction's clamp, and #75 hoisted it here so
+// the runtime parameter validation could refuse exactly what the setter
+// clamped. Both are gone — the setter with the clamp removal above, the
+// validation with it — so the constant names a bound nothing can reach.
+// A headroom knob does not come back without the mechanism; see #61.
+
 // To convert a constant to seconds-as-double at a call site, use
 // `kFoo.count()`. To build an rclcpp::Duration, pass the constant
 // directly to rclcpp::Duration's chrono::duration constructor:

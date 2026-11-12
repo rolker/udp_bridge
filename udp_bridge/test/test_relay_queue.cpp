@@ -499,6 +499,49 @@ TEST(RelayDropCountersTest, RateLimitedIsVisibleButNotLoss)
     << "the rate limit must never appear in the loss breakdown or the WARN";
 }
 
+// The per-topic byte cap's own early return. It is a SECOND rate limit,
+// tuned in a different place from `period`, so the diagnostic has to be
+// able to say which one shed the traffic: `rateLimited()` is the sum an
+// operator sees on the `rate_limited` row, `topicRateLimited()` is the
+// per-topic half broken out on `rate_limited_by_topic_cap`. Neither is
+// loss, and neither may appear in the loss breakdown or the WARN — a
+// capped camera stream on a healthy hub would otherwise read as a link
+// losing thousands of messages.
+TEST(RelayDropCountersTest, TopicRateLimitedIsItsOwnRateLimit)
+{
+  udp_bridge::RelayDropCounters counters;
+  counters.record(udp_bridge::RelayDropReason::TopicRateLimited);
+  counters.record(udp_bridge::RelayDropReason::TopicRateLimited);
+  counters.record(udp_bridge::RelayDropReason::TopicRateLimited);
+
+  EXPECT_EQ(counters.topic_rate_limited.load(), 3u);
+  EXPECT_EQ(counters.topicRateLimited(), 3u);
+  EXPECT_EQ(counters.rateLimited(), 3u);
+  EXPECT_EQ(counters.lost(), 0u)
+    << "a topic held at its configured cap is the limiter working, not loss";
+  EXPECT_TRUE(counters.lossBreakdown().empty())
+    << "and must stay out of the loss breakdown and the WARN string";
+}
+
+// The two rate limits are counted apart. `rateLimited()` sums them for
+// the headline row; `topicRateLimited()` must report only the cap half,
+// or the `rate_limited_by_topic_cap` row would blame the per-topic cap
+// for shedding the `period` rule did.
+TEST(RelayDropCountersTest, TheTwoRateLimitsAreDistinguishable)
+{
+  udp_bridge::RelayDropCounters counters;
+  counters.record(udp_bridge::RelayDropReason::NoDestinationDue);
+  counters.record(udp_bridge::RelayDropReason::NoDestinationDue);
+  counters.record(udp_bridge::RelayDropReason::NoDestinationDue);
+  counters.record(udp_bridge::RelayDropReason::TopicRateLimited);
+
+  EXPECT_EQ(counters.rateLimited(), 4u) << "the headline row sums both";
+  EXPECT_EQ(counters.topicRateLimited(), 1u)
+    << "the breakout row names only the per-topic cap";
+  EXPECT_EQ(counters.no_destination_due.load(), 3u);
+  EXPECT_EQ(counters.lost(), 0u);
+}
+
 int main(int argc, char **argv)
 {
   testing::InitGoogleTest(&argc, argv);

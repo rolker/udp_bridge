@@ -52,6 +52,7 @@
 #include <poll.h>
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 #include "udp_bridge_interfaces/msg/remote_subscribe_internal.hpp"
@@ -163,7 +164,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
 
   RCLCPP_INFO_STREAM(get_logger(), "name: " << name_);
 
-  declareIfMissing("port", port_);
+  declareIntIfMissing("port", static_cast<int64_t>(port_));
   // ROS 2 parameters are int64. port_ is uint16_t; out-of-range values
   // would silently wrap and bind to an unintended port. Clamp + warn.
   {
@@ -184,7 +185,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   }
   RCLCPP_INFO_STREAM(get_logger(), "port: " << port_);
 
-  declareIfMissing("maximum_packet_size", max_packet_size_);
+  declareIntIfMissing("maximum_packet_size", static_cast<int64_t>(max_packet_size_));
   // Bound the packet size to a sensible UDP range. Lower bound is the
   // minimum that still leaves room for a Packet header + a meaningful
   // payload after fragmentation; upper bound is the IPv4/UDP maximum.
@@ -296,7 +297,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // history_depth above) so a tiny/negative value can't make the queue drop
   // everything, and a huge value can't invite unbounded memory growth or wrap
   // the int64 → size_t cast on 32-bit size_t platforms.
-  declareIfMissing("publish_queue_max_bytes",
+  declareIntIfMissing("publish_queue_max_bytes",
     static_cast<int64_t>(kDefaultPublishQueueMaxBytes));
   {
     int64_t configured = get_parameter("publish_queue_max_bytes").as_int();
@@ -326,7 +327,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // same component bounding the same kind of exposure (memory held while a
   // consumer stalls), but they are independent failure domains and a hub
   // sizes its downstream fan-out separately from its local republishing.
-  declareIfMissing("relay_queue_max_bytes",
+  declareIntIfMissing("relay_queue_max_bytes",
     static_cast<int64_t>(kDefaultPublishQueueMaxBytes));
   {
     int64_t configured = get_parameter("relay_queue_max_bytes").as_int();
@@ -351,58 +352,6 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   RCLCPP_INFO_STREAM(get_logger(),
     "relay_queue_max_bytes: " << relay_queue_max_bytes_);
 
-  on_set_parameters_handle_ = add_on_set_parameters_callback(
-    [this](const std::vector<rclcpp::Parameter>& params)
-        -> rcl_interfaces::msg::SetParametersResult
-    {
-      rcl_interfaces::msg::SetParametersResult result;
-      result.successful = true;
-      // Take the reader's lock so the (read current → validate batch →
-      // apply) sequence is atomic against another concurrent set call,
-      // and so the reader can never observe a half-applied pair.
-      std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
-      // Compute the (warn, error) pair that would result from applying
-      // the batch on top of the current values, then validate the
-      // combined state in one pass — catches per-value problems
-      // (NaN/inf, negative) and cross-value problems (warn > error)
-      // together. See validateGiveupThresholds() in giveup_diagnostic.h.
-      bool warn_changed = false;
-      bool error_changed = false;
-      double proposed_warn = resend_giveup_warn_rate_per_s_;
-      double proposed_error = resend_giveup_error_rate_per_s_;
-      for(const auto& p: params)
-      {
-        if(p.get_name() == "resend_giveup_warn_rate_per_s")
-        {
-          proposed_warn = p.as_double();
-          warn_changed = true;
-        }
-        else if(p.get_name() == "resend_giveup_error_rate_per_s")
-        {
-          proposed_error = p.as_double();
-          error_changed = true;
-        }
-      }
-      auto validation = validateGiveupThresholds(proposed_warn, proposed_error);
-      if(!validation.ok)
-      {
-        result.successful = false;
-        result.reason = validation.reason;
-        return result;
-      }
-      resend_giveup_warn_rate_per_s_ = proposed_warn;
-      resend_giveup_error_rate_per_s_ = proposed_error;
-      if(warn_changed)
-        RCLCPP_INFO_STREAM(get_logger(),
-          "resend_giveup_warn_rate_per_s updated to "
-          << resend_giveup_warn_rate_per_s_ << "/s");
-      if(error_changed)
-        RCLCPP_INFO_STREAM(get_logger(),
-          "resend_giveup_error_rate_per_s updated to "
-          << resend_giveup_error_rate_per_s_ << "/s");
-      return result;
-    });
-
   // Remote-identity validation runs here, ahead of the socket: it needs only
   // parameters, and a CallbackReturn::FAILURE leaves the node UNCONFIGURED
   // *without* calling on_cleanup. Returning after the socket would leak the
@@ -411,11 +360,13 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   // exit(1). Keep every parameter-only failure path above the socket block
   // for the same reason (issue #51).
   //
-  // "Ahead of the socket", not ahead of everything: on_set_parameters_handle_
-  // is already acquired at :288 (on_cleanup resets it), and a mistyped YAML
+  // "Ahead of the socket", not ahead of everything: a mistyped YAML
   // scalar can still throw out of the connections/topics loops after the bind
   // — rclcpp_lifecycle swallows that exception, so it is not an explicit
-  // failure path and this ordering does not protect it.
+  // failure path and this ordering does not protect it. (The
+  // OnSetParameters callback is registered at the very END of this
+  // method — see the note on on_set_parameters_handle_ in udp_bridge.h
+  // — so nothing it does can affect any failure path above.)
   declareIfMissing("remotes_list", std::vector<std::string>());
   auto remotes_list = get_parameter("remotes_list").as_string_array();
 
@@ -492,6 +443,60 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
          " the shipped launch file (respawn=True) the process comes back on"
          " its own, so on a fixed port the outcome is an unplanned restart"
          " rather than a graceful rename.");
+    return CallbackReturn::FAILURE;
+  }
+
+  // Connection ids collide the same way remote names do, and the
+  // collision is silent (#75). Every live map — connections_ (PR #25),
+  // the routing table's connection_rates, and the TunableTarget registry
+  // — is keyed by the CANONICAL (truncated) id, so two configured ids
+  // agreeing in their first `truncate_connection_id` characters become
+  // one key. Two parameter names then register against one target:
+  // the last write wins, and the loser reads back a value that is not in
+  // force — the exact invariant connection_tunables.h calls load-bearing.
+  //
+  // Checked HERE, above the socket, so the remedy is edit-and-reconfigure
+  // rather than a restart (see the note above the retired-key block).
+  std::string colliding_ids;
+  for(const auto& remote_label: remotes_list)
+  {
+    std::string connections_list_param =
+      "remotes." + remote_label + ".connections_list";
+    declareIfMissing(connections_list_param, std::vector<std::string>());
+    std::map<std::string, std::string> canonical_seen;
+    // Copy, not a reference into a temporary: as_string_array() returns a
+    // reference into the rclcpp::Parameter, which a range-for over the
+    // call expression would destroy before the first iteration.
+    const auto connection_names =
+      get_parameter(connections_list_param).as_string_array();
+    for(const auto& connection_name: connection_names)
+    {
+      const std::string canonical = truncate_connection_id(connection_name);
+      auto inserted = canonical_seen.emplace(canonical, connection_name);
+      // A repeated entry is idempotent, as it is in remotes_list; only a
+      // genuine collision between two DIFFERENT ids is an error.
+      if(!inserted.second && inserted.first->second != connection_name)
+      {
+        if(!colliding_ids.empty())
+          colliding_ids += "; ";
+        colliding_ids += "remote '" + remote_label + "': '" +
+          inserted.first->second + "' and '" + connection_name +
+          "' both canonicalize to '" + canonical + "'";
+      }
+    }
+  }
+  if(!colliding_ids.empty())
+  {
+    RCLCPP_ERROR_STREAM(get_logger(), "connection id collision — "
+      << colliding_ids << ". Connection ids are truncated to the on-wire"
+         " length and every live map is keyed by that truncated form, so"
+         " colliding ids share one connection, one routing-table entry and"
+         " one runtime-tunable target: a `ros2 param set` on either name"
+         " would silently overwrite the other and read back a value that is"
+         " not in force. Make the ids differ within their first"
+      << " " << (maximum_connection_id_size - 1)
+      << " characters. This check runs before the socket is created, so a"
+         " fix needs only a re-configure.");
     return CallbackReturn::FAILURE;
   }
 
@@ -612,6 +617,30 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
                                     remote_identities.end());
   }
 
+  // Runtime-settable tunables are re-registered from scratch on every
+  // configure, for the same reason configured_remote_names_ is: a
+  // re-configure must describe the new config, not the old one. Cleared
+  // BEFORE the connection loop below fills it, and before the
+  // OnSetParameters callback that reads it is registered at the end of
+  // this method.
+  //
+  // What the previous cycle registered is remembered as it is cleared:
+  // rclcpp has no undeclare-on-reconfigure, so a parameter for a
+  // connection or topic that has since left the config is still declared
+  // and still settable. Recognising it lets a set of one be REFUSED
+  // instead of falling through the "leave unknown names alone" rule and
+  // being accepted, silently, having changed nothing.
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    // Accumulated, not replaced: on_cleanup has usually already emptied
+    // the registry into this set, so reading only the registry here
+    // would forget everything a cleanup/configure cycle dropped — which
+    // is the commonest way for a connection to leave the config.
+    for(const auto& entry: runtime_tunables_)
+      stale_tunables_.insert(entry.first);
+    runtime_tunables_.clear();
+  }
+
   // Iterate the RESOLVED identities, not the raw remotes_list: a repeated
   // entry would otherwise construct and update the same RemoteNode twice
   // (two DDS publishers created and then discarded when the second
@@ -652,12 +681,22 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       RemoteConnection connection;
       connection.connection_id = connection_name;
 
+      // The form every live map is keyed by: connections_ (PR #25) and,
+      // since the routing table was canonicalized to match it, the
+      // per-topic connection_rates too. The parameter PATH still spells
+      // the configured name — that is what the operator wrote — but a
+      // TunableTarget has to name the key, not the label, or a runtime
+      // set of a per-topic cap on a connection whose configured id is
+      // longer than the wire limit resolves to nothing and is refused.
+      const std::string canonical_connection_id =
+        truncate_connection_id(connection_name);
+
       std::string host_param = "remotes." + remote_name + ".connections." + connection_name + ".host";
       declareIfMissing(host_param, "");
       connection.host = get_parameter(host_param).as_string();
 
       std::string port_param = "remotes." + remote_name + ".connections." + connection_name + ".port";
-      declareIfMissing(port_param, 0);
+      declareIntIfMissing(port_param, 0);
       connection.port = get_parameter(port_param).as_int();
 
       std::string return_host_param = "remotes." + remote_name + ".connections." + connection_name + ".return_host";
@@ -665,14 +704,44 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
       connection.return_host = get_parameter(return_host_param).as_string();
 
       std::string return_port_param = "remotes." + remote_name + ".connections." + connection_name + ".return_port";
-      declareIfMissing(return_port_param, 0);
+      declareIntIfMissing(return_port_param, 0);
       connection.return_port = get_parameter(return_port_param).as_int();
 
+      // Connection-level rate limit. ROS 2 integer parameters are int64
+      // and RemoteConnection::maximum_bytes_per_second is a uint32, so
+      // the value is range-checked before the cast — exactly as the
+      // per-topic cap below is, and for a worse failure mode: narrowing
+      // straight to `int` turned a YAML 3000000000 negative, the `> 0`
+      // guard then skipped the assignment, and the link silently fell
+      // back to Connection::default_rate_limit (50000 B/s) on a config
+      // that asked for 3 GB/s. Clamped rather than refused, like every
+      // other configure-time value: a params file has no return channel
+      // (connection_tunables.h), and a runtime `ros2 param set` of this
+      // same key is REJECTED with a reason.
       std::string maximum_bytes_per_second_param = "remotes." + remote_name + ".connections." + connection_name + ".maximum_bytes_per_second";
-      declareIfMissing(maximum_bytes_per_second_param, 0);
-      int mbps = get_parameter(maximum_bytes_per_second_param).as_int();
+      declareIntIfMissing(maximum_bytes_per_second_param, 0);
+      constexpr int64_t kMaxConnectionBytesPerSecond =
+        static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+      int64_t mbps = get_parameter(maximum_bytes_per_second_param).as_int();
+      if(mbps < 0)
+      {
+        RCLCPP_WARN_STREAM(get_logger(),
+          "maximum_bytes_per_second for " << remote_name << "/" << connection_name
+          << " is " << mbps << "; treating as 0, which selects Connection's "
+          "built-in default rate limit");
+        mbps = 0;
+      }
+      else if(mbps > kMaxConnectionBytesPerSecond)
+      {
+        RCLCPP_WARN_STREAM(get_logger(),
+          "maximum_bytes_per_second for " << remote_name << "/" << connection_name
+          << " is " << mbps << "; clamping to " << kMaxConnectionBytesPerSecond);
+        mbps = kMaxConnectionBytesPerSecond;
+      }
+      // 0 keeps its documented meaning — leave the field at the
+      // RemoteConnection default so Connection uses default_rate_limit.
       if(mbps > 0)
-        connection.maximum_bytes_per_second = mbps;
+        connection.maximum_bytes_per_second = static_cast<uint32_t>(mbps);
 
       std::string resend_budget_fraction_param = "remotes." + remote_name + ".connections." + connection_name + ".resend_budget_fraction";
       declareDoubleIfMissing(resend_budget_fraction_param, static_cast<double>(kDefaultResendBudgetFraction));
@@ -823,13 +892,43 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
             "if that was not intended.");
       }
 
+      // Register the four per-connection tunables as runtime-settable,
+      // keyed by the parameter names built above. Reading them once here
+      // used to be the whole story: a later `ros2 param set` was accepted
+      // by rclcpp, read back with the new value, and never reached the
+      // Connection. The mapping is recorded rather than parsed back out
+      // of the name at set time because a remote's wire name may itself
+      // contain '.' (#67), which makes the dotted path ambiguous.
+      {
+        std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+        // Re-registered, so no longer stale (a no-op on a first
+        // configure, and on any cycle whose config did not shrink).
+        for(const auto& name: {maximum_bytes_per_second_param,
+                               resend_budget_fraction_param,
+                               admission_floor_bps_param,
+                               admission_refractory_param})
+          stale_tunables_.erase(name);
+        runtime_tunables_[maximum_bytes_per_second_param] =
+          {TunableKind::ConnectionMaximumBytesPerSecond, remote_name,
+           canonical_connection_id, ""};
+        runtime_tunables_[resend_budget_fraction_param] =
+          {TunableKind::ResendBudgetFraction, remote_name,
+           canonical_connection_id, ""};
+        runtime_tunables_[admission_floor_bps_param] =
+          {TunableKind::AdmissionFloorBytesPerSecond, remote_name,
+           canonical_connection_id, ""};
+        runtime_tunables_[admission_refractory_param] =
+          {TunableKind::AdmissionRefractoryPeriodSeconds, remote_name,
+           canonical_connection_id, ""};
+      }
+
       std::string topics_list_param = "remotes." + remote_name + ".connections." + connection_name + ".topics_list";
       declareIfMissing(topics_list_param, std::vector<std::string>());
       auto topics_list = get_parameter(topics_list_param).as_string_array();
       for(auto topic: topics_list)
       {
         std::string queue_size_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".queue_size";
-        declareIfMissing(queue_size_param, 10);
+        declareIntIfMissing(queue_size_param, 10);
         int queue_size = get_parameter(queue_size_param).as_int();
 
         std::string period_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".period";
@@ -854,7 +953,7 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         std::string durability = get_parameter(durability_param).as_string();
 
         std::string history_depth_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".history_depth";
-        declareIfMissing(history_depth_param, 0);
+        declareIntIfMissing(history_depth_param, 0);
         // ROS 2 parameters are int64; an unchecked static_cast<uint32_t>
         // of a negative or out-of-range value wraps to a billions-large
         // depth and triggers a huge KEEP_LAST allocation in the rmw
@@ -877,9 +976,55 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
         }
         uint32_t history_depth = static_cast<uint32_t>(history_depth_value);
 
+        // Per-topic send cap (payload bytes/second; 0 = unlimited, which
+        // is what an absent key configures, so existing configs are
+        // unchanged). This is the per-topic floor-guard for a
+        // connection's other topics: Connection::send meters the
+        // connection-level cap first-come-first-served with no notion of
+        // topic, so without this one topic can take the whole link.
+        //
+        // Clamped rather than rejected, like history_depth above and for
+        // the same reason: a YAML file has no return channel. A negative
+        // value degrades to "no cap" — today's behaviour and the least
+        // surprising reading of a nonsensical one — while a runtime
+        // `ros2 param set` of the same key is REJECTED with a reason
+        // (connection_tunables.h).
+        std::string topic_max_bps_param = "remotes." + remote_name + ".connections." + connection_name + ".topics." + topic + ".maximum_bytes_per_second";
+        declareIntIfMissing(topic_max_bps_param, 0);
+        int64_t topic_max_bps_value = get_parameter(topic_max_bps_param).as_int();
+        constexpr int64_t kMaxTopicBytesPerSecond =
+          static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+        if(topic_max_bps_value < 0)
+        {
+          RCLCPP_WARN_STREAM(get_logger(),
+            "maximum_bytes_per_second for " << remote_name << "/" << connection_name << "/" << topic
+            << " is " << topic_max_bps_value << "; treating as no cap (0)");
+          topic_max_bps_value = 0;
+        }
+        else if(topic_max_bps_value > kMaxTopicBytesPerSecond)
+        {
+          RCLCPP_WARN_STREAM(get_logger(),
+            "maximum_bytes_per_second for " << remote_name << "/" << connection_name << "/" << topic
+            << " is " << topic_max_bps_value << "; clamping to " << kMaxTopicBytesPerSecond);
+          topic_max_bps_value = kMaxTopicBytesPerSecond;
+        }
+        uint32_t topic_max_bps = static_cast<uint32_t>(topic_max_bps_value);
+
         addSubscriberConnection(source, destination, queue_size, period,
                                 remote_info.name, connection.connection_id,
-                                reliability, durability, history_depth);
+                                reliability, durability, history_depth,
+                                topic_max_bps);
+
+        // Runtime-settable, keyed by the RESOLVED source topic: the
+        // parameter path is spelled with the topics_list label, but the
+        // routing table this drives is keyed by `source`.
+        {
+          std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+          stale_tunables_.erase(topic_max_bps_param);
+          runtime_tunables_[topic_max_bps_param] =
+            {TunableKind::TopicMaximumBytesPerSecond, remote_info.name,
+             canonical_connection_id, source};
+        }
       }
     }
   }
@@ -933,6 +1078,58 @@ UDPBridge::CallbackReturn UDPBridge::on_configure(const rclcpp_lifecycle::State 
   relay_queue_.configure(
     [this](RelayItem&& item){ relayToOtherRemotes(std::move(item)); },
     relay_queue_max_bytes_);
+
+  // Runtime parameter changes. Registered LAST, after every
+  // declareIfMissing above: rclcpp invokes an OnSetParameters callback
+  // for declare_parameter() as well as for set_parameter(), so a
+  // callback registered earlier would also see every YAML override on
+  // its way in — and a rejection there throws out of on_configure past
+  // the bind. See the note on on_set_parameters_handle_ in udp_bridge.h.
+  // Registering last also means runtime_tunables_ is fully populated
+  // before anything can read it.
+  on_set_parameters_handle_ = add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter>& params)
+        -> rcl_interfaces::msg::SetParametersResult
+    {
+      return applyRuntimeParameters(params);
+    });
+
+  // Close the re-configure window (#75). The callback is unregistered in
+  // on_cleanup and re-registered only here, at the end of a transition
+  // that does DNS resolution and DDS entity creation; under the
+  // MultiThreadedExecutor this node runs on, a `ros2 param set` can land
+  // in between. Such a set is accepted by rclcpp and reads back — but
+  // the connection loop above has already read its parameters, and
+  // nothing would look at them again: "accepted, reads back, changes
+  // nothing", the exact defect class this branch exists to remove, this
+  // time inside its own transition.
+  //
+  // Re-apply the current store values through the same validated path
+  // now that the callback is live. Any set that landed during the
+  // transition is picked up; a value that was already applied is applied
+  // again, which is idempotent for all four setters (setRateLimit's
+  // clamp-not-reset semantics are pinned by
+  // SetRateLimitClampPreservesBackoff). A refusal here is not an error
+  // to report: the configure path CLAMPS where the runtime path REFUSES,
+  // so a params file holding an out-of-range value leaves the store
+  // holding it while the Connection holds the clamped one — and the
+  // clamped one is what should stand.
+  {
+    std::vector<rclcpp::Parameter> current;
+    {
+      std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+      current.reserve(runtime_tunables_.size());
+      for(const auto& entry: runtime_tunables_)
+        current.push_back(get_parameter(entry.first));
+    }
+    // One batch, not one call per parameter: validation is all-or-nothing
+    // by design, and a batch of values the node itself just configured
+    // from either all validate or names a config error worth seeing. The
+    // INFO lines it emits double as a startup summary of the tunables in
+    // force.
+    if(!current.empty())
+      applyRuntimeParameters(current);
+  }
 
   return LifecycleNode::on_configure(state);
 }
@@ -1013,6 +1210,19 @@ UDPBridge::CallbackReturn UDPBridge::on_cleanup(const rclcpp_lifecycle::State & 
   // on_configure cycle starts fresh; otherwise the previous handle
   // would still be live and a duplicate would accumulate.
   on_set_parameters_handle_.reset();
+  // Drop the runtime-tunable registry with it. Reset AFTER the handle
+  // above, so the callback that reads the map is already unregistered
+  // and cannot observe it mid-clear.
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    // Retained, not dropped: these parameters are still declared (rclcpp
+    // has no undeclare), so if the next configure does not re-register
+    // one, a set of it must be refused rather than silently accepted.
+    // The next on_configure erases the names it re-registers.
+    for(const auto& entry: runtime_tunables_)
+      stale_tunables_.insert(entry.first);
+    runtime_tunables_.clear();
+  }
   // Per-remote diagnostic state: also clear, so an
   // activate→deactivate→activate cycle starts from a known baseline
   // rather than carrying stale GiveupRateState entries that would
@@ -1038,6 +1248,22 @@ UDPBridge::CallbackReturn UDPBridge::on_shutdown(const rclcpp_lifecycle::State &
   // deactivate -> cleanup -> shutdown path pays nothing (issues #10/#51).
   publish_queue_.stop();
   relay_queue_.stop();
+  // Unregister the parameter-change callback, for the same reason the
+  // workers are stopped here: shutdown is reachable from ACTIVE and from
+  // INACTIVE without passing through on_cleanup, so without this the
+  // callback stays live into FINALIZED and a `ros2 param set` would still
+  // mutate live Connections on a node that has been shut down. rclcpp
+  // does not stop dispatching parameter callbacks at a lifecycle
+  // transition — nothing but this reset does.
+  //
+  // Reset BEFORE clearing the registry it reads, matching on_cleanup:
+  // once the handle is gone no callback can observe the map mid-clear.
+  on_set_parameters_handle_.reset();
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    runtime_tunables_.clear();
+    stale_tunables_.clear();
+  }
   return LifecycleNode::on_shutdown(state);
 }
 
@@ -1152,6 +1378,7 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
   // re-lock. DestinationConfig lives in destination_selection.h because the
   // relay sender captures the same fields the same way (issue #51).
   RemoteConnectionsList destinations;
+  RemoteConnectionsList over_budget;
   std::map<std::string, DestinationConfig> destination_config_by_remote;
   {
     std::lock_guard<std::mutex> lock(subscribers_mutex_);
@@ -1165,9 +1392,13 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     auto& sub = sub_it->second;
     // Rate limiting lives in selectRateLimitedConnections (issue #51) so the
     // relay path throttles identically against the same last_sent_time
-    // state. No remote to exclude here: this message originated locally, so
-    // there is no sender to avoid echoing to.
-    destinations = selectRateLimitedConnections(sub.remote_details, now);
+    // state -- and, since the per-topic byte cap was added, against the
+    // same per-topic budget. No remote to exclude here: this message
+    // originated locally, so there is no sender to avoid echoing to.
+    auto selection = selectRateLimitedConnections(sub.remote_details, now,
+                                                  message->size());
+    destinations = std::move(selection.due);
+    over_budget = std::move(selection.over_budget);
     for(auto& remote_details: sub.remote_details)
     {
       auto& dc = destination_config_by_remote[remote_details.first];
@@ -1182,11 +1413,36 @@ void UDPBridge::callback(std::string topic_name, std::string topic_type, std::sh
     size_data.timestamp = now;
     size_data.send_results[""][""];
     sub.statistics.add(size_data);
+
+    // A destination shed by its own per-topic cap is recorded as dropped
+    // for that (remote, connection), so it shows up in the topic's
+    // TopicStatistics `send` DataRates the way a connection-level drop
+    // does. Recorded here, under the same lock and before the early
+    // return below, so a message every destination shed is still visible
+    // rather than silently gone.
+    if(!over_budget.empty())
+      sub.statistics.add(overBudgetDropRecord(over_budget, message->size(), now));
   }
 
   if (destinations.empty())
   {
-    RCLCPP_DEBUG_STREAM(get_logger(), "No ready destination to send message");
+    // Say WHICH limit shed it. "No destination due under `period`" is the
+    // rate limiter working as configured and stays at DEBUG; "every
+    // destination that was due is over its own per-topic cap" is a
+    // configured cause with the #60 shape — the operator's indicators
+    // read healthy while the topic delivers nothing — and a cap the
+    // operator can see is the difference between diagnosing it in
+    // seconds and not at all. Throttled, because it fires per message on
+    // a saturated topic. The relay path counts the same distinction on
+    // RelayDropReason::TopicRateLimited (#75).
+    if(over_budget.empty())
+      RCLCPP_DEBUG_STREAM(get_logger(),
+        "No ready destination to send " << topic_name);
+    else
+      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 10000,
+        topic_name << ": every destination due under `period` is over its "
+        "own per-topic maximum_bytes_per_second; nothing sent. This is the "
+        "configured cap shedding the topic, not a link failure.");
     return;
   }
 
@@ -1503,6 +1759,7 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
     auto now = get_clock()->now();
 
     RemoteConnectionsList destinations;
+    RemoteConnectionsList over_budget;
     std::map<std::string, DestinationConfig> destination_config_by_remote;
     {
       std::lock_guard<std::mutex> lock(subscribers_mutex_);
@@ -1520,8 +1777,10 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       // the loop rule: never send a message back to the remote it came
       // from. It is applied inside the helper before any last_sent_time is
       // touched, so the sender's rate-limit state is left untouched.
-      destinations = selectRateLimitedConnections(sub.remote_details, now,
-                                                  item.source_node);
+      auto selection = selectRateLimitedConnections(
+        sub.remote_details, now, item.message.data.size(), item.source_node);
+      destinations = std::move(selection.due);
+      over_budget = std::move(selection.over_budget);
       for(auto& remote_details: sub.remote_details)
       {
         if(remote_details.first == item.source_node)
@@ -1548,14 +1807,26 @@ void UDPBridge::relayToOtherRemotes(RelayItem&& item)
       relay_size_data.timestamp = now;
       relay_size_data.send_results[""][""];
       sub.statistics.add(relay_size_data);
+
+      // Same per-topic-cap accounting as the local-origin sender: a
+      // destination shed by its own cap is recorded as dropped for that
+      // (remote, connection) so it is visible in the topic's statistics.
+      if(!over_budget.empty())
+        sub.statistics.add(overBudgetDropRecord(
+          over_budget, item.message.data.size(), now));
     }
 
     if(destinations.empty())
     {
       // Not loss: the routing table may list other remotes and none is due
-      // under its `period` yet. Counted separately from the three above so
-      // the diagnostic shows it without inflating the loss figure.
-      relay_drops_.record(RelayDropReason::NoDestinationDue);
+      // under its `period`, or every one that was due is over its own
+      // per-topic `maximum_bytes_per_second`. Counted separately from the
+      // loss reasons -- and the two rate limits counted apart from each
+      // other, because they are tuned in different places and the
+      // diagnostic should say which one shed the traffic.
+      relay_drops_.record(over_budget.empty()
+                          ? RelayDropReason::NoDestinationDue
+                          : RelayDropReason::TopicRateLimited);
       return;
     }
 
@@ -1853,8 +2124,30 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
                                         std::string connection_id,
                                         std::string reliability,
                                         std::string durability,
-                                        uint32_t history_depth)
+                                        uint32_t history_depth,
+                                        std::optional<uint32_t>
+                                          maximum_bytes_per_second)
 {
+  // Canonicalize the connection id before it is used as a map key.
+  // `connection_rates` has to be keyed on exactly the same form the
+  // connections_ map and every send_results record use, which is the
+  // truncated wire form (PR #25 runs every connections_ insertion
+  // through truncate_connection_id, and send() records results under
+  // connection->id()). Keyed raw, two failures follow, both silent:
+  //
+  //   1) Two configured ids that agree in their first
+  //      maximum_connection_id_size - 1 characters are ONE Connection
+  //      but TWO rate entries, so each gets the full per-topic cap and
+  //      the link carries up to twice what was configured.
+  //   2) A single over-long id (the repo's own example_params.yaml
+  //      carries "telemetry") is recorded as dropped under the raw name
+  //      and as sent under the canonical one, so the shedding and the
+  //      sending land in two different TopicStatistics rows and neither
+  //      row shows the whole picture.
+  //
+  // RemoteNode::connection() already canonicalizes its lookup input for
+  // the same reason; this is the routing-table half of that contract.
+  connection_id = truncate_connection_id(connection_id);
   if(!remote_node.empty())
   {
     {
@@ -1864,6 +2157,25 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
       auto& rd = sub.remote_details[remote_node];
       rd.destination_topic = destination_topic;
       rd.connection_rates[connection_id].period = period;
+      // Per-topic byte cap. ABSENT retains, matching the QoS overrides
+      // below: the service/wire paths into this function
+      // (remote_subscribe, remote_advertise, decodeSubscribeRequest)
+      // carry no cap field — adding one to RemoteSubscribeInternal would
+      // change the message's ROS 2 type hash and force a coordinated
+      // redeploy of both bridge ends — so they all arrive here with
+      // nullopt, and an unrelated re-subscribe cannot silently remove a
+      // cap the config or the operator put in place.
+      //
+      // A PRESENT value is authoritative, 0 included. on_configure
+      // always passes one, because there 0 is a real documented value
+      // meaning "no cap": under the older "0 retains" rule a cap could
+      // be added by a config file but never removed by one — the key set
+      // back to 0 read back as 0 while the selector went on shedding at
+      // the old value. Accepted, reads back, does nothing is the defect
+      // this whole branch exists to remove.
+      if(maximum_bytes_per_second.has_value())
+        rd.connection_rates[connection_id].maximum_bytes_per_second =
+          *maximum_bytes_per_second;
       // QoS overrides — empty/zero retains existing or default behavior so
       // that re-adding a subscription doesn't accidentally clear earlier
       // per-topic QoS that was set elsewhere.
@@ -1889,6 +2201,338 @@ void UDPBridge::addSubscriberConnection(std::string const &source_topic,
   }
 }
 
+rcl_interfaces::msg::SetParametersResult UDPBridge::applyRuntimeParameters(
+  const std::vector<rclcpp::Parameter>& params)
+{
+  // NOTE on where this runs (#75, review round 2). This is an
+  // OnSetParameters — a PRE-set callback — and it MUTATES live state
+  // (Connection setters, the routing table's byte caps) rather than only
+  // validating. rclcpp's sanctioned split is validate here and mutate in
+  // an `add_post_set_parameters_callback`; mutating from the pre-set
+  // callback is correct only while this node registers exactly ONE such
+  // callback, which it does. If a second one is ever added and returns
+  // false AFTER this one has run, the parameter store keeps the old
+  // value while the Connections hold the new one — the store and the
+  // live object disagreeing, which is precisely the invariant
+  // connection_tunables.h calls load-bearing. Whoever adds a second
+  // OnSetParameters callback to this node must move the mutation half
+  // into a post-set callback first.
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // Phase 1 — resolve which of the proposed parameters are live
+  // tunables, under the registry's own lock and no other. A parameter
+  // this node does not recognise is left alone: rejecting unknown names
+  // is bad practice (rclcpp/node.hpp says so) and would break any other
+  // part of the node that later grows its own parameters.
+  struct PendingTunable
+  {
+    const rclcpp::Parameter* parameter;
+    TunableTarget target;
+  };
+  std::vector<PendingTunable> pending;
+  {
+    std::lock_guard<std::mutex> lock(runtime_tunables_mutex_);
+    for(const auto& p: params)
+    {
+      auto it = runtime_tunables_.find(p.get_name());
+      if(it != runtime_tunables_.end())
+      {
+        pending.push_back({&p, it->second});
+        continue;
+      }
+      // Not a tunable NOW, but one under a previous configure: the
+      // connection or the topic it names has left the config, and
+      // rclcpp has left the parameter declared. Refuse it rather than
+      // let it through as an unrecognised name — accepted, reads back,
+      // changes nothing is what this callback exists to remove, and the
+      // "not currently registered" refusal below covers only a
+      // forwarding removed at runtime, not one removed from the config.
+      if(stale_tunables_.count(p.get_name()) > 0)
+      {
+        result.successful = false;
+        result.reason = p.get_name() + " was a runtime tunable under a "
+          "previous configuration but is not in the current one — its "
+          "connection or topic is no longer configured, so the value "
+          "could not be applied. The parameter is still declared because "
+          "rclcpp has no undeclare; re-add the entry to the config and "
+          "re-configure, or stop setting this key.";
+        return result;
+      }
+    }
+  }
+
+  // Phase 2 — validate the WHOLE proposed batch before applying any of
+  // it, so a batch carrying one bad value leaves the node exactly as it
+  // was. Nothing is mutated in this phase.
+  //
+  // The type checks are defensive: rclcpp enforces a parameter's
+  // declared type before this callback runs, so a mismatch should be
+  // unreachable. They are here because as_double() / as_int() THROW on
+  // a mismatch, and a throw out of an OnSetParameters callback
+  // propagates to whoever called set_parameter — an operator's
+  // `ros2 param set` would see a crash rather than a reason string.
+  for(const auto& item: pending)
+  {
+    const std::string& name = item.parameter->get_name();
+    const auto type = item.parameter->get_type();
+    TunableValidation validation{true, ""};
+    switch(item.target.kind)
+    {
+      case TunableKind::AdmissionFloorBytesPerSecond:
+        if(type != rclcpp::ParameterType::PARAMETER_DOUBLE)
+          validation = {false, name + " must be a double"};
+        else
+          validation = validateAdmissionFloorBytesPerSecond(
+            name, item.parameter->as_double());
+        break;
+      case TunableKind::AdmissionRefractoryPeriodSeconds:
+        if(type != rclcpp::ParameterType::PARAMETER_DOUBLE)
+          validation = {false, name + " must be a double"};
+        else
+          validation = validateAdmissionRefractoryPeriodSeconds(
+            name, item.parameter->as_double());
+        break;
+      case TunableKind::ResendBudgetFraction:
+        if(type != rclcpp::ParameterType::PARAMETER_DOUBLE)
+          validation = {false, name + " must be a double"};
+        else
+          validation = validateResendBudgetFraction(
+            name, item.parameter->as_double());
+        break;
+      case TunableKind::ConnectionMaximumBytesPerSecond:
+      case TunableKind::TopicMaximumBytesPerSecond:
+        if(type != rclcpp::ParameterType::PARAMETER_INTEGER)
+          validation = {false, name + " must be an integer"};
+        else
+          validation = validateMaximumBytesPerSecond(
+            name, item.parameter->as_int());
+        break;
+    }
+    if(!validation.ok)
+    {
+      result.successful = false;
+      result.reason = validation.reason;
+      return result;
+    }
+  }
+
+  // Phase 3 — resolve every target and apply, under the maps' locks.
+  //
+  // One lock: remote_nodes_mutex_ guards both remote_nodes_ (which is
+  // how the live Connections are reached) and the give-up thresholds
+  // below. Taking the reader's lock makes the (read current -> validate
+  // -> apply) sequence atomic against a concurrent reader, so nothing
+  // observes a half-applied pair.
+  //
+  // The Connection setters are called with remote_nodes_mutex_ held.
+  // That is safe and deliberate: they take only that Connection's own
+  // config_mutex_ for a handful of scalar writes, do no I/O, and nothing
+  // inside Connection ever reaches back for a UDPBridge mutex, so no
+  // ordering cycle exists. It is emphatically NOT the pattern for
+  // setHostAndPort(), which resolves DNS.
+  //
+  // subscribers_mutex_ joins it because a per-topic cap lives in the
+  // routing table, not in the Connection. scoped_lock per this file's
+  // locking convention, which is what makes taking two of the four map
+  // mutexes deadlock-free without an ordering rule.
+  std::scoped_lock lock(remote_nodes_mutex_, subscribers_mutex_);
+
+  // Resolve first, apply second: a target that has gone away must be
+  // reported as a failure rather than silently doing nothing. "Accepted,
+  // reads back, changes nothing" is the exact defect this whole callback
+  // exists to remove, so it must not be reintroduced for the case where
+  // the forwarding was removed at runtime (remove_subscribe /
+  // remove_advertise can do exactly that to a per-topic cap's target).
+  //
+  // The raw ConnectionRateInfo pointer is taken and used entirely inside
+  // this locked scope, and nothing between the two mutates subscribers_,
+  // so it cannot be invalidated under us.
+  struct ResolvedTunable
+  {
+    const PendingTunable* pending;
+    std::shared_ptr<Connection> connection;   // null for a per-topic cap
+    ConnectionRateInfo* rate_info;            // null for a connection tunable
+  };
+  std::vector<ResolvedTunable> resolved;
+  resolved.reserve(pending.size());
+  for(const auto& item: pending)
+  {
+    if(item.target.kind == TunableKind::TopicMaximumBytesPerSecond)
+    {
+      ConnectionRateInfo* rate_info = nullptr;
+      auto sub_it = subscribers_.find(item.target.source_topic);
+      if(sub_it != subscribers_.end())
+      {
+        auto rd_it = sub_it->second.remote_details.find(item.target.remote);
+        if(rd_it != sub_it->second.remote_details.end())
+        {
+          auto rate_it =
+            rd_it->second.connection_rates.find(item.target.connection_id);
+          if(rate_it != rd_it->second.connection_rates.end())
+            rate_info = &rate_it->second;
+        }
+      }
+      if(!rate_info)
+      {
+        result.successful = false;
+        result.reason = item.parameter->get_name() + ": topic '"
+          + item.target.source_topic + "' is not currently forwarded to remote '"
+          + item.target.remote + "' connection '" + item.target.connection_id
+          + "', so the value could not be applied";
+        return result;
+      }
+      resolved.push_back({&item, nullptr, rate_info});
+      continue;
+    }
+
+    std::shared_ptr<Connection> connection;
+    auto remote_it = remote_nodes_.find(item.target.remote);
+    if(remote_it != remote_nodes_.end() && remote_it->second)
+      connection = remote_it->second->connection(item.target.connection_id);
+    if(!connection)
+    {
+      result.successful = false;
+      result.reason = item.parameter->get_name() + ": remote '"
+        + item.target.remote + "' connection '" + item.target.connection_id
+        + "' is not currently registered, so the value could not be applied";
+      return result;
+    }
+    resolved.push_back({&item, connection, nullptr});
+  }
+
+  // Give-up thresholds. Compute the pair that would result from applying
+  // the batch on top of the current values, then validate the combined
+  // state in one pass — catches per-value problems (NaN/inf, negative)
+  // and cross-value problems (warn > error) together. See
+  // validateGiveupThresholds() in giveup_diagnostic.h.
+  bool warn_changed = false;
+  bool error_changed = false;
+  double proposed_warn = resend_giveup_warn_rate_per_s_;
+  double proposed_error = resend_giveup_error_rate_per_s_;
+  for(const auto& p: params)
+  {
+    if(p.get_name() == "resend_giveup_warn_rate_per_s")
+    {
+      if(p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
+      {
+        result.successful = false;
+        result.reason = "resend_giveup_warn_rate_per_s must be a double";
+        return result;
+      }
+      proposed_warn = p.as_double();
+      warn_changed = true;
+    }
+    else if(p.get_name() == "resend_giveup_error_rate_per_s")
+    {
+      if(p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
+      {
+        result.successful = false;
+        result.reason = "resend_giveup_error_rate_per_s must be a double";
+        return result;
+      }
+      proposed_error = p.as_double();
+      error_changed = true;
+    }
+  }
+  auto validation = validateGiveupThresholds(proposed_warn, proposed_error);
+  if(!validation.ok)
+  {
+    result.successful = false;
+    result.reason = validation.reason;
+    return result;
+  }
+
+  // Everything in the batch is valid and every target exists. Apply.
+  resend_giveup_warn_rate_per_s_ = proposed_warn;
+  resend_giveup_error_rate_per_s_ = proposed_error;
+  if(warn_changed)
+    RCLCPP_INFO_STREAM(get_logger(),
+      "resend_giveup_warn_rate_per_s updated to "
+      << resend_giveup_warn_rate_per_s_ << "/s");
+  if(error_changed)
+    RCLCPP_INFO_STREAM(get_logger(),
+      "resend_giveup_error_rate_per_s updated to "
+      << resend_giveup_error_rate_per_s_ << "/s");
+
+  for(const auto& entry: resolved)
+  {
+    const rclcpp::Parameter& parameter = *entry.pending->parameter;
+    const TunableTarget& target = entry.pending->target;
+    const std::shared_ptr<Connection>& connection = entry.connection;
+    switch(target.kind)
+    {
+      case TunableKind::AdmissionFloorBytesPerSecond:
+        connection->setAdmissionFloorBytesPerSecond(
+          static_cast<float>(parameter.as_double()));
+        break;
+      case TunableKind::AdmissionRefractoryPeriodSeconds:
+        // The setter resets the in-force window and clears any
+        // accumulated growth, which is what makes this worth tuning
+        // live at all: an operator lengthening the gate mid-episode
+        // must not stay frozen under the value they just abandoned.
+        // Its own clamp cannot bind here — validation refused anything
+        // above the ceiling — so the store and the controller agree.
+        connection->setAdmissionRefractoryPeriodSeconds(
+          parameter.as_double());
+        break;
+      case TunableKind::ResendBudgetFraction:
+        connection->setResendBudgetFraction(
+          static_cast<float>(parameter.as_double()));
+        break;
+      case TunableKind::ConnectionMaximumBytesPerSecond:
+        // setRateLimit's follow-or-clamp semantics apply unchanged: a
+        // raised limit binds immediately when no backoff has accumulated,
+        // and clamps rather than resets when it has, so tuning the cap
+        // mid-storm cannot wipe the AIMD state and burst the link.
+        connection->setRateLimit(static_cast<uint32_t>(parameter.as_int()));
+        break;
+      case TunableKind::TopicMaximumBytesPerSecond:
+        // The token-bucket state is deliberately left alone. Raising the
+        // cap makes the existing charge drain faster and lowering it
+        // slower, which is the honest accounting either way; resetting it
+        // would let a burst re-run the whole budget on the next message.
+        //
+        // Lowering it sharply therefore SILENCES the topic while the old
+        // overdraft drains at the new rate: 400000 -> 20000 B/s with a
+        // full second outstanding is ~20 s of nothing (#75). Bounded and
+        // self-clearing, but invisible in the parameter that caused it,
+        // so it is called out in the log line below and in the operator
+        // docs (README.md live-tuning note, destination_selection.h).
+      {
+        const uint32_t previous = entry.rate_info->maximum_bytes_per_second;
+        const uint32_t requested = static_cast<uint32_t>(parameter.as_int());
+        entry.rate_info->maximum_bytes_per_second = requested;
+        if(requested > 0 && previous > requested &&
+           entry.rate_info->budget_used_bytes > requested)
+          RCLCPP_WARN_STREAM(get_logger(),
+            parameter.get_name() << ": lowering the cap to " << requested
+            << " B/s leaves " << entry.rate_info->budget_used_bytes
+            << " bytes already charged, which now drain at the new rate — "
+            "expect this topic to stay silent for up to about "
+            << (entry.rate_info->budget_used_bytes / requested)
+            << " s before the next message is admitted");
+        break;
+      }
+    }
+    // Log the value IN FORCE, not the value asked for. The two differ:
+    // a connection maximum_bytes_per_second of 0 means "use Connection's
+    // built-in default" (50000 B/s), so "applied: 0" told an operator
+    // the link was uncapped while it had in fact just dropped to 50 kB/s
+    // (#75). setRateLimit's clamp against accumulated backoff can also
+    // move it. Only the connection cap has a getter that reports the
+    // resolved value; the others store exactly what was set.
+    std::string in_force = parameter.value_to_string();
+    if(target.kind == TunableKind::ConnectionMaximumBytesPerSecond)
+      in_force = std::to_string(connection->rateLimit());
+    RCLCPP_INFO_STREAM(get_logger(),
+      parameter.get_name() << " applied to remote '" << target.remote
+      << "' connection '" << target.connection_id << "': " << in_force);
+  }
+
+  return result;
+}
+
 void UDPBridge::removeSubscriberConnection(std::string const &source_topic,
                                            std::string const &remote_node,
                                            std::string const &connection_id)
@@ -1903,7 +2547,13 @@ void UDPBridge::removeSubscriberConnection(std::string const &source_topic,
   SubscriberRemoval removal;
   {
     std::lock_guard<std::mutex> lock(subscribers_mutex_);
-    removal = removeSubscriberConnectionFrom(subscribers_, source_topic, remote_node, connection_id);
+    // Canonicalized to match addSubscriberConnection's key (see there).
+    // Without this an unsubscribe spelled with the configured
+    // (untruncated) id would find nothing and silently leave the
+    // forwarding in place.
+    removal = removeSubscriberConnectionFrom(
+      subscribers_, source_topic, remote_node,
+      truncate_connection_id(connection_id));
   }
   removal.expired_subscription.reset();  // destroys the generic subscription, off-lock
   if(removal.changed)
@@ -3119,8 +3769,9 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // routing table was torn down under it (relay_drops_).
   // Both are unrecoverable, so both must be visible —
   // reporting only the queue's would under-report real relay loss. Items
-  // held back purely by the `period` rate limit are counted apart and are
-  // not loss.
+  // held back by a configured rate limit — the `period` rule or a
+  // per-topic maximum_bytes_per_second — are counted apart and are not
+  // loss.
   //
   // Every counter is read exactly once into a local: the worker keeps
   // incrementing while this runs, and re-reading dropped_count()/lost() for
@@ -3146,6 +3797,11 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
   // loss — mixing it in produced statuses like "relay dropping (1 since
   // last tick; topic_gone=1, rate_limited=40321)".
   stat.add("rate_limited", relay_drops_.rateLimited());
+  // Which limit did the shedding: the per-connection `period` rule or a
+  // per-topic maximum_bytes_per_second. They are tuned in different
+  // places, so an operator watching `rate_limited` climb needs to know
+  // which knob to reach for.
+  stat.add("rate_limited_by_topic_cap", relay_drops_.topicRateLimited());
   stat.add("max_bytes", static_cast<uint64_t>(relay_queue_max_bytes_));
 
   // A relay drop is unrecoverable loss for the downstream remotes: the
@@ -3163,6 +3819,43 @@ void UDPBridge::diagnoseRelayQueue(diagnostic_updater::DiagnosticStatusWrapper& 
       "queued " + std::to_string(depth) + ", " + std::to_string(dropped)
       + " dropped total");
 }
+
+#ifdef UDP_BRIDGE_BUILD_TESTING
+std::shared_ptr<Connection> UDPBridge::connectionForTest(
+  const std::string& remote_name, const std::string& connection_id)
+{
+  // Same two-step lookup the diagnostics use, under the same lock.
+  std::lock_guard<std::mutex> lock(remote_nodes_mutex_);
+  auto remote_it = remote_nodes_.find(remote_name);
+  if(remote_it == remote_nodes_.end() || !remote_it->second)
+    return nullptr;
+  return remote_it->second->connection(connection_id);
+}
+
+bool UDPBridge::topicRateInfoForTest(const std::string& source_topic,
+                                     const std::string& remote_name,
+                                     const std::string& connection_id,
+                                     ConnectionRateInfo& info)
+{
+  std::lock_guard<std::mutex> lock(subscribers_mutex_);
+  auto sub_it = subscribers_.find(source_topic);
+  if(sub_it == subscribers_.end())
+    return false;
+  auto rd_it = sub_it->second.remote_details.find(remote_name);
+  if(rd_it == sub_it->second.remote_details.end())
+    return false;
+  // Raw lookup, deliberately — unlike RemoteNode::connection(), which
+  // canonicalizes its input. A test hook that silently accepted either
+  // form could not pin WHICH key the routing table is built under, and
+  // that key (the canonical one, matching connections_ and every
+  // send_results record) is the contract this accessor exists to check.
+  auto rate_it = rd_it->second.connection_rates.find(connection_id);
+  if(rate_it == rd_it->second.connection_rates.end())
+    return false;
+  info = rate_it->second;
+  return true;
+}
+#endif  // UDP_BRIDGE_BUILD_TESTING
 
 // void UDPBridge::maximumPacketSizeCallback(const std_msgs::Int32::ConstPtr& msg)
 // {

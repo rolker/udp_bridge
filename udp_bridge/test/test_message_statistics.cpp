@@ -20,6 +20,7 @@
 
 #include <gtest/gtest.h>
 
+#include "udp_bridge/destination_selection.h"
 #include "udp_bridge/statistics.h"
 
 using udp_bridge::MessageSizeData;
@@ -144,6 +145,54 @@ TEST(MessageStatisticsTest, RelayedMessagesReachTheAggregateRow)
         << "relayed traffic must not be invisible in the topic's aggregate";
       EXPECT_GT(row.message_bytes_per_second, 0.0f);
     }
+}
+
+// average_fragment_count is the figure an operator reads to size
+// maximum_packet_size, so it must describe the messages that were
+// actually fragmented. A record built for a message that was never
+// serialized — the per-topic byte-cap drop record — has no wire form and
+// carries fragment_count 0; averaging those 0s in dragged the number down
+// in proportion to how much the topic was being shed, i.e. precisely when
+// the operator is looking at it.
+TEST(MessageStatisticsTest, DropRecordsDoNotDiluteTheFragmentAverage)
+{
+  MessageStatistics statistics;
+
+  auto sent = perDestination("operator_1", "wan", 3000, kT0);
+  sent.fragment_count = 4;
+  statistics.add(sent);
+
+  // Shed by the per-topic cap: same destination, no fragments.
+  auto shed = udp_bridge::overBudgetDropRecord(
+    {{"operator_1", {"wan"}}}, 3000,
+    kT0 + rclcpp::Duration::from_seconds(1.0));
+  statistics.add(shed);
+  statistics.add(shed);
+  statistics.add(shed);
+
+  auto rows = statistics.get();
+  ASSERT_EQ(countRowsFor(rows, "operator_1"), 1);
+  for(const auto& row: rows)
+    if(row.destination_node == "operator_1")
+      EXPECT_FLOAT_EQ(row.average_fragment_count, 4.0f)
+        << "averaged over the records that carry a fragment count, not "
+           "over every record — three shed messages must not report the "
+           "sent one as a single fragment";
+}
+
+// Nothing serialized in the window at all: 0 is the honest answer, and
+// the divide must not be by zero.
+TEST(MessageStatisticsTest, NoFragmentedRecordsReportsZero)
+{
+  MessageStatistics statistics;
+  statistics.add(udp_bridge::overBudgetDropRecord(
+    {{"operator_1", {"wan"}}}, 3000, kT0));
+
+  auto rows = statistics.get();
+  ASSERT_EQ(countRowsFor(rows, "operator_1"), 1);
+  for(const auto& row: rows)
+    if(row.destination_node == "operator_1")
+      EXPECT_FLOAT_EQ(row.average_fragment_count, 0.0f);
 }
 
 int main(int argc, char **argv)

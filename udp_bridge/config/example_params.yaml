@@ -95,10 +95,22 @@
             # 500000 set here -- do not read the value below as "the
             # default". 500000 is the socket buffer size, a different
             # quantity that this comment used to conflate with the default.
+            #
+            # Range: 0 .. 4294967295. From THIS FILE a negative value
+            # warns and is treated as 0 (the built-in default), and an
+            # over-range value warns and is clamped -- a params file has
+            # no return channel. A `ros2 param set` of the same key is
+            # REFUSED with a reason instead.
+            #
+            # LIVE-TUNABLE (issue #75) -- see the note under
+            # admission_refractory_period_seconds below.
             maximum_bytes_per_second: 500000
 
             # Maximum fraction of MEASURED GOODPUT that resend traffic may
             # consume (issues #44/#52; see doc/resend_budget_design.md).
+            # Live-tunable (#75) — see admission_refractory_period_seconds
+            # below for what that means and where the two entry points
+            # validate differently.
             resend_budget_fraction: 0.25
 
             # Absolute floor of the AIMD-adjusted admission cap, bytes/second
@@ -106,6 +118,13 @@
             # the control tier and the BridgeInfo feedback loop alive. Was a
             # fraction of the rate limit under #43, which floored six times
             # above capacity on a degraded link.
+            #
+            # LIVE-TUNABLE (issue #75). A raise binds on the next
+            # admission sample -- one remote feedback interval (~2 s) --
+            # unconditionally: the floor is a lower bound applied ahead
+            # of the refractory gate, not an AIMD decision the gate has
+            # any reason to suppress. It can never lift the cap above
+            # this connection's own maximum_bytes_per_second.
             admission_floor_bytes_per_second: 8192.0
 
             # RETIRED (issue #52, 2026-08-25) — DO NOT SET. Shown here
@@ -161,20 +180,33 @@
             # read throws — the same trap admission_floor_bytes_per_second
             # hit above.
             #
-            # CONFIGURE-TIME ONLY, like every other admission parameter
-            # here (resend_budget_fraction,
-            # admission_floor_bytes_per_second).
-            # These are read once during on_configure and pushed to the
-            # live Connection then. `ros2 param set` afterwards changes
-            # the parameter and NOT the controller — the node has to be
-            # reconfigured or restarted for a new value to take effect.
+            # LIVE-TUNABLE (issue #75), along with the three connection
+            # settings above: maximum_bytes_per_second,
+            # resend_budget_fraction and
+            # admission_floor_bytes_per_second. A `ros2 param set`
+            # reaches the live Connection, not just the parameter store.
+            # These four were configure-time only until #75 — the
+            # property RCA item D names as what blocked live mitigation
+            # during the 2026-08-25 Appledore transit, where the operator
+            # could watch the cap collapse and had no way to retune the
+            # loop without dropping the link.
             #
-            # This is the property RCA item D names as what blocked live
-            # mitigation during the 2026-08-25 Appledore transit: the
-            # operator could see the cap collapsing and had no way to
-            # retune the loop without dropping the link. Live re-tuning
-            # is tracked as issue #75; this knob ships with the same
-            # limitation.
+            # At runtime a base above 60 s is REFUSED rather than clamped
+            # (a `param set` has somewhere to print the reason; this file
+            # does not), so an accepted runtime value always reads back as
+            # the value in force.
+            #
+            # Tuning THIS parameter also resets the in-force window and
+            # clears any accumulated growth — which is what releases a
+            # frozen controller, i.e. resumes AIMD recovery after a
+            # collapse. It is NOT needed to make a raised
+            # admission_floor_bytes_per_second take effect: since #75 the
+            # floor is applied as an unconditional lower bound ahead of
+            # the refractory gate and of both AIMD branches, so it binds
+            # on the next admission sample whether or not a window is
+            # open and whether that sample reads congested or clean. See
+            # doc/admission_control_design.md, "Tuning it while it is
+            # running".
             admission_refractory_period_seconds: 5.0
 
             # List of topics to forward over this connection.
@@ -190,6 +222,33 @@
                 period: 0.0
                 # Queue size for the subscriber.
                 queue_size: 10
+                # Optional per-topic send cap, in BYTES per second of
+                # offered message payload. 0 (the default, and what
+                # leaving the key out means) is unlimited -- the
+                # behaviour every config had before this existed.
+                #
+                # Set it on the topics that can take the whole link. The
+                # connection-level maximum_bytes_per_second above is
+                # metered first-come-first-served with no notion of
+                # topic, so one busy topic (a camera, a bulk sonar feed)
+                # can consume the whole admitted budget and everything
+                # else on the connection is shed as a side effect.
+                #
+                # Size it against the topic's own offered rate, which is
+                # TopicStatistics.message_bytes_per_second in
+                # ~/topic_statistics -- the same units. A topic over its
+                # cap is dropped and counted there, so the shedding is
+                # visible rather than silent. Live-tunable with
+                # `ros2 param set`.
+                #
+                # Range: 0 .. 4294967295. From THIS FILE both ends CLAMP
+                # with a WARN -- a negative becomes 0 (no cap), an
+                # over-range value becomes 4294967295 -- while a
+                # `ros2 param set` of either is REFUSED with a reason.
+                # Setting this key back to 0 here genuinely REMOVES the
+                # cap on the next configure; 0 is the documented "no cap"
+                # value, not a "leave it alone" sentinel.
+                maximum_bytes_per_second: 0
 
               /robot_a/battery:
                 source: "/battery_state"

@@ -45,7 +45,14 @@ other remotes that carry the same topic:
    comparison against the sender's name, so an unnamed sender cannot be
    excluded from anything, and forwarding such a packet would fan it out to
    every remote listing the topic. On an unauthenticated transport (#53)
-   that is an injection point; see [Security](#security).
+   that is an injection point; see [Security](#security). The probe is
+   **may-send, never must-send**: it applies the selector's structural
+   filters (the loop rule, and `period < 0` meaning "never send") but
+   neither the *temporal* part of the `period` rule nor the per-topic byte
+   cap, because both depend on the clock and both mutate state a
+   side-effect-free read must not touch. A topic sitting at its cap
+   therefore still pays for the copy and the queue slot before being shed
+   at selection.
 **The routing-table key is a literal string match, so the names have to
 agree.** `on_configure` keys `subscribers_` by the hub-local `source:`
 *resolved* against the node's namespace (`resolve_topic_or_service_name`),
@@ -68,9 +75,12 @@ left alone: it is a hot path and the name is attacker-supplied.
    and [Threading](#threading-why-a-worker).
 3. **Selection (relay worker).** `relayToOtherRemotes()` looks up
    `subscribers_[topic].remote_details` — the routing table — and calls
-   `selectRateLimitedConnections(remote_details, now, source_node)`, the
-   same function `callback()` uses for locally published messages, with the
-   sender excluded.
+   `selectRateLimitedConnections(remote_details, now, message_bytes,
+   source_node)`, the same function `callback()` uses for locally published
+   messages, with the sender excluded. `message_bytes` is the offered
+   payload size, for the per-topic byte cap; it is a required argument
+   precisely because a caller that forgot it would silently disable every
+   per-topic cap.
 4. **Send.** For each selected `(remote, connection)`, the message is
    forwarded with `destination_topic` and the QoS fields rewritten for that
    destination and everything else byte-identical — no re-serialization of
@@ -452,7 +462,9 @@ of the worker:
   table was torn down between the drain thread's probe and the sink call
   (`TopicGone`), or the send to a destination threw and that destination
   never got the message (`SendFailed`). These are broken out per reason in
-  `sink_drop_reasons` (`include/udp_bridge/relay_drops.h`).
+  `sink_drop_reasons` (`include/udp_bridge/relay_drops.h`). The sink's two
+  *rate-limit* returns (`NoDestinationDue`, `TopicRateLimited`) are
+  deliberately **not** in this list — see below.
 
 `SendFailed` is counted **per failing destination**, not per item: the
 fan-out isolates failures per remote, so one item that fails to two remotes
@@ -460,12 +472,28 @@ records two. It is what makes the relay worker's throttled WARN safe to
 throttle — the log line says a link is failing, the counter says how much
 was lost to it.
 
-An item held back only by the per-connection `period` rate limit is counted
-apart and is **not** loss — it is the limit working as configured, and
-folding it into the loss total would leave the diagnostic permanently in
-WARN on any rate-limited topic. It gets its own `rate_limited` field and is
-kept out of both `sink_drop_reasons` and the WARN string, so a large
-rate-limit count can never be read as accompanying a small loss figure.
+An item held back by a configured **rate limit** is counted apart and is
+**not** loss — it is the limit working as configured, and folding it into
+the loss total would leave the diagnostic permanently in WARN on any
+rate-limited topic. It is kept out of both `sink_drop_reasons` and the WARN
+string, so a large rate-limit count can never be read as accompanying a
+small loss figure.
+
+There are **two** such limits, and they are counted separately because
+they are tuned in different places:
+
+- `NoDestinationDue` — the routing table lists other remotes and none is
+  due under its per-connection `period`;
+- `TopicRateLimited` — every destination that *was* due under `period` was
+  then over that topic's own `maximum_bytes_per_second`, so the item had
+  nowhere left to go. Recorded per item and only when NOTHING was due; a
+  partial shed (some destinations over budget, others sent to) is already
+  visible per destination in the topic's `TopicStatistics`.
+
+`RelayDropCounters::rateLimited()` **sums both**, and that sum is the
+diagnostic's `rate_limited` row. `topicRateLimited()` is the per-topic-cap
+half alone, reported on its own `rate_limited_by_topic_cap` row so an
+operator watching `rate_limited` climb can tell which limit to reach for.
 
 ## Statistics
 
@@ -495,13 +523,20 @@ Splitting the two would mean a per-source dimension in `MessageStatistics`
 
 `selectRateLimitedConnections()`
 (`include/udp_bridge/destination_selection.h`) is the single implementation
-of the per-connection `period` rule, used by both senders: `callback()` for
-a locally published message (no remote to exclude) and
-`relayToOtherRemotes()` for a forwarded one (the sender excluded). A relay
-destination with `period` P is therefore throttled identically to a
-local-origin destination with `period` P, against the *same*
-`last_sent_time` state — a topic that reaches a remote by both routes is
-shaped once, not twice.
+of **both** of the bridge's send-side shaping rules — the per-connection
+`period` rule and the per-topic `maximum_bytes_per_second` byte cap — used
+by both senders: `callback()` for a locally published message (no remote to
+exclude) and `relayToOtherRemotes()` for a forwarded one (the sender
+excluded). A relay destination with `period` P is therefore throttled
+identically to a local-origin destination with `period` P, against the
+*same* `last_sent_time` state, and a capped topic is charged against the
+*same* token bucket whichever sender offered the message — a topic that
+reaches a remote by both routes is shaped once, not twice.
+
+The two gates run in that order and only that order: the byte cap is
+charged only to connections the `period` rule already found due, so a
+connection held back by `period` is never charged for a message it was
+never going to receive.
 
 ## Security
 

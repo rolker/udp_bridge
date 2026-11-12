@@ -143,9 +143,17 @@ static cap:
   wipe the backoff and burst a congested link at full rate on every
   reconnect flap. A backed-off connection reaches a raised limit via
   additive recovery.
-- **What gets shed** within the reduced cap remains FIFO — per-topic
-  priority is [#19](https://github.com/rolker/udp_bridge/issues/19);
-  per-topic delivery classes are the
+- **What gets shed** within the reduced cap is still FIFO at the
+  connection level: `Connection::send` meters every packet through the
+  same `can_send`, with no notion of topic, class or priority. A
+  **per-topic `maximum_bytes_per_second`** now bounds what any one topic
+  may offer into that budget (see `udp_bridge/README.md`), which stops a
+  single topic taking the whole connection — but it is a *ceiling on the
+  greedy*, not a priority scheme: it cannot reserve capacity for a
+  starved topic, and below their caps topics still compete
+  first-come-first-served. Real per-topic priority remains
+  [#19](https://github.com/rolker/udp_bridge/issues/19); per-topic
+  delivery classes are the
   [#36](https://github.com/rolker/udp_bridge/issues/36) umbrella.
 
 ## Why the original scaling failed (issue #52)
@@ -391,6 +399,76 @@ The rate limit is **not** obsolete. It remains a hard ceiling and the
 cost control on metered cell links. What it is no longer asked to be is
 the system's model of link capacity.
 
+## Tuning it while it is running
+
+`admission_floor_bytes_per_second`, `admission_refractory_period_seconds`,
+`maximum_bytes_per_second` and `resend_budget_fraction` apply to the
+live `Connection` when set with `ros2 param set`. (`link_headroom_fraction`
+was a fifth until #52 retired it; it is not tunable because it no longer
+exists — see above.) They did not until
+2026-08-25: each was declared in `on_configure`, read there once, and
+never looked at again, while the node's `OnSetParameters` callback
+handled only the two resend-give-up thresholds. A runtime set was
+accepted by rclcpp and read back with the new value — and changed
+nothing. Raising the floor to escape a collapsed cap therefore appeared
+to do nothing, which read as evidence that the floor was not the problem.
+
+Two consequences worth knowing when tuning under pressure:
+
+- **The floor takes effect on the next admission sample**, i.e. within
+  one remote feedback interval (the remote's `bridge_info` period, 2 s),
+  not immediately — nothing recomputes the cap between samples. That is
+  the whole of the delay: see the third point below.
+- **A floor above the connection's `maximum_bytes_per_second` yields the
+  cap**, because the floor is clamped at use. An over-large value is
+  blunt but safe: it lifts a collapsed cap to the configured ceiling and
+  no further.
+- **A raised floor does not wait for anything.** The floor is applied as
+  an unconditional lower bound at the top of `updateAdmissionControl`,
+  ahead of the refractory gate and of both AIMD branches, so it binds on
+  the next sample whatever else is true: whether or not a decrease
+  window is open, and whether that sample reads congested or clean.
+  Applying it inside the branches instead — which is what the code did
+  until #75's second review round — was wrong twice over, and both cases
+  are the ones an operator actually meets. Inside an open refractory
+  window neither branch runs, so a floor raised *during* a collapse (when
+  a decrease is by definition outstanding) was inert for the length of
+  the window. Worse, the clean branch never read the floor at all, so on
+  a collapsed link that had gone quiet — no traffic offered, every
+  sample clean, which is exactly where a rescue is attempted — the floor
+  bound on *no* sample, for as long as the link stayed quiet, while the
+  cap crept back one additive step at a time. Neither is a bounded delay,
+  and an earlier draft of this section described them as one.
+
+  Raising the floor is a lower bound on the cap, not an AIMD decision,
+  which is why the gate has no business suppressing it: the gate exists
+  to limit how often the controller *decides*, and this does not decide
+  anything. `AdmissionControl.FloorRaisedAtRuntimeLiftsTheCapNoFurtherThanTheLimit`
+  pins the in-window case and
+  `AdmissionControl.FloorRaisedAtRuntimeBindsOnTheCleanRecoveryPath`
+  pins the quiesced-link case.
+
+  What the refractory gate still holds is the AIMD loop itself. If you
+  need the *controller* released — recovery resumed after a collapse, not
+  just the cap lifted — set `admission_refractory_period_seconds`:
+  **its** setter resets the in-force window and clears accumulated
+  growth.
+- **The refractory period's runtime range stops where the setter's clamp
+  begins.** A base above 60 s is *clamped* by a config file and
+  *refused* by `ros2 param set`, so an accepted runtime value always
+  reads back as the value in force (`connection_tunables.h`). 0 is
+  accepted on both paths and disables the gate — the pre-#52 behaviour
+  that produced the collapse, kept reachable on purpose so it can be
+  reproduced.
+
+Validation differs by entry point on purpose: a config file is clamped
+(it has no return channel, and refusing to start a telemetry bridge over
+a mistyped scalar is worse than starting it with a sane value), while a
+runtime set is refused with a reason naming the parameter and its
+accepted range. The accepted ranges are exactly what the setters store
+unchanged, so `ros2 param get` cannot report something other than what is
+in force. See `include/udp_bridge/connection_tunables.h`.
+
 ## Scope boundaries and signal caveats (stated honestly)
 
 - **Single-connection total blackout is out of scope.**
@@ -473,6 +551,21 @@ sample, setter contract) and the window-matched comparison.
 
 `test/test_message_atomicity.cpp` covers the send-path half of #52 — see
 the file header.
+
+`test/test_runtime_tunables.cpp` pins the parameter path itself (#75) —
+that a `ros2 param set` of `maximum_bytes_per_second`,
+`resend_budget_fraction`, `admission_floor_bytes_per_second` or
+`admission_refractory_period_seconds` reaches the live `Connection` and
+not merely the parameter store, that an out-of-range value is refused
+with the live value left alone, and that a batch applies all-or-nothing.
+The runtime path **refuses** a refractory base above
+`kMaximumAdmissionRefractoryPeriodSeconds` where the configure path
+clamps it, so an accepted value always reads back as the value in force.
+
+`test/test_topic_rate_caps.cpp` pins the per-topic byte cap (#75), which
+is enforced in `selectRateLimitedConnections` — the same pass that
+applies `period` — and so bounds what one topic can offer to a link
+before admission control ever sees it.
 
 The [#18](https://github.com/rolker/udp_bridge/issues/18) bench harness's
 range-degradation scenario is the end-to-end gate and must be re-run for

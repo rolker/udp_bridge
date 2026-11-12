@@ -64,7 +64,7 @@ The main node that handles UDP communication.
 | Topic | Type | Description |
 |---|---|---|
 | `~/bridge_info` | `udp_bridge_interfaces/msg/BridgeInfo` | Diagnostic info about bridge state. |
-| `~/topic_statistics` | `udp_bridge_interfaces/msg/TopicStatisticsArray` | Traffic statistics. |
+| `~/topic_statistics` | `udp_bridge_interfaces/msg/TopicStatisticsArray` | Traffic statistics. Note `average_fragment_count`: the mean wire fragments per **serialized** message, averaged over the records that carry a count rather than over every record (#75) — a message shed by a rate limit was never serialized and no longer counts as zero fragments. 0 means nothing in the window was serialized. Field-by-field semantics are on `TopicStatistics.msg`. |
 | *Dynamic* | *Various* | Dynamically publishes topics received from remotes. |
 
 #### Parameters
@@ -206,11 +206,74 @@ For each remote in `remotes_list`:
 For each connection in `connections_list`:
 -   `remotes.<remote_label>.connections.<connection_id>.host`: (string) IP or hostname.
 -   `remotes.<remote_label>.connections.<connection_id>.port`: (integer) Target port.
--   `remotes.<remote_label>.connections.<connection_id>.maximum_bytes_per_second`: (int) Rate limit.
+-   `remotes.<remote_label>.connections.<connection_id>.maximum_bytes_per_second`: (int, bytes per second; 0 means the built-in default of 50000) Rate limit for the whole connection. This is a hard ceiling on *wire* bytes and the cost control on a metered link; it is not the bridge's model of link capacity — see `admission_floor_bytes_per_second` below and `doc/admission_control_design.md`. In a **config file** a negative value warns and is treated as 0 (so the built-in default applies) and a value above `4294967295` warns and is clamped to it; at **runtime** both are refused with a reason, the usual asymmetry (a params file has no return channel). **Live-tunable** via `ros2 param set` (#75) — see the live-tuning note below.
 -   `remotes.<remote_label>.connections.<connection_id>.resend_budget_fraction`: (double, 0.0–1.0, default 0.25) Maximum fraction of *measured goodput* that resend traffic may consume. Halves per second of ack starvation, floored at 1/16 of the fraction. See `doc/resend_budget_design.md`.
--   `remotes.<remote_label>.connections.<connection_id>.admission_floor_bytes_per_second`: (double, default 8192) Minimum AIMD-adjusted admission cap, in absolute bytes per second — clamped at use to the connection's own rate limit, so it can never raise a cap. A floor at or **above** that rate limit makes adaptive admission control inert on the connection — the cap can never be reduced — and `on_configure` logs a WARN naming the connection when it is. The WARN tests the **applied** floor, so a negative or NaN value (which falls back to 8192) is caught too. The same condition can also be reached at *runtime*, when a peer's `CONNECT` or an `add_remote` call sets a rate limit at or below the floor; that route logs its own (throttled) WARN. The effective cap **halves from its own current value** on congestion (the remote reporting <90% delivery over a matched 5 s window, or nothing received for ~1 s while actively sending) and recovers additively when clean. Configure-time only (see `admission_refractory_period_seconds` below). See `doc/admission_control_design.md`.
--   `remotes.<remote_label>.connections.<connection_id>.admission_refractory_period_seconds`: (double, default 5.0, 0 disables — with a WARN) Minimum interval between admission-control decisions. While the window is open the controller **freezes** — no decrease *and* no recovery, whatever the arriving sample says — so one congestion episode costs at most one backoff. The window doubles on each further decrease within an unresolved episode and resets on the first clean sample. Two bounds apply to it: the configured base is clamped to **60 s** (values above that, `+Inf` included, clamp to the ceiling rather than falling back to the default), and the grown window is bounded by both 2× the base and that same 60 s ceiling — so the longest the controller can ever be frozen is 60 s, whatever is configured. Without it, the 2026-08-25 Appledore transit turned a single marginal delivery sample into seven halvings in 12 s, 35 times in 9.5 hours, discarding 1.95 GB at the boat's own gate on a link reporting 0.0–0.05% loss. The default in this document is written `5.0`, but an integer literal (`5`) is now accepted: YAML has no way to say "this integer is a double", so an INTEGER override for a double-defaulted parameter is **coerced at the declaration site** (#52). It used to throw inside `declare_parameter`, and `rclcpp_lifecycle` swallows an exception out of a transition callback — the node was left silently unconfigured with nothing in the log naming the parameter. The same coercion covers `resend_budget_fraction`, `admission_floor_bytes_per_second`, `reorder_hold_window_ms`, `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` and per-topic `period`. Setting it to **0 disables the gate** — restoring exactly the behaviour that caused the 2026-08-25 collapse — and logs a WARN saying so. **Configure-time only**, like every other admission parameter: it is read once during `on_configure` and applied to the live `Connection` then. `ros2 param set` after that changes the parameter but not the controller — the node must be reconfigured (or restarted) for a new value to take effect. This is the property RCA item D names as what blocked live mitigation during the 2026-08-25 Appledore transit; live re-tuning is tracked as [#75](https://github.com/rolker/udp_bridge/issues/75). See `doc/admission_control_design.md`.
+-   `remotes.<remote_label>.connections.<connection_id>.admission_floor_bytes_per_second`: (double, default 8192) Minimum AIMD-adjusted admission cap, in absolute bytes per second — clamped at use to the connection's own rate limit, so it can never raise a cap. A floor at or **above** that rate limit makes adaptive admission control inert on the connection — the cap can never be reduced — and `on_configure` logs a WARN naming the connection when it is. The WARN tests the **applied** floor, so a negative or NaN value (which falls back to 8192) is caught too. The same condition can also be reached at *runtime*, when a peer's `CONNECT` or an `add_remote` call sets a rate limit at or below the floor; that route logs its own (throttled) WARN. The effective cap **halves from its own current value** on congestion (the remote reporting <90% delivery over a matched 5 s window, or nothing received for ~1 s while actively sending) and recovers additively when clean. **Live-tunable** via `ros2 param set` (#75) — see the live-tuning note below. A raise binds on the **next admission sample, unconditionally**: the floor is applied as a lower bound ahead of the refractory gate and of both AIMD branches, so it is neither delayed by an open refractory window nor skipped on the clean recovery path (the path a collapsed, quiesced link actually takes). See `doc/admission_control_design.md`.
+-   `remotes.<remote_label>.connections.<connection_id>.admission_refractory_period_seconds`: (double, default 5.0, 0 disables — with a WARN) Minimum interval between admission-control decisions. While the window is open the controller **freezes** — no decrease *and* no recovery, whatever the arriving sample says — so one congestion episode costs at most one backoff. The window doubles on each further decrease within an unresolved episode and resets on the first clean sample. Two bounds apply to it: the configured base is clamped to **60 s** (values above that, `+Inf` included, clamp to the ceiling rather than falling back to the default), and the grown window is bounded by both 2× the base and that same 60 s ceiling — so the longest the controller can ever be frozen is 60 s, whatever is configured. Without it, the 2026-08-25 Appledore transit turned a single marginal delivery sample into seven halvings in 12 s, 35 times in 9.5 hours, discarding 1.95 GB at the boat's own gate on a link reporting 0.0–0.05% loss. The default in this document is written `5.0`, but an integer literal (`5`) is now accepted: YAML has no way to say "this integer is a double", so an INTEGER override for a double-defaulted parameter is **coerced at the declaration site** (#52). It used to throw inside `declare_parameter`, and `rclcpp_lifecycle` swallows an exception out of a transition callback — the node was left silently unconfigured with nothing in the log naming the parameter. The same coercion covers `resend_budget_fraction`, `admission_floor_bytes_per_second`, `reorder_hold_window_ms`, `resend_giveup_warn_rate_per_s` / `..._error_rate_per_s` and per-topic `period`. The mirror holds too as of #75: a DOUBLE literal such as `1500000.0` written for an INTEGER-declared parameter is coerced at its declaration site (rounded, with a WARN, if it is not integral), covering `port`, `maximum_packet_size`, `publish_queue_max_bytes`, `relay_queue_max_bytes`, the connection `port` / `return_port` / `maximum_bytes_per_second`, and per-topic `queue_size`, `history_depth` and `maximum_bytes_per_second` — all of which declare *after* the socket is bound, where the swallowed throw leaves the node unconfigured while still holding the port. Setting it to **0 disables the gate** — restoring exactly the behaviour that caused the 2026-08-25 collapse — and logs a WARN saying so. **Live-tunable** via `ros2 param set` (#75) — see the live-tuning note below. It was configure-time only when #52 added it, which is the property RCA item D names as what blocked live mitigation during the 2026-08-25 Appledore transit: the operator could not slow the controller down without a re-configure, and the re-configure attempted on the water cost about three minutes of link outage. Note the one asymmetry with the configure path: a base above 60 s is **clamped** there and **refused** here, because `ros2 param set` has somewhere to print the reason and a YAML file does not. See `doc/admission_control_design.md`.
 -   `remotes.<remote_label>.connections.<connection_id>.link_headroom_fraction`: **RETIRED (#52) — a configure-time tripwire, nothing more.** It was the fraction of measured goodput deliberately left unused so a co-tenant on the same path (SSH, operator management traffic) was not starved, and its only call site was the `(1 − headroom) × goodput` clamp on the congested backoff. That clamp was removed in the 2026-08-25 pass because goodput is depressed by the throttling the clamp was computing. **All behaviour is gone**: no `Connection` stores it, no message carries it, nothing in the control law reads it, and it is no longer declared as a parameter at all — a retired key must not appear in `ros2 param list` looking live. **Setting it to ANY value — including the old `0.2` default — logs a WARN** naming the connection at `on_configure`: the key is detected by PRESENCE in the node's parameter overrides, which rclcpp carries whether or not a parameter is declared. The node still comes up (unlike the retired `remotes.<label>.name`, a stale value here misroutes nothing). Remove the key from your config. Note what is NOT true any more: **no headroom mechanism remains**. The refractory-gated multiplicative decrease protects a co-tenant only insofar as the bridge shares the loss — it fires when the bridge's own delivery degrades — so on a saturated path where the bridge wins the queue, it never backs off. A replacement basis is argued on [#61](https://github.com/rolker/udp_bridge/issues/61). See `doc/admission_control_design.md`, "`link_headroom_fraction` after the clamp removal".
+
+    > **These four are live-tunable.** `maximum_bytes_per_second`,
+    > `resend_budget_fraction`, `admission_floor_bytes_per_second` and
+    > `admission_refractory_period_seconds` apply to the running connection when set with
+    > `ros2 param set` — no restart, no re-configure. Until this was fixed
+    > they were read once in `on_configure` and never again, so a runtime set
+    > was accepted, read back with the new value, and changed nothing; that
+    > cost a wrong conclusion and about three minutes of link outage on the
+    > 2026-08-25 BizzyBoat transit.
+    >
+    > A runtime set is **validated and refused** where a config file is
+    > clamped, because `ros2 param set` has somewhere to print the reason and
+    > a YAML file does not. The accepted ranges are exactly the ranges the
+    > setters store unchanged, so an accepted value cannot read back as
+    > something other than what is in force:
+    >
+    > | Parameter | Accepted at runtime |
+    > |---|---|
+    > | `maximum_bytes_per_second` | integer `0` – `4294967295` (0 = the 50000 default) |
+    > | `resend_budget_fraction` | finite double in `[0, 1]` |
+    > | `admission_floor_bytes_per_second` | finite double in `[0, 3.4028235e38]` (clamped at use to this connection's own rate limit, so it can never raise a cap). The upper bound is float representability, not a policy: `Connection` stores the floor as a `float`, so a larger value would cast to `+Inf` and read back from the getter as something other than what was set |
+    > | `admission_refractory_period_seconds` | finite double in `[0, 60]` (0 disables the gate, as at configure time; a base above 60 s is clamped by the configure path and refused here) |
+    >
+    > The read-back guarantee is exact for `admission_refractory_period_seconds`
+    > and for both `maximum_bytes_per_second` parameters. For
+    > `resend_budget_fraction` and `admission_floor_bytes_per_second` it is
+    > exact to **float** precision only: the parameter store holds a double
+    > and `Connection` holds a float, so a value carrying more precision than
+    > a float reads back as the double you set while the controller uses its
+    > float-rounded form. These are rates and fractions whose meaningful
+    > precision is far coarser than that, so it is a note, not a caveat.
+    >
+    > A batch is validated as a whole — all of it applies or none of it
+    > does — but only when it *arrives* as a batch, i.e. through
+    > `set_parameters_atomically` (the ROS 2 service the node's callback
+    > sees as one call). The `ros2 param set` CLI sets **one** parameter
+    > per invocation, and `ros2 param load` walks a file parameter by
+    > parameter, so several values applied that way are several separate
+    > batches: an invalid one is refused on its own and the valid ones
+    > around it still take effect. Setting a value for a connection that is no
+    > longer registered is **refused**, not silently ignored — "accepted,
+    > reads back, does nothing" is the failure mode being removed. The same
+    > goes for a key that was a tunable under a **previous** configuration
+    > and is not under the current one: a connection or topic removed from
+    > the config leaves its parameters declared (rclcpp has no undeclare),
+    > and a set of one is refused with a reason naming it rather than being
+    > quietly accepted as a name the node does not recognise. A per-topic
+    > `maximum_bytes_per_second` is refused the same way when its
+    > *forwarding* is gone — removed at runtime by `remove_subscribe` or
+    > `remove_advertise` rather than by a re-configure — because the
+    > routing-table entry the cap would be written into no longer exists.
+    >
+    > **Type the value the way the parameter was declared.** rclcpp enforces a
+    > parameter's declared type before the node ever sees the set, so
+    > `ros2 param set … admission_floor_bytes_per_second 20000` fails on the
+    > type; write `20000.0`. `resend_budget_fraction`, the floor and the
+    > refractory period are doubles; both `maximum_bytes_per_second`
+    > parameters are integers.
+    >
+    > `link_headroom_fraction` is **not** in this table: #52 retired it and it
+    > is no longer declared, so there is nothing to tune. Setting it warns at
+    > `on_configure` (see its entry above).
+
 -   `remotes.<remote_label>.connections.<connection_id>.topics_list`: (string array) List of topics to sync. This is also the **relay routing table**: a topic listed here is delivered to this remote whether it was published locally or received from another remote. Adding a second remote that lists an already-carried topic therefore starts that traffic flowing to it — size the connection's rate limit for the combined load. See [`doc/relay_design.md`](doc/relay_design.md).
 
 For each topic in `topics_list`:
@@ -218,6 +281,45 @@ For each topic in `topics_list`:
 -   `destination`: (string) Remote topic name.
 -   `period`: (double) Minimum period between messages (shaping/rate limiting). 0.0 = no limit.
 -   `queue_size`: (int) Subscriber queue size.
+-   `maximum_bytes_per_second`: (int, default **0** = unlimited) Per-topic
+    send cap for this topic on this connection, so one topic cannot crowd
+    out the rest of the connection. The connection-level cap is metered
+    first-come-first-served with no notion of topic, so without this a
+    single busy topic can take the whole admitted budget and every other
+    topic on the connection is shed as a side effect. Absent or 0 is
+    today's behaviour, so no existing configuration changes.
+
+    Units are **offered message payload bytes per second**, not the wire
+    bytes the connection-level `maximum_bytes_per_second` meters: the
+    decision is made before serialization, compression and fragmentation,
+    so a wire figure does not exist yet. Payload bytes are also what
+    `TopicStatistics.message_bytes_per_second` reports for the topic,
+    which is the number to size this against — watch the topic's offered
+    rate in `~/topic_statistics` and set the cap below it.
+
+    Enforced as a token bucket one second deep. A message larger than one
+    second of the cap is still sent when the bucket is empty, so an
+    over-tight cap makes a topic slow rather than permanently silent; the
+    sustained rate is still the cap. A topic over its cap is **dropped and
+    counted**: the drop appears in that topic's `TopicStatistics` `send`
+    DataRates for the destination it was shed for, as a connection-level
+    drop does. (Those `dropped_bytes_per_second` figures therefore mix
+    payload bytes shed here with wire bytes shed by the connection-level
+    limiter.) On a relay hub, an item whose every due destination was shed
+    is reported on the `relay queue` diagnostic's
+    `rate_limited_by_topic_cap` row — a rate limit, not loss.
+
+    Live-tunable with `ros2 param set` on the same terms as the
+    per-connection tunables above: integer `0`–`4294967295`, where 0
+    removes the cap. The **config file** clamps and warns at both ends —
+    a negative value becomes no cap (0), and a value above `4294967295`
+    is clamped to it rather than wrapping — while at **runtime** either
+    is refused with a reason. A re-configure with the key set back to 0
+    genuinely **removes** the cap: 0 from the config file is the
+    documented "no cap" value, not a "leave it alone" sentinel. (The
+    wire and service paths that re-add a forwarding — `remote_subscribe`,
+    `remote_advertise` — carry no cap field at all, so they leave an
+    existing cap untouched; a peer re-subscribing cannot wipe it.)
 
 > **Behavior change (#52): admission drops are now message-level.** The
 > admission gate used to shed individual *packets*; it now admits or

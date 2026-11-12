@@ -100,6 +100,14 @@ namespace
 
 const rclcpp::Time kT0(1000, 0, RCL_ROS_TIME);
 
+// Every table in this file leaves the per-topic byte cap at its default
+// of 0 (unlimited), so the size passed to the selector is immaterial to
+// what these tests assert — the cap itself is exercised in
+// test_topic_rate_caps.cpp. A non-zero value is used anyway so a future
+// change that made the size matter would show up here rather than
+// passing on a degenerate zero.
+constexpr uint64_t kMessageBytes = 100;
+
 // One remote listing `topic` (as its destination topic) over one connection
 // with the given period. period 0 = no rate limit, which is the default in
 // every config in this repo.
@@ -141,7 +149,7 @@ TEST(RelayRouting, ThreeNodeRelayReachesTheOtherRemote)
   // takes is unconditional and unchanged.
   EXPECT_TRUE(hasRelayDestination(table, "boat"));
 
-  auto selected = selectRateLimitedConnections(table, kT0, "boat");
+  auto selected = selectRateLimitedConnections(table, kT0, kMessageBytes, "boat").due;
   EXPECT_EQ(selectedRemotes(selected), (std::vector<std::string>{"operator"}));
   ASSERT_EQ(selected.count("operator"), 1u);
   EXPECT_EQ(selected["operator"], (std::vector<std::string>{"wifi"}));
@@ -159,7 +167,7 @@ TEST(RelayRouting, EchoIsNeverSentBackToTheSender)
 
   EXPECT_FALSE(hasRelayDestination(table, "operator"));
 
-  auto selected = selectRateLimitedConnections(table, kT0, "operator");
+  auto selected = selectRateLimitedConnections(table, kT0, kMessageBytes, "operator").due;
   EXPECT_TRUE(selected.empty());
 }
 
@@ -327,7 +335,7 @@ TEST(RelayRouting, MaximumLengthIdentityStillClosesTheLoopRule)
   table[identities[0]] = remote("/status", "wifi");
   EXPECT_FALSE(hasRelayDestination(table, wire_name))
     << "a maximum-length name must still match itself on the wire";
-  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, wire_name).empty());
+  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, kMessageBytes, wire_name).due.empty());
 }
 
 // A fixed-size wire field need not be null-terminated: a corrupted or
@@ -394,7 +402,7 @@ TEST(RelayRouting, UnnamedSenderIsNeverRelayed)
   std::map<std::string, RemoteDetails> unguarded;
   unguarded["boat"] = remote("/status", "wifi");
   unguarded["operator"] = remote("/status", "wifi");
-  auto would_be_selected = selectRateLimitedConnections(unguarded, kT0, "");
+  auto would_be_selected = selectRateLimitedConnections(unguarded, kT0, kMessageBytes, "").due;
   EXPECT_EQ(selectedRemotes(would_be_selected),
             (std::vector<std::string>{"boat", "operator"}))
     << "with no sender to exclude the selector reaches everyone, sender included";
@@ -422,11 +430,11 @@ TEST(RelayRouting, RoutingTableFidelity)
   sonar_table["boat"] = remote("/sonar", "wifi");
   sonar_table["operator_a"] = remote("/sonar", "wifi");
 
-  auto status_selected = selectRateLimitedConnections(status_table, kT0, "boat");
+  auto status_selected = selectRateLimitedConnections(status_table, kT0, kMessageBytes, "boat").due;
   EXPECT_EQ(selectedRemotes(status_selected),
             (std::vector<std::string>{"operator_a", "operator_b"}));
 
-  auto sonar_selected = selectRateLimitedConnections(sonar_table, kT0, "boat");
+  auto sonar_selected = selectRateLimitedConnections(sonar_table, kT0, kMessageBytes, "boat").due;
   EXPECT_EQ(selectedRemotes(sonar_selected),
             (std::vector<std::string>{"operator_a"}));
   EXPECT_EQ(sonar_selected.count("operator_b"), 0u);
@@ -449,18 +457,18 @@ TEST(RelayRouting, RelayRateLimitMatchesLocalOrigin)
   relay_table["operator"] = remote("/status", "wifi", period);
 
   // First message: both send (last_sent_time is the never-sent sentinel).
-  EXPECT_EQ(selectRateLimitedConnections(local_table, kT0).count("operator"), 1u);
-  EXPECT_EQ(selectRateLimitedConnections(relay_table, kT0, "boat").count("operator"), 1u);
+  EXPECT_EQ(selectRateLimitedConnections(local_table, kT0, kMessageBytes).due.count("operator"), 1u);
+  EXPECT_EQ(selectRateLimitedConnections(relay_table, kT0, kMessageBytes, "boat").due.count("operator"), 1u);
 
   // Half a period later: both withhold.
   const rclcpp::Time half = kT0 + rclcpp::Duration::from_seconds(0.5);
-  EXPECT_EQ(selectRateLimitedConnections(local_table, half).count("operator"), 0u);
-  EXPECT_EQ(selectRateLimitedConnections(relay_table, half, "boat").count("operator"), 0u);
+  EXPECT_EQ(selectRateLimitedConnections(local_table, half, kMessageBytes).due.count("operator"), 0u);
+  EXPECT_EQ(selectRateLimitedConnections(relay_table, half, kMessageBytes, "boat").due.count("operator"), 0u);
 
   // Past the period: both send again.
   const rclcpp::Time past = kT0 + rclcpp::Duration::from_seconds(1.5);
-  EXPECT_EQ(selectRateLimitedConnections(local_table, past).count("operator"), 1u);
-  EXPECT_EQ(selectRateLimitedConnections(relay_table, past, "boat").count("operator"), 1u);
+  EXPECT_EQ(selectRateLimitedConnections(local_table, past, kMessageBytes).due.count("operator"), 1u);
+  EXPECT_EQ(selectRateLimitedConnections(relay_table, past, kMessageBytes, "boat").due.count("operator"), 1u);
 }
 
 // Excluding the sender must be side-effect free. If the exclusion were
@@ -473,7 +481,7 @@ TEST(RelayRouting, ExcludedRemoteRateStateUntouched)
   table["boat"] = remote("/status", "wifi", 1.0f);
   table["operator"] = remote("/status", "wifi", 1.0f);
 
-  selectRateLimitedConnections(table, kT0, "boat");
+  selectRateLimitedConnections(table, kT0, kMessageBytes, "boat");
 
   EXPECT_EQ(table["boat"].connection_rates["wifi"].last_sent_time.nanoseconds(), 0)
     << "the excluded sender's rate state must not be stamped by a relay";
@@ -488,11 +496,11 @@ TEST(RelayRouting, NegativeAndZeroPeriodsPreserved)
   table["never"] = remote("/status", "wifi", -1.0f);
   table["always"] = remote("/status", "wifi", 0.0f);
 
-  auto first = selectRateLimitedConnections(table, kT0);
+  auto first = selectRateLimitedConnections(table, kT0, kMessageBytes).due;
   EXPECT_EQ(selectedRemotes(first), (std::vector<std::string>{"always"}));
 
   // Immediately again: period 0 is unthrottled, negative is still silent.
-  auto second = selectRateLimitedConnections(table, kT0);
+  auto second = selectRateLimitedConnections(table, kT0, kMessageBytes).due;
   EXPECT_EQ(selectedRemotes(second), (std::vector<std::string>{"always"}));
 }
 
@@ -515,7 +523,7 @@ TEST(RelayRouting, SamePeriodConnectionsSendAsAGroup)
   details.connection_rates["b"] = recent;
   table["operator"] = details;
 
-  auto selected = selectRateLimitedConnections(table, kT0);
+  auto selected = selectRateLimitedConnections(table, kT0, kMessageBytes).due;
   ASSERT_EQ(selected.count("operator"), 1u);
   EXPECT_EQ(selected["operator"], (std::vector<std::string>{"a", "b"}));
 }
@@ -588,7 +596,7 @@ TEST(RelayRouting, SamePeriodGroupingFollowsIterationOrder)
   details.connection_rates["b"] = due;     // visited second: due, selected
   table["operator"] = details;
 
-  auto selected = selectRateLimitedConnections(table, kT0);
+  auto selected = selectRateLimitedConnections(table, kT0, kMessageBytes).due;
   ASSERT_EQ(selected.count("operator"), 1u);
   EXPECT_EQ(selected["operator"], (std::vector<std::string>{"b"}))
     << "grouping only pulls in connections visited after the first due one";
@@ -605,7 +613,7 @@ TEST(RelayRouting, ProbeAgreesWithSelectorOnNeverSendRemotes)
   table["boat"] = remote("/status", "wifi");
   table["operator"] = remote("/status", "wifi", -1.0f);  // never send
 
-  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, "boat").empty())
+  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, kMessageBytes, "boat").due.empty())
     << "precondition: the selector chooses nobody here";
   EXPECT_FALSE(hasRelayDestination(table, "boat"))
     << "so the probe must not make the drain thread pay for a copy";
@@ -625,7 +633,7 @@ TEST(RelayRouting, ProbeIgnoresRemotesWithNoConnections)
   no_connections.destination_topic = "/status";
   table["operator"] = no_connections;
 
-  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, "boat").empty());
+  EXPECT_TRUE(selectRateLimitedConnections(table, kT0, kMessageBytes, "boat").due.empty());
   EXPECT_FALSE(hasRelayDestination(table, "boat"));
 }
 

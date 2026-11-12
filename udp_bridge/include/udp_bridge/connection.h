@@ -53,6 +53,16 @@ public:
   /// does not describe the link). Negative values and NaN fall back to
   /// the default; the floor is additionally clamped to the configured
   /// rate limit at use, so a floor above the cap cannot raise it.
+  ///
+  /// The floor binds on the next admission sample, unconditionally: it
+  /// is applied as a lower bound at the top of updateAdmissionControl,
+  /// ahead of the refractory gate and of both AIMD branches. A raise
+  /// therefore takes effect whether or not a refractory window is open
+  /// and whether the arriving sample is congested or clean — the second
+  /// of which is the case that matters, since a collapsed link an
+  /// operator is trying to rescue is usually quiesced and every sample
+  /// on it is a clean one (#75). The setter itself does not touch the
+  /// live cap; the next sample does.
   void setAdmissionFloorBytesPerSecond(float bytes_per_second);
   float admissionFloorBytesPerSecond() const;
 
@@ -350,7 +360,11 @@ private:
   float effective_rate_limit_ = default_rate_limit;
 
   /// Minimum effective cap in absolute bytes/second (issue #52).
-  /// Guarded by config_mutex_.
+  /// "Absolute" means it is a byte rate rather than a fraction of the
+  /// configured limit; it is still clamped to that limit at use, so it
+  /// can never raise the cap above what the operator configured.
+  /// Applied as an unconditional lower bound at the top of
+  /// updateAdmissionControl (#75). Guarded by config_mutex_.
   float admission_floor_bytes_per_second_ = kDefaultAdmissionFloorBytesPerSecond;
 
   /// True while a refractory window opened by an admission DECREASE is

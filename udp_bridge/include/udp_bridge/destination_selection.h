@@ -1,6 +1,8 @@
 #ifndef UDP_BRIDGE_DESTINATION_SELECTION_H
 #define UDP_BRIDGE_DESTINATION_SELECTION_H
 
+#include <algorithm>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <unordered_set>
@@ -50,6 +52,12 @@ struct DestinationConfig
 /// clock and mutates `last_sent_time`, so it belongs to the selector alone,
 /// on the relay worker. The probe is therefore may-send, never must-send.
 ///
+/// The per-topic byte cap is temporal in exactly the same way (it depends
+/// on the clock and mutates the token bucket), so the probe does not apply
+/// it either. A topic sitting at its cap therefore still pays for the copy
+/// and the queue slot before being shed at selection — the cost of keeping
+/// the probe a pure, side-effect-free read.
+///
 /// An **empty** `source_node` answers false, always. The loop rule is a
 /// comparison against the sender's name, so an unnamed sender cannot be
 /// excluded from anything: relaying such a packet would send it to every
@@ -75,6 +83,124 @@ inline bool hasRelayDestination(
   return false;
 }
 
+/// What one call to selectRateLimitedConnections decided.
+///
+/// `due` is where the message goes. `over_budget` is the (remote,
+/// connection) pairs that WERE due under `period` but exceeded their own
+/// per-topic `maximum_bytes_per_second` — they are dropped, and the
+/// caller records them as dropped so the shedding is visible in the
+/// topic's statistics instead of being silent. Both are always
+/// populated; a caller that ignores `over_budget` turns a rate limit
+/// into invisible loss, which is why this is a struct rather than an
+/// optional out-parameter.
+struct RateLimitedSelection
+{
+  SelectedConnections due;
+  SelectedConnections over_budget;
+};
+
+/// Charge `message_bytes` against one connection's per-topic byte
+/// budget. Returns true when the message is admitted (and charges it),
+/// false when it is over budget (and charges nothing).
+///
+/// A token bucket, not a tumbling window: the accumulator drains
+/// continuously at the cap, and the bucket depth is one second of the
+/// cap. That gives the same instantaneous allowance as the strict
+/// 1-second sliding window PacketSendStatistics::can_send applies at the
+/// connection level, without keeping a per-topic deque of timestamps in
+/// a map that forwarding callbacks mutate on the hot path.
+///
+/// Three edge cases are deliberate:
+///
+///  - **Cap 0 is unlimited**, so an absent `maximum_bytes_per_second`
+///    key leaves every existing configuration behaving exactly as before.
+///  - **An empty bucket admits any single message, however large.**
+///    Without this a message bigger than one second of the cap (a camera
+///    frame against a modest cap) could never be admitted at all — the
+///    topic would go permanently silent instead of slow. Admitting it
+///    leaves the bucket overdrawn, and the drain then holds the topic
+///    off for exactly as long as the overdraft implies, so the sustained
+///    rate is still the cap. This mirrors the resend budget's probe
+///    guarantee (Connection::resend_packets), which exists for the same
+///    reason.
+///  - **A backwards clock step resets the bucket** rather than
+///    computing a negative drain. Sim time and NTP corrections both
+///    produce one; the conservative direction here is to forget the
+///    charge, since the alternative is a bucket that can never drain.
+///
+/// One consequence of the drain being computed at the CURRENT cap is
+/// worth knowing before tuning one down at runtime (#75): an existing
+/// overdraft drains at the NEW cap, not the old one. Lowering a topic
+/// from 400000 to 20000 B/s while a full second of the old cap is
+/// outstanding silences that topic for ~20 s before the first message is
+/// admitted again. That is the honest accounting — the bytes were spent,
+/// and forgiving them would let a burst re-run the whole budget on the
+/// next message — but the outage is bounded by nothing visible in the
+/// parameter the operator just set, so it is documented at both entry
+/// points (see udp_bridge.cpp's TopicMaximumBytesPerSecond case and
+/// the live-tuning note in README.md).
+inline bool admitAgainstTopicByteCap(ConnectionRateInfo& rate,
+                                     uint64_t message_bytes,
+                                     const rclcpp::Time& now)
+{
+  if(rate.maximum_bytes_per_second == 0)
+    return true;
+
+  const double cap = static_cast<double>(rate.maximum_bytes_per_second);
+  if(!rate.budget_started)
+  {
+    // First charge on this connection. Note that budget_updated_time is
+    // still default-constructed here (RCL_SYSTEM_TIME), so it must not
+    // be subtracted from `now`.
+    rate.budget_used_bytes = 0.0;
+  }
+  else
+  {
+    const double elapsed = (now - rate.budget_updated_time).seconds();
+    if(elapsed < 0.0)
+      rate.budget_used_bytes = 0.0;
+    else
+      rate.budget_used_bytes =
+        std::max(0.0, rate.budget_used_bytes - cap * elapsed);
+  }
+  rate.budget_updated_time = now;
+  rate.budget_started = true;
+
+  if(rate.budget_used_bytes > 0.0 &&
+     rate.budget_used_bytes + static_cast<double>(message_bytes) > cap)
+    return false;
+
+  rate.budget_used_bytes += static_cast<double>(message_bytes);
+  return true;
+}
+
+/// Build the statistics record for a set of over-budget destinations, so
+/// a per-topic drop lands in TopicStatistics' `send` DataRates exactly as
+/// a connection-level drop does.
+///
+/// `sent_size` is the message payload size. The message was never
+/// serialized, so its wire size does not exist — the payload size is the
+/// honest stand-in and is the same quantity the cap is expressed in. The
+/// per-destination rows of TopicStatistics therefore mix payload bytes
+/// (shed here) with wire bytes (shed by Connection::send) in
+/// `dropped_bytes_per_second`; that is a known and documented seam, and
+/// the alternative — recording the drop with no size — would hide the
+/// shedding altogether.
+inline MessageSizeData overBudgetDropRecord(
+  const SelectedConnections& over_budget,
+  std::size_t message_bytes,
+  const rclcpp::Time& now)
+{
+  MessageSizeData data;
+  data.timestamp = now;
+  data.message_size = static_cast<int>(message_bytes);
+  data.sent_size = static_cast<int>(message_bytes);
+  for(const auto& remote: over_budget)
+    for(const auto& connection_id: remote.second)
+      data.send_results[remote.first][connection_id] = SendResult::dropped;
+  return data;
+}
+
 /// Choose which (remote, connection) pairs are due to receive a message
 /// right now, and stamp their last_sent_time.
 ///
@@ -93,8 +219,11 @@ inline bool hasRelayDestination(
 ///
 ///   - A negative period means "never send" and is skipped.
 ///   - period == 0 means "no rate limit".
-///   - Otherwise a connection is due when it has never been sent to
-///     (last_sent_time == 0) or `now - last_sent_time > period`.
+///   - Otherwise a connection is due when its period has elapsed against
+///     every stamp that records the period being satisfied — an actual
+///     send (`last_sent_time`) and a message that reached it and was shed
+///     by its own byte cap (`period_satisfied_time`). A connection with
+///     neither stamp set has never been offered anything and is due.
 ///   - `periods` groups connections that share a period: once a connection
 ///     with period P has been selected in this call, every LATER connection
 ///     (in `connection_rates` iteration order, i.e. by connection id) with
@@ -106,13 +235,68 @@ inline bool hasRelayDestination(
 ///     one with the same period is skipped, and only the connections after
 ///     it join the group. Pre-#51 behaviour, preserved verbatim — noted
 ///     here so the asymmetry is not mistaken for a guarantee.
-///   - Every selected connection's last_sent_time is set to `now`.
 ///
+///     Membership of the group is decided by the `period` rule ALONE. A
+///     connection that is due and then shed by its own per-topic byte cap
+///     still opens the group, so capping one connection cannot change
+///     when an uncapped sibling with the same period is sent to.
+///   - Every selected connection's last_sent_time is set to `now`, and
+///     every connection the period rule selected — whether it was then
+///     sent to or shed by its byte cap — has its period_satisfied_time
+///     set to `now`.
+///   - A connection that is due under `period` is then charged
+///     `message_bytes` against its own per-topic
+///     `maximum_bytes_per_second` (0 = unlimited, the default). Over
+///     budget, it is reported in `over_budget` instead of `due`, and its
+///     last_sent_time is not touched — nothing was sent to it, so nothing
+///     about its own send state should move. Its `period_satisfied_time`
+///     IS stamped: it consumed its slot in this period's cohort, and
+///     leaving it perpetually due would re-open that cohort on every
+///     message and drag uncapped same-period siblings past their own
+///     period check (#75). Its membership of the
+///     same-period group IS recorded, because that group is about the
+///     period rule and belongs to the other connections as much as to
+///     this one. Charging happens here, in the one place both senders
+///     already meter, so relayed traffic is capped by exactly the same
+///     rule and the same state as locally published traffic.
+///
+/// True when `rate`'s `period` has elapsed against every stamp that
+/// records the period being satisfied. Both stamps are consulted, and
+/// each is skipped when it holds the never-set sentinel (0) — a
+/// default-constructed rclcpp::Time carries RCL_SYSTEM_TIME, and
+/// subtracting it from a RCL_ROS_TIME `now` throws.
+///
+/// Callers with `period <= 0` must not reach here: 0 is "no limit" and
+/// negative is "never send", both decided before this test.
+inline bool topicPeriodElapsed(const ConnectionRateInfo& rate,
+                               const rclcpp::Time& now)
+{
+  const auto period = rclcpp::Duration::from_seconds(rate.period);
+  const bool never_sent = rate.last_sent_time.nanoseconds() == 0;
+  const bool never_satisfied = rate.period_satisfied_time.nanoseconds() == 0;
+  if(never_sent && never_satisfied)
+    return true;
+  if(!never_sent && !(now - rate.last_sent_time > period))
+    return false;
+  if(!never_satisfied && !(now - rate.period_satisfied_time > period))
+    return false;
+  return true;
+}
+
 /// @param remote_details the routing table for one topic
-///        (SubscriberDetails::remote_details). Mutated: last_sent_time is
-///        updated for each selected connection, so the caller must hold
-///        whatever mutex guards it (UDPBridge: subscribers_mutex_).
+///        (SubscriberDetails::remote_details). Mutated: last_sent_time and
+///        the per-topic byte budget are updated for each selected
+///        connection, so the caller must hold whatever mutex guards it
+///        (UDPBridge: subscribers_mutex_). The mutation is bounded
+///        arithmetic on values already in the map — no I/O — so it fits
+///        inside the brief critical section both senders already take,
+///        and nothing here is held across a sendto.
 /// @param now current time
+/// @param message_bytes size of the message being offered, in payload
+///        bytes, for the per-topic byte cap. Required rather than
+///        defaulted: a caller that forgets it would silently disable
+///        every per-topic cap, which is the failure mode this whole
+///        mechanism exists to make impossible.
 /// @param exclude_remote if non-empty, the remote of this name is skipped
 ///        entirely — no connection of it is selected and, critically, none
 ///        of its last_sent_time values is touched, so an excluded remote's
@@ -120,12 +304,13 @@ inline bool hasRelayDestination(
 ///        This is the relay loop rule: a message is never sent back to the
 ///        remote it came from. Empty for the local-origin path, which has
 ///        no remote to exclude.
-inline SelectedConnections selectRateLimitedConnections(
+inline RateLimitedSelection selectRateLimitedConnections(
   std::map<std::string, RemoteDetails>& remote_details,
   const rclcpp::Time& now,
+  uint64_t message_bytes,
   const std::string& exclude_remote = std::string())
 {
-  SelectedConnections destinations;
+  RateLimitedSelection selection;
   for(auto& remote: remote_details)
   {
     // Loop rule (#51): never send back to the sender. Applied before any
@@ -135,15 +320,35 @@ inline SelectedConnections selectRateLimitedConnections(
     std::unordered_set<float> periods; // group the sending to connections with same period
     for(auto& connection_rate: remote.second.connection_rates)
       if(connection_rate.second.period >= 0)
-        if(connection_rate.second.period == 0 || connection_rate.second.last_sent_time.nanoseconds() == 0 || now-connection_rate.second.last_sent_time > rclcpp::Duration::from_seconds(connection_rate.second.period) || periods.count(connection_rate.second.period) > 0)
+        if(connection_rate.second.period == 0 || topicPeriodElapsed(connection_rate.second, now) || periods.count(connection_rate.second.period) > 0)
         {
-          destinations[remote.first].push_back(connection_rate.first);
+          // Due under `period`. Join the same-period group HERE, before
+          // the byte cap is consulted: the group expresses "this period's
+          // cohort fires on this message", which is a property of the
+          // period rule alone. Joining it only on admission would let a
+          // cap on ONE connection change WHEN an uncapped sibling of the
+          // same period is sent to — a per-topic cap perturbing a link it
+          // was never configured for.
+          periods.insert(connection_rate.second.period);
+          // This connection has consumed its slot in the period cohort,
+          // whichever way the byte cap below decides. Stamp it here, once,
+          // so a shed connection does not stay due on every message and
+          // re-open the cohort for its siblings (#75).
+          connection_rate.second.period_satisfied_time = now;
+          // The per-topic byte cap is the second gate, applied only to
+          // connections that got this far: a connection the period rule
+          // already held back must not have its budget charged for a
+          // message it was never going to receive.
+          if(!admitAgainstTopicByteCap(connection_rate.second, message_bytes, now))
+          {
+            selection.over_budget[remote.first].push_back(connection_rate.first);
+            continue;
+          }
+          selection.due[remote.first].push_back(connection_rate.first);
           connection_rate.second.last_sent_time = now;
-          if(periods.count(connection_rate.second.period) == 0)
-            periods.insert(connection_rate.second.period);
         }
   }
-  return destinations;
+  return selection;
 }
 
 } // namespace udp_bridge

@@ -342,6 +342,35 @@ void Connection::updateAdmissionControl(float remote_received_bps,
   // unrelated loop of fresh data for the length of the window.
   goodput_bytes_per_second_ = goodput;
 
+  // The floor is absolute (#52) but can never exceed the configured
+  // cap: an operator who sets a floor above a connection's own limit
+  // gets the limit, not a floor that would raise it.
+  const float floor =
+    std::min(admission_floor_bytes_per_second_, static_cast<float>(data_rate_limit_));
+
+  // The floor is applied as an unconditional LOWER BOUND here, BEFORE
+  // the refractory gate and before either AIMD branch (#75, review
+  // round 2). It is not a control decision — it never lowers the cap,
+  // never touches the refractory bookkeeping, and never substitutes for
+  // the decrease or the additive recovery below. It only enforces the
+  // contract the parameter states: the effective cap is never below the
+  // floor.
+  //
+  // Applying it only inside the branches was wrong in two distinct
+  // ways, and one placement fixes both. (1) Inside the refractory
+  // window BOTH branches are skipped, so a floor raised at runtime
+  // during an episode was inert for the length of the window. (2) On
+  // the CLEAN recovery path the floor was never read at all — recovery
+  // is additive from wherever the controller sits — so on a collapsed,
+  // quiesced link (exactly where an operator raises the floor to
+  // rescue it) a raised floor bound on NO sample, for an unbounded
+  // time, not merely until the window expired.
+  //
+  // `setAdmissionFloorBytesPerSecond` does not itself raise the live
+  // cap; this makes the next admission sample honour the new floor
+  // regardless of which path that sample takes.
+  effective_rate_limit_ = std::max(effective_rate_limit_, floor);
+
   // REFRACTORY GATE (issue #52). One decision per congestion epoch.
   //
   // The freeze is unconditional on sample type: inside the window a
@@ -391,12 +420,6 @@ void Connection::updateAdmissionControl(float remote_received_bps,
     if(elapsed >= 0.0 && elapsed < admission_refractory_current_seconds_)
       return;
   }
-
-  // The floor is absolute (#52) but can never exceed the configured
-  // cap: an operator who sets a floor above a connection's own limit
-  // gets the limit, not a floor that would raise it.
-  const float floor =
-    std::min(admission_floor_bytes_per_second_, static_cast<float>(data_rate_limit_));
 
   if(congested)
   {
